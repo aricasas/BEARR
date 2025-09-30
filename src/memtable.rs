@@ -214,6 +214,8 @@ impl<K: Ord, V> Node<K, V> {
         mem::swap(&mut node1.red, &mut node2.red);
     }
 
+    ///
+    /// from https://www.geeksforgeeks.org/dsa/left-leaning-red-black-tree-insertion/
     fn llrb_put(root: Link<K, V>, key: K, value: V) -> (Link<K, V>, bool) {
         if root.is_none() {
             return (Some(Self::boxed(key, value)), true);

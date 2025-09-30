@@ -3,14 +3,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{memtable::MemTable, sst::SST};
+use crate::{DBError, memtable::MemTable, sst::SST};
 
 /// An open connection to a database
 pub struct Database {
     configuration: DBConfiguration,
     name: PathBuf,
     memtable: MemTable<u64, u64>,
-    ssts: Vec<SST>, // ?
+    ssts: Vec<SST>,
 }
 
 /// Configuration options for a database
@@ -19,15 +19,15 @@ pub struct DBConfiguration {
 }
 
 impl Database {
-    pub fn create(name: &Path, configuration: DBConfiguration) -> Result<Self, ()> {
+    pub fn create(name: &Path, configuration: DBConfiguration) -> Result<Self, DBError> {
         todo!()
     }
 
-    pub fn open(name: &Path) -> Result<Self, ()> {
+    pub fn open(name: &Path) -> Result<Self, DBError> {
         todo!()
     }
 
-    pub fn put(&mut self, key: u64, value: u64) -> Result<(), ()> {
+    pub fn put(&mut self, key: u64, value: u64) -> Result<(), DBError> {
         self.memtable.put(key, value);
 
         if self.memtable.size() < self.configuration.memtable_size {
@@ -38,7 +38,7 @@ impl Database {
         todo!()
     }
 
-    pub fn get(&self, key: u64) -> Result<Option<u64>, ()> {
+    pub fn get(&self, key: u64) -> Result<Option<u64>, DBError> {
         let val = self.memtable.get(key);
 
         if val.is_some() {
@@ -49,11 +49,11 @@ impl Database {
         todo!()
     }
 
-    pub fn scan(&self, range: RangeInclusive<u64>) -> Result<Vec<(u64, u64)>, ()> {
+    pub fn scan(&self, range: RangeInclusive<u64>) -> Result<Vec<(u64, u64)>, DBError> {
         todo!()
     }
 
-    pub fn close(self) -> Result<(), ()> {
+    pub fn close(self) -> Result<(), DBError> {
         todo!()
     }
 }
