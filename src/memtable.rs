@@ -69,70 +69,78 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
     pub fn put(&mut self, key: K, value: V) -> Result<(), DBError> {
         if self.root == NULL {
             self.root = self.make_node(key, value)?;
-        } else {
-            // Dummy root
-            let mut head = Node {
-                key: K::default(),
-                value: V::default(),
-                link: [NULL, self.root],
-                red: false,
-            };
+            self.node_mut(self.root).red = false;
+            return Ok(());
+        }
 
-            let mut g = NULL;
-            let mut t = NULL;
-            let mut p = NULL;
-            let mut q = self.root;
+        // Dummy root
+        let mut head = Node {
+            key: K::default(),
+            value: V::default(),
+            link: [NULL, self.root],
+            red: false,
+        };
 
-            let mut dir = 0;
-            let mut last = 0;
+        // Cursor and ancestors
+        let mut q = self.root;
+        let mut p = NULL;
+        let mut g = NULL;
+        let mut t = NULL;
 
-            loop {
-                if q == NULL {
-                    // Insert new node as leaf
-                    q = self.make_node(key.clone(), value.clone())?;
-                    self.node_mut(p).link[dir] = q;
-                } else if self.is_red(self.node(q).link[LEFT])
-                    && self.is_red(self.node(q).link[RIGHT])
-                {
-                    // Color flip
+        // Current and last direction of traversing tree
+        let mut dir = 0;
+        let mut last = 0;
+
+        // Traverse tree downwards in one pass
+        loop {
+            if q == NULL {
+                // Insert new node as leaf
+                q = self.make_node(key.clone(), value.clone())?;
+                self.node_mut(p).link[dir] = q;
+            } else {
+                let q_node = self.node(q);
+                let left = q_node.link[LEFT];
+                let right = q_node.link[RIGHT];
+
+                // Color flip
+                if self.is_red(left) && self.is_red(right) {
                     self.node_mut(q).red = true;
-                    self.node_mut(self.node(q).link[LEFT]).red = false;
-                    self.node_mut(self.node(q).link[RIGHT]).red = false;
+                    self.node_mut(left).red = false;
+                    self.node_mut(right).red = false;
                 }
-
-                if self.is_red(q) && self.is_red(p) {
-                    // Red violation
-                    let dir2 = (self.node_or(t, &head).link[RIGHT] == g) as usize;
-
-                    if q == self.node(p).link[last] {
-                        self.node_mut_or(t, &mut head).link[dir2] =
-                            self.single_rotation(g, 1 - last);
-                    } else {
-                        self.node_mut_or(t, &mut head).link[dir2] =
-                            self.double_rotation(g, 1 - last);
-                    }
-                }
-
-                if self.node(q).key == key {
-                    // Found key
-                    self.node_mut(q).value = value;
-                    break;
-                }
-
-                last = dir;
-                dir = (self.node(q).key < key) as usize;
-
-                if g != NULL {
-                    t = g;
-                }
-
-                g = p;
-                p = q;
-                q = self.node(q).link[dir];
             }
 
-            self.root = head.link[1];
+            if self.is_red(q) && self.is_red(p) {
+                // Red violation
+
+                // dir2 is RIGHT iff g is right child of t
+                let dir2 = (self.node_or(t, &head).link[RIGHT] == g) as usize;
+
+                if q == self.node(p).link[last] {
+                    self.node_mut_or(t, &mut head).link[dir2] = self.single_rotation(g, 1 - last);
+                } else {
+                    self.node_mut_or(t, &mut head).link[dir2] = self.double_rotation(g, 1 - last);
+                }
+            }
+
+            if self.node(q).key == key {
+                // Found key
+                self.node_mut(q).value = value;
+                break;
+            }
+
+            // Update traversal directions
+            last = dir;
+            dir = (self.node(q).key < key) as usize;
+
+            // Update cursors
+            t = g;
+            g = p;
+            p = q;
+            q = self.node(q).link[dir];
         }
+
+        self.root = head.link[1];
 
         self.node_mut(self.root).red = false;
 
