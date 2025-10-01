@@ -1,345 +1,240 @@
-use std::{cmp::Ordering, mem, ops::RangeInclusive};
+use std::{cmp::Ordering, ops::RangeInclusive};
 
-/// Shorthand type for a possibly null pointer to a node on the heap
-type Link<K, V> = Option<Box<Node<K, V>>>;
+use crate::DBError;
+
+/// An in-memory MemTable.
+///
+/// Stores key-value pairs in a Red-Black tree.
+///
+/// The Red-Black tree design and implementation is inspired by this [reference](https://web.archive.org/web/20190207151651/http://www.eternallyconfuzzled.com/tuts/datastructures/jsw_tut_rbtree.aspx).
+/// The algorithm for scanning the tree is inspired by this [reference](https://en.wikipedia.org/wiki/Tree_traversal#Advancing_to_the_next_or_previous_node).
+#[derive(Debug)]
+pub struct MemTable<K: Ord + Clone + Default, V: Clone + Default> {
+    root: usize,
+    nodes: Vec<Node<K, V>>,
+}
+
+/// The nodes in our Red-Black tree.
+#[derive(Debug)]
+struct Node<K, V> {
+    key: K,
+    value: V,
+    link: [usize; 2],
+    red: bool,
+}
+
+/// Constant representing an impossible index into the `nodes` Vec in a MemTable
+const NULL: usize = usize::MAX;
 /// Constant used to access the left child of a node
 const LEFT: usize = 0;
 /// Constant used to access the right child of a node
 const RIGHT: usize = 1;
 
-/// An in-memory MemTable.
-///
-/// Stores key value pairs in a Red-Black tree.
-///
-/// The Red-Black tree design and implementation is inspired by this [reference](https://web.archive.org/web/20190207151651/http://www.eternallyconfuzzled.com/tuts/datastructures/jsw_tut_rbtree.aspx).
-/// The algorithm for scanning the tree is inspired by this [reference](https://en.wikipedia.org/wiki/Tree_traversal#Advancing_to_the_next_or_previous_node).
-#[derive(Debug)]
-pub struct MemTable<K: Ord + Clone, V: Clone> {
-    size: usize,
-    root: Link<K, V>,
-}
-
-/// The nodes in our Red-Black tree.
-#[derive(Debug)]
-struct Node<K: Ord, V> {
-    key: K,
-    value: V,
-    children: [Link<K, V>; 2],
-    red: bool,
-}
-
-impl<K: Ord + Clone, V: Clone> MemTable<K, V> {
+impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
     /// Creates a new empty MemTable.
-    pub fn new() -> Self {
-        Self {
-            size: 0,
-            root: None,
+    ///
+    /// Allocates enough space to hold `memtable_size` key-value pairs.
+    /// If allocation fails, returns `DBError::OOM`.
+    pub fn new(memtable_size: usize) -> Result<Self, DBError> {
+        let mut nodes = Vec::new();
+        if nodes.try_reserve_exact(memtable_size).is_err() {
+            Err(DBError::OOM)
+        } else {
+            Ok(Self { root: NULL, nodes })
         }
     }
 
     /// Searches MemTable for node with given key and returns the value associated if it exists.
     pub fn get(&self, key: K) -> Option<V> {
-        let mut curr = &self.root;
+        let mut curr = self.root;
 
-        while let Some(node) = curr {
+        while curr != NULL {
+            let node = self.node(curr);
             match key.cmp(&node.key) {
-                Ordering::Less => curr = &node.children[LEFT],
+                Ordering::Less => curr = node.link[LEFT],
                 Ordering::Equal => return Some(node.value.clone()),
-                Ordering::Greater => curr = &node.children[RIGHT],
+                Ordering::Greater => curr = node.link[RIGHT],
             }
         }
 
         None
     }
 
-    /// Puts a new key value pair into the MemTable.
+    /// Updates or inserts a key-value pair into the MemTable.
     ///
     /// If there is a node with matching key already, it changes the value in-place.
     /// Otherwise, it inserts a new node.
     ///
-    /// Based on the Top-Down implementation from [here](https://web.archive.org/web/20190207151651/http://www.eternallyconfuzzled.com/tuts/datastructures/jsw_tut_rbtree.aspx).
-    pub fn put(&mut self, key: K, value: V) {
-        if self.root.is_some() {
-            let mut g: Link<K, V> = None;
-            let mut p: Link<K, V> = None;
-            let mut q: Link<K, V> = None;
+    /// Based on the Top-Down `jsw_insert` implementation from [here](https://web.archive.org/web/20190207151651/http://www.eternallyconfuzzled.com/tuts/datastructures/jsw_tut_rbtree.aspx).
+    pub fn put(&mut self, key: K, value: V) -> Result<(), DBError> {
+        if self.root == NULL {
+            self.root = self.make_node(key, value)?;
+        } else {
+            // Dummy root
+            let mut head = Node {
+                key: K::default(),
+                value: V::default(),
+                link: [NULL, self.root],
+                red: false,
+            };
 
-            let mut g_dir = 0;
-            let mut p_dir = 1000;
-            let mut q_dir = 100;
+            let mut g = NULL;
+            let mut t = NULL;
+            let mut p = NULL;
+            let mut q = self.root;
 
-            let mut last = 10;
             let mut dir = 0;
-
-            q = self.root.take();
-
-            let mut restore = &mut self.root;
+            let mut last = 0;
 
             loop {
-                if let Some(q) = &mut q
-                    && Node::is_red(&q.children[LEFT])
-                    && Node::is_red(&q.children[RIGHT])
+                if q == NULL {
+                    // Insert new node as leaf
+                    q = self.make_node(key.clone(), value.clone())?;
+                    self.node_mut(p).link[dir] = q;
+                } else if self.is_red(self.node(q).link[LEFT])
+                    && self.is_red(self.node(q).link[RIGHT])
                 {
-                    q.red = true;
-                    q.children[LEFT].as_mut().unwrap().red = false;
-                    q.children[RIGHT].as_mut().unwrap().red = false;
-                } else {
-                    q = Some(Node::boxed(key.clone(), value.clone()));
-                    self.size += 1;
-                    q_dir = dir;
+                    // Color flip
+                    self.node_mut(q).red = true;
+                    self.node_mut(self.node(q).link[LEFT]).red = false;
+                    self.node_mut(self.node(q).link[RIGHT]).red = false;
                 }
 
-                if Node::is_red(&q) && Node::is_red(&p) {
-                    p.as_mut().unwrap().children[q_dir] = q;
-                    g.as_mut().unwrap().children[p_dir] = p;
+                if self.is_red(q) && self.is_red(p) {
+                    // Red violation
+                    let dir2 = (self.node_or(t, &head).link[RIGHT] == g) as usize;
 
-                    if q_dir == last {
-                        g = Node::single_rotation(g, 1 - last);
+                    if q == self.node(p).link[last] {
+                        self.node_mut_or(t, &mut head).link[dir2] =
+                            self.single_rotation(g, 1 - last);
                     } else {
-                        g = Node::double_rotation(g, 1 - last);
+                        self.node_mut_or(t, &mut head).link[dir2] =
+                            self.double_rotation(g, 1 - last);
                     }
-                    p = None;
-                    q = None;
                 }
 
-                {
-                    let q = q.as_mut().unwrap();
-
-                    if q.key == key {
-                        q.value = value;
-                        break;
-                    }
-
-                    last = dir;
-                    dir = if q.key < key { RIGHT } else { LEFT };
+                if self.node(q).key == key {
+                    // Found key
+                    self.node_mut(q).value = value;
+                    break;
                 }
 
-                *restore = g;
+                last = dir;
+                dir = (self.node(q).key < key) as usize;
+
+                if g != NULL {
+                    t = g;
+                }
+
                 g = p;
                 p = q;
-                q = p.as_mut().unwrap().children[dir].take();
-
-                g_dir = p_dir;
-                p_dir = q_dir;
-                q_dir = dir;
-
-                if restore.is_some() {
-                    restore = &mut (*restore).as_mut().unwrap().children[g_dir];
-                }
+                q = self.node(q).link[dir];
             }
 
-            if g.is_some() {
-                *restore = g;
-                restore = &mut (*restore).as_mut().unwrap().children[g_dir];
-            }
-            if p.is_some() {
-                *restore = p;
-                restore = &mut (*restore).as_mut().unwrap().children[p_dir];
-            }
-            if q.is_some() {
-                *restore = q;
-                restore = &mut (*restore).as_mut().unwrap().children[q_dir];
-            }
-        } else {
-            // Empty tree
-            self.root = Some(Node::boxed(key, value));
+            self.root = head.link[1];
         }
+
+        self.node_mut(self.root).red = false;
+
+        Ok(())
     }
 
-    /// # This is a temporary method
-    /// Puts a new key value pair into the MemTable without respecting Red-Black tree constraints.
-    pub fn put_unbalanced(&mut self, key: K, value: V) {
-        if Node::put_unbalanced(&mut self.root, key, value) {
-            self.size += 1;
-        }
-    }
-
-    pub fn llrb_put(&mut self, key: K, value: V) {
-        let mut new_insertion = false;
-        (self.root, new_insertion) = Node::llrb_put(self.root.take(), key, value);
-        self.root.as_mut().unwrap().red = false;
-        if new_insertion {
-            self.size += 1;
-        }
-    }
-
-    /// Returns the number of nodes currently in the MemTable
+    /// Returns the number of key-value pairs currently stored in the MemTable.
     pub fn size(&self) -> usize {
-        self.size
+        self.nodes.len()
     }
 
-    /// Returns an iterator
+    /// Returns an iterator of key-value pairs over the given range of keys.
     pub fn scan(&self, range: RangeInclusive<K>) -> MemTableIter<'_, K, V> {
         todo!()
     }
-}
 
-impl<K: Ord, V> Node<K, V> {
-    /// Creates a new red Node with the given key and value and no children.
-    fn new(key: K, value: V) -> Self {
-        Self {
+    /// Creates a new node in the memtable.
+    ///
+    /// Returns an error if this would make the memtable exceed capacity.
+    fn make_node(&mut self, key: K, value: V) -> Result<usize, DBError> {
+        if self.size() >= self.nodes.capacity() {
+            return Err(DBError::MemTableFull);
+        }
+
+        let node = Node {
             key,
             value,
-            children: [None, None],
+            link: [NULL, NULL],
             red: true,
-        }
+        };
+        self.nodes.push(node);
+        Ok(self.nodes.len() - 1)
     }
 
-    /// Creates a new red Node with the given key and value and no children,
-    /// and stores in in the heap.
-    fn boxed(key: K, value: V) -> Box<Self> {
-        Box::new(Self::new(key, value))
-    }
-
-    /// Returns true iff node exists and is colored red.
-    fn is_red(link: &Link<K, V>) -> bool {
-        link.as_ref().is_some_and(|node| node.red)
-    }
-
-    fn rot_right(mut self: Box<Self>) -> Box<Self> {
-        let mut child = self.children[LEFT].take().unwrap();
-        self.children[LEFT] = child.children[RIGHT].take();
-        child.children[RIGHT] = Some(self);
-
-        child
-    }
-    fn rot_left(mut self: Box<Self>) -> Box<Self> {
-        let mut child = self.children[RIGHT].take().unwrap();
-        self.children[RIGHT] = child.children[LEFT].take();
-        child.children[LEFT] = Some(self);
-
-        child
-    }
-    fn swap_colors(node1: &mut Box<Self>, node2: &mut Box<Self>) {
-        mem::swap(&mut node1.red, &mut node2.red);
-    }
-
+    /// Access a given node immutably.
     ///
-    /// from https://www.geeksforgeeks.org/dsa/left-leaning-red-black-tree-insertion/
-    fn llrb_put(root: Link<K, V>, key: K, value: V) -> (Link<K, V>, bool) {
-        if root.is_none() {
-            return (Some(Self::boxed(key, value)), true);
-        }
-        let mut root = root.unwrap();
-        let mut inserted_new = false;
-
-        if key < root.key {
-            (root.children[LEFT], inserted_new) =
-                Self::llrb_put(root.children[LEFT].take(), key, value);
-        } else if key > root.key {
-            (root.children[RIGHT], inserted_new) =
-                Self::llrb_put(root.children[RIGHT].take(), key, value);
-        } else {
-            root.value = value;
-            return (Some(root), false);
-        }
-
-        if Node::is_red(&root.children[RIGHT]) && !Node::is_red(&root.children[LEFT]) {
-            root = Self::rot_left(root);
-            let mut left = root.children[LEFT].take().unwrap();
-            Self::swap_colors(&mut root, &mut left);
-            root.children[LEFT] = Some(left);
-        }
-
-        if Node::is_red(&root.children[LEFT])
-            && Node::is_red(&root.children[LEFT].as_ref().unwrap().children[LEFT])
-        {
-            root = Self::rot_right(root);
-
-            let mut right = root.children[RIGHT].take().unwrap();
-            Self::swap_colors(&mut root, &mut right);
-            root.children[RIGHT] = Some(right);
-        }
-
-        if Node::is_red(&root.children[RIGHT]) && Node::is_red(&root.children[LEFT]) {
-            root.red = !root.red;
-
-            root.children[LEFT].as_mut().unwrap().red = false;
-            root.children[RIGHT].as_mut().unwrap().red = false;
-        }
-
-        (Some(root), inserted_new)
+    /// Panics if `node` doesn't point to a valid node in the MemTable.
+    fn node(&self, node: usize) -> &Node<K, V> {
+        &self.nodes[node]
     }
 
-    /// Performs a single tree rotation in the given direction
-    fn single_rotation(mut root: Link<K, V>, dir: usize) -> Link<K, V> {
-        let mut save = root.as_mut().unwrap().children[1 - dir].take();
+    /// Access a given node mutably.
+    ///
+    /// Panics if `node` doesn't point to a valid node in the MemTable.
+    fn node_mut(&mut self, node: usize) -> &mut Node<K, V> {
+        &mut self.nodes[node]
+    }
 
-        root.as_mut().unwrap().children[1 - dir] = save.as_mut().unwrap().children[dir].take();
-        save.as_mut().unwrap().children[dir] = root;
+    /// Access a given node immutably. If `node==NULL`, accesses `other` instead.
+    fn node_or<'a: 'b, 'b>(&'a self, node: usize, other: &'b Node<K, V>) -> &'b Node<K, V> {
+        if node == NULL { other } else { self.node(node) }
+    }
+
+    /// Access a given node mutably. If `node==NULL`, accesses `other` instead.
+    fn node_mut_or<'a: 'b, 'b>(
+        &'a mut self,
+        node: usize,
+        other: &'b mut Node<K, V>,
+    ) -> &'b mut Node<K, V> {
+        if node == NULL {
+            other
+        } else {
+            self.node_mut(node)
+        }
+    }
+
+    /// Returns true iff `node` points to a valid red node in the MemTable.
+    fn is_red(&self, node: usize) -> bool {
+        node != NULL && self.node(node).red
+    }
+
+    /// Performs a single rotation in the given direction to the tree rooted at `node`.
+    ///
+    /// Panics if `node` doesn't point to a valid node in the MemTable
+    fn single_rotation(&mut self, node: usize, dir: usize) -> usize {
+        let save = self.node(node).link[1 - dir];
+
+        self.node_mut(node).link[1 - dir] = self.node(save).link[dir];
+        self.node_mut(save).link[dir] = node;
+
+        self.node_mut(node).red = true;
+        self.node_mut(save).red = false;
 
         save
     }
 
-    /// Performs a double tree rotation in the given direction
-    fn double_rotation(mut root: Link<K, V>, dir: usize) -> Link<K, V> {
-        root.as_mut().unwrap().children[1 - dir] =
-            Node::single_rotation(root.as_mut().unwrap().children[1 - dir].take(), 1 - dir);
-
-        Node::single_rotation(root, dir)
-    }
-
-    /// # Warning! This function is for testing only.
+    /// Performs a single rotation in the given direction to the tree rooted at `node`.
     ///
-    /// Checks that the tree rooted at this node is a valid binary tree and satisfies the Red-Black conditions.
-    ///
-    /// If the tree is valid, returns the black height of the tree.
-    fn validate_red_black(root: &Link<K, V>) -> Result<usize, &'static str> {
-        if let Some(root) = root {
-            let left = &root.children[LEFT];
-            let right = &root.children[RIGHT];
+    /// Panics if `node` doesn't point to a valid node in the MemTable.
+    fn double_rotation(&mut self, root: usize, dir: usize) -> usize {
+        self.node_mut(root).link[1 - dir] =
+            self.single_rotation(self.node(root).link[1 - dir], 1 - dir);
 
-            if root.red && (Node::is_red(left) || Node::is_red(right)) {
-                return Err("Red violation");
-            }
-
-            let left_height = Node::validate_red_black(left)?;
-            let right_height = Node::validate_red_black(right)?;
-
-            if left.as_ref().is_some_and(|l| l.key >= root.key)
-                || right.as_ref().is_some_and(|r| r.key <= root.key)
-            {
-                return Err("Binary tree violation");
-            }
-
-            if left_height != right_height {
-                return Err("Black violation");
-            }
-
-            if root.red {
-                Ok(left_height)
-            } else {
-                Ok(left_height + 1)
-            }
-        } else {
-            Ok(1)
-        }
-    }
-
-    /// Inserts or updates a key value pair.
-    ///
-    /// Returns true iff a new node was created.
-    fn put_unbalanced(root: &mut Link<K, V>, key: K, value: V) -> bool {
-        if let Some(root) = root {
-            match key.cmp(&root.key) {
-                Ordering::Less => Node::put_unbalanced(&mut root.children[LEFT], key, value),
-                Ordering::Equal => {
-                    root.value = value;
-                    false
-                }
-                Ordering::Greater => Node::put_unbalanced(&mut root.children[RIGHT], key, value),
-            }
-        } else {
-            *root = Some(Self::boxed(key, value));
-            true
-        }
+        self.single_rotation(root, dir)
     }
 }
 
-pub struct MemTableIter<'a, K: Ord, V> {
-    stack: Vec<&'a Node<K, V>>,
+pub struct MemTableIter<'a, K: Ord + Clone + Default, V: Clone + Default> {
+    memtable: &'a MemTable<K, V>,
+    stack: Vec<usize>,
 }
-impl<'a, K: Ord, V> Iterator for MemTableIter<'a, K, V> {
+impl<'a, K: Ord + Clone + Default, V: Clone + Default> Iterator for MemTableIter<'a, K, V> {
     type Item = (u64, u64);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -352,55 +247,174 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_insert_in_order() {
-        let mut memtable = MemTable::new();
+    fn test_small() -> Result<(), DBError> {
+        let mut memtable = MemTable::new(5)?;
+
+        // Insert one node
+        memtable.put(0, 0)?;
+        dbg!(&memtable);
+
+        // Update node
+        memtable.put(0, 1)?;
+        dbg!(&memtable);
+
+        // Insert three nodes
+        for i in 0..3 {
+            memtable.put(5 + i, 10 + i)?;
+            dbg!(&memtable);
+        }
+
+        // Check memtable has 4 nodes and is a valid red black tree
+        assert_eq!(memtable.size(), 4);
+        validate_red_black(&memtable, memtable.root).unwrap();
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_insert_in_order() -> Result<(), DBError> {
+        let mut memtable = MemTable::new(100)?;
+
+        // Insert 100 nodes
         for i in 0..100 {
             assert_eq!(memtable.size(), i);
-            memtable.llrb_put(i, i * 10);
-            Node::validate_red_black(&memtable.root).unwrap();
+            memtable.put(i, i * 10)?;
             assert_eq!(memtable.size(), i + 1);
+            validate_red_black(&memtable, memtable.root).unwrap();
         }
+
+        // Check correct values stored
         for i in 0..100 {
             assert_eq!(memtable.get(i), Some(i * 10));
         }
+
+        // Check get doesn't return when at wrong keys
         for i in 200..300 {
             assert_eq!(memtable.get(i), None);
         }
+
+        Ok(())
     }
 
     #[test]
-    fn test_insert_in_reverse() {
-        let mut memtable = MemTable::new();
+    fn test_insert_in_reverse() -> Result<(), DBError> {
+        let mut memtable = MemTable::new(100)?;
+
+        // Insert 100 nodes
         for i in (0..100).rev() {
-            memtable.llrb_put(i, i * 10);
-            Node::validate_red_black(&memtable.root).unwrap();
+            memtable.put(i, i * 10)?;
+            validate_red_black(&memtable, memtable.root).unwrap();
         }
+
+        // Check correct values stored
         for i in 0..100 {
             assert_eq!(memtable.get(i), Some(i * 10));
         }
+
+        // Check get doesn't return when at wrong keys
         for i in 200..300 {
             assert_eq!(memtable.get(i), None);
         }
+
+        Ok(())
     }
 
     #[test]
-    fn test_update() {
-        let mut memtable = MemTable::new();
+    fn test_update() -> Result<(), DBError> {
+        let mut memtable = MemTable::new(100)?;
+
+        // Insert 100 nodes
         for i in 0..100 {
-            memtable.llrb_put(i, i * 10);
+            memtable.put(i, i * 10)?;
         }
         assert_eq!(memtable.size(), 100);
 
+        // Update the value of every other node
         for i in 0..100 {
             if i % 2 == 0 {
-                memtable.llrb_put(i, i * 20);
+                memtable.put(i, i * 20)?;
+                validate_red_black(&memtable, memtable.root).unwrap();
             }
         }
+
+        // Check all keys map to correct value
         for i in 0..100 {
             if i % 2 == 0 {
                 assert_eq!(memtable.get(i), Some(i * 20));
             } else {
                 assert_eq!(memtable.get(i), Some(i * 10));
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_max_size() -> Result<(), DBError> {
+        let mut memtable = MemTable::new(100)?;
+
+        // Fill memtable
+        for i in 0..100 {
+            memtable.put(i, i * 10)?;
+        }
+        assert_eq!(memtable.size(), 100);
+
+        // Updating existing node
+        assert_eq!(memtable.put(20, 200), Ok(()));
+
+        // Try to insert node when full produces error
+        assert_eq!(memtable.put(150, 200), Err(DBError::MemTableFull));
+
+        // Check correct values still stored
+        for i in 0..100 {
+            assert_eq!(memtable.get(i), Some(i * 10));
+        }
+
+        validate_red_black(&memtable, memtable.root).unwrap();
+
+        Ok(())
+    }
+
+    /// Checks that the tree rooted at `root` in the MemTable is a valid binary tree and satisfies the Red-Black conditions.
+    ///
+    /// If the tree is valid, returns the black height of the tree.
+    ///
+    /// Based on the implementation of `jsw_rb_assert` from [here](https://web.archive.org/web/20190207151651/http://www.eternallyconfuzzled.com/tuts/datastructures/jsw_tut_rbtree.aspx).
+    fn validate_red_black<K: Ord + Clone + Default, V: Clone + Default>(
+        memtable: &MemTable<K, V>,
+        root: usize,
+    ) -> Result<usize, ()> {
+        if root == NULL {
+            Ok(1)
+        } else {
+            let root = memtable.node(root);
+            let left = root.link[LEFT];
+            let right = root.link[RIGHT];
+
+            if root.red && (memtable.is_red(left) || memtable.is_red(right)) {
+                // Red violation
+                return Err(());
+            }
+
+            let left_bh = validate_red_black(&memtable, left)?;
+            let right_bh = validate_red_black(&memtable, right)?;
+
+            if (left != NULL && memtable.node(left).key >= root.key)
+                || (right != NULL && memtable.node(right).key <= root.key)
+            {
+                // Binary tree violation
+                return Err(());
+            }
+
+            if left_bh != right_bh {
+                // Black violation
+                return Err(());
+            }
+
+            if root.red {
+                Ok(left_bh)
+            } else {
+                Ok(left_bh + 1)
             }
         }
     }
