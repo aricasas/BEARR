@@ -4,3 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+
+[[bin]]
+name = "tests"
+path = "src/tests.rs"
+
+[[bin]]
+name = "experiments"
+path = "src/experiments.rs"
