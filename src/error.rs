@@ -4,6 +4,7 @@ use std::{error::Error, fmt::Display};
 pub enum DBError {
     OOM,
     MemTableFull,
+    InvalidScanRange,
 }
 
 impl Display for DBError {
@@ -11,6 +12,7 @@ impl Display for DBError {
         match self {
             DBError::OOM => write!(f, "out of memory"),
             DBError::MemTableFull => write!(f, "cannot insert new node, memtable is full"),
+            DBError::InvalidScanRange => write!(f, "invalid scan range"),
         }
     }
 }
