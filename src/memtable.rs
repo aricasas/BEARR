@@ -194,6 +194,7 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
     /// Tries to access a given node immutably.
     ///
     /// If the node is not in the memtable, returns None.
+    #[inline(always)]
     fn try_node(&self, node: usize) -> Option<&Node<K, V>> {
         self.nodes.get(node)
     }
@@ -201,6 +202,7 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
     /// Tries to access a given node mutably.
     ///
     /// If the node is not in the memtable, returns None.
+    #[inline(always)]
     fn try_node_mut(&mut self, node: usize) -> Option<&mut Node<K, V>> {
         self.nodes.get_mut(node)
     }
@@ -208,6 +210,7 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
     /// Access a given node immutably.
     ///
     /// Panics if `node` doesn't point to a valid node in the `MemTable`.
+    #[inline(always)]
     fn node(&self, node: usize) -> &Node<K, V> {
         &self.nodes[node]
     }
@@ -215,11 +218,13 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
     /// Access a given node mutably.
     ///
     /// Panics if `node` doesn't point to a valid node in the `MemTable`.
+    #[inline(always)]
     fn node_mut(&mut self, node: usize) -> &mut Node<K, V> {
         &mut self.nodes[node]
     }
 
     /// Returns true iff `node` points to a valid red node in the `MemTable`.
+    #[inline(always)]
     fn is_red(&self, node: usize) -> bool {
         self.try_node(node).is_some_and(|node| node.red)
     }
@@ -227,6 +232,7 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
     /// Performs a single rotation in the given direction to the tree rooted at `node`.
     ///
     /// Panics if `node` doesn't point to a valid node in the `MemTable`
+    #[inline(always)]
     fn single_rotation(&mut self, node: usize, dir: usize) -> usize {
         let save = self.node(node).link[1 - dir];
 
@@ -242,6 +248,7 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
     /// Performs a single rotation in the given direction to the tree rooted at `node`.
     ///
     /// Panics if `node` doesn't point to a valid node in the `MemTable`.
+    #[inline(always)]
     fn double_rotation(&mut self, root: usize, dir: usize) -> usize {
         self.node_mut(root).link[1 - dir] =
             self.single_rotation(self.node(root).link[1 - dir], 1 - dir);
@@ -268,7 +275,8 @@ impl<'a, K: Ord + Clone + Default, V: Clone + Default> Iterator for MemTableIter
 }
 
 impl<'a, K: Ord + Clone + Default, V: Clone + Default> MemTableIter<'a, K, V> {
-    /// Create an iterator that returns key-value pairs from `memtable` with keys in the given range, sorted increasing by key.
+    /// Create an iterator that returns key-value pairs from `memtable` with keys in the given
+    /// range, sorted increasing by key.
     ///
     /// Returns `DBError::OOM` if not enough memory for the stack
     fn new(memtable: &'a MemTable<K, V>, range: RangeInclusive<K>) -> Result<Self, DBError> {
@@ -324,8 +332,8 @@ impl<'a, K: Ord + Clone + Default, V: Clone + Default> MemTableIter<'a, K, V> {
             }
         }
 
-        // If didn't find key directly, go in order starting at the last node seen until we find a key in the range
-        // or until we run out of nodes in the range
+        // If didn't find key directly, go in order starting at the last node seen
+        // until we find a key in the range or we run out of nodes in the range
         while self
             .stack
             .last()
@@ -557,6 +565,11 @@ mod tests {
 
     #[test]
     fn test_full_capacity() -> Result<(), DBError> {
+        // Test zero capacity
+        let mut memtable: MemTable<u64, u64> = MemTable::new(0)?;
+        assert_eq!(memtable.put(0, 0), Err(DBError::MemTableFull));
+
+        // Test 100 capacity
         let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
 
         // Fill memtable
@@ -568,7 +581,7 @@ mod tests {
         // Updating existing node
         assert_eq!(memtable.put(20, 200), Ok(()));
 
-        // Try to insert node when full produces error
+        // Try to insert new node when full produces error
         assert_eq!(memtable.put(150, 200), Err(DBError::MemTableFull));
 
         // Check correct values still stored
@@ -653,7 +666,8 @@ mod tests {
         Ok(())
     }
 
-    /// Checks that the tree rooted at `root` in the `MemTable` is a valid binary tree and satisfies the Red-Black conditions.
+    /// Checks that the tree rooted at `root` in the `MemTable` is a valid binary tree
+    /// and satisfies the Red-Black conditions.
     ///
     /// If the tree is valid, returns the black height of the tree.
     ///
