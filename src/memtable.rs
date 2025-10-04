@@ -37,7 +37,7 @@ const RIGHT: usize = 1;
 impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
     /// Creates a new empty `MemTable`.
     ///
-    /// Allocates enough space to hold `memtable_size` key-value pairs.
+    /// Allocates enough space to hold `capacity` key-value pairs.
     /// If allocation fails, returns `DBError::OOM`.
     pub fn new(capacity: usize) -> Result<Self, DBError> {
         let mut nodes = Vec::new();
@@ -52,8 +52,7 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
     pub fn get(&self, key: K) -> Option<V> {
         let mut curr = self.root;
 
-        while curr != NULL {
-            let node = self.node(curr);
+        while let Some(node) = self.try_node(curr) {
             match key.cmp(&node.key) {
                 Ordering::Less => curr = node.link[LEFT],
                 Ordering::Greater => curr = node.link[RIGHT],
@@ -73,7 +72,7 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
     ///
     /// Based on the Top-Down `jsw_insert` implementation from [here](https://web.archive.org/web/20190207151651/http://www.eternallyconfuzzled.com/tuts/datastructures/jsw_tut_rbtree.aspx).
     pub fn put(&mut self, key: K, value: V) -> Result<(), DBError> {
-        if self.root == NULL {
+        if self.size() == 0 {
             self.root = self.make_node(key, value)?;
             self.node_mut(self.root).red = false;
             return Ok(());
@@ -99,12 +98,7 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
 
         // Traverse tree downwards in one pass
         loop {
-            if q == NULL {
-                // Insert new node as leaf
-                q = self.make_node(key.clone(), value.clone())?;
-                self.node_mut(p).link[dir] = q;
-            } else {
-                let q_node = self.node(q);
+            if let Some(q_node) = self.try_node(q) {
                 let left = q_node.link[LEFT];
                 let right = q_node.link[RIGHT];
 
@@ -114,22 +108,35 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
                     self.node_mut(left).red = false;
                     self.node_mut(right).red = false;
                 }
+            } else {
+                // Insert new node as leaf
+                q = self.make_node(key.clone(), value.clone())?;
+                self.node_mut(p).link[dir] = q;
             }
 
-            if self.is_red(q) && self.is_red(p) {
+            let q_node = self.node(q);
+
+            if let Some(p_node) = self.try_node(p)
+                && q_node.red
+                && p_node.red
+            {
                 // Red violation
 
                 // dir2 is RIGHT iff g is right child of t
-                let dir2 = usize::from(self.node_or(t, &head).link[RIGHT] == g);
+                let dir2 = usize::from(self.try_node(t).unwrap_or(&head).link[RIGHT] == g);
 
-                if q == self.node(p).link[last] {
-                    self.node_mut_or(t, &mut head).link[dir2] = self.single_rotation(g, 1 - last);
+                if q == p_node.link[last] {
+                    self.try_node_mut(t).unwrap_or(&mut head).link[dir2] =
+                        self.single_rotation(g, 1 - last);
                 } else {
-                    self.node_mut_or(t, &mut head).link[dir2] = self.double_rotation(g, 1 - last);
+                    self.try_node_mut(t).unwrap_or(&mut head).link[dir2] =
+                        self.double_rotation(g, 1 - last);
                 }
             }
 
-            if self.node(q).key == key {
+            let q_node = self.node(q);
+
+            if q_node.key == key {
                 // Found key
                 self.node_mut(q).value = value;
                 break;
@@ -137,13 +144,13 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
 
             // Update traversal directions
             last = dir;
-            dir = usize::from(self.node(q).key < key);
+            dir = usize::from(q_node.key < key);
 
             // Update cursors
             t = g;
             g = p;
             p = q;
-            q = self.node(q).link[dir];
+            q = q_node.link[dir];
         }
 
         self.root = head.link[1];
@@ -184,6 +191,20 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
         Ok(self.nodes.len() - 1)
     }
 
+    /// Tries to access a given node immutably.
+    ///
+    /// If the node is not in the memtable, returns None.
+    fn try_node(&self, node: usize) -> Option<&Node<K, V>> {
+        self.nodes.get(node)
+    }
+
+    /// Tries to access a given node mutably.
+    ///
+    /// If the node is not in the memtable, returns None.
+    fn try_node_mut(&mut self, node: usize) -> Option<&mut Node<K, V>> {
+        self.nodes.get_mut(node)
+    }
+
     /// Access a given node immutably.
     ///
     /// Panics if `node` doesn't point to a valid node in the `MemTable`.
@@ -198,27 +219,9 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
         &mut self.nodes[node]
     }
 
-    /// Access a given node immutably. If `node==NULL`, accesses `other` instead.
-    fn node_or<'a: 'b, 'b>(&'a self, node: usize, other: &'b Node<K, V>) -> &'b Node<K, V> {
-        if node == NULL { other } else { self.node(node) }
-    }
-
-    /// Access a given node mutably. If `node==NULL`, accesses `other` instead.
-    fn node_mut_or<'a: 'b, 'b>(
-        &'a mut self,
-        node: usize,
-        other: &'b mut Node<K, V>,
-    ) -> &'b mut Node<K, V> {
-        if node == NULL {
-            other
-        } else {
-            self.node_mut(node)
-        }
-    }
-
     /// Returns true iff `node` points to a valid red node in the `MemTable`.
     fn is_red(&self, node: usize) -> bool {
-        node != NULL && self.node(node).red
+        self.try_node(node).is_some_and(|node| node.red)
     }
 
     /// Performs a single rotation in the given direction to the tree rooted at `node`.
@@ -253,14 +256,14 @@ pub struct MemTableIter<'a, K: Ord + Clone + Default, V: Clone + Default> {
     /// A stack of ancestors to the current node.
     /// The top of the stack is the current node. If the stack is empty, the iterator is done.
     stack: Vec<usize>,
-    /// The end of the range we iterate over.
-    end: K,
+    /// The range of keys we iterate over.
+    range: RangeInclusive<K>,
 }
 impl<'a, K: Ord + Clone + Default, V: Clone + Default> Iterator for MemTableIter<'a, K, V> {
-    type Item = Result<(&'a K, &'a V), DBError>;
+    type Item = (&'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.in_order_iterate().transpose()
+        self.in_order_iterate()
     }
 }
 
@@ -273,89 +276,110 @@ impl<'a, K: Ord + Clone + Default, V: Clone + Default> MemTableIter<'a, K, V> {
             return Err(DBError::InvalidScanRange);
         }
 
-        let key = range.start();
-        let mut curr = memtable.root;
+        if memtable.size() == 0 {
+            return Ok(MemTableIter {
+                memtable,
+                stack: Vec::new(),
+                range,
+            });
+        }
+
+        // https://en.wikipedia.org/wiki/Red%E2%80%93black_tree#Proof_of_bounds
+        let tree_height_bound = 2 * usize::ilog2(memtable.size() + 1) as usize;
         let mut stack = Vec::new();
 
+        // Reserve all potential space now, so we don't worry about OOM conditions when iterating
+        // Only about ~300 bytes for n=1_000_000
+        stack
+            .try_reserve_exact(tree_height_bound)
+            .map_err(|_| DBError::OOM)?;
+
+        let mut iter = Self {
+            memtable,
+            stack,
+            range,
+        };
+        iter.go_to_start();
+
+        Ok(iter)
+    }
+
+    /// Searches tree for first node with key in the given range, and sets up stack
+    /// so that node is on top.
+    ///
+    /// Assumes tree is not empty
+    fn go_to_start(&mut self) {
+        let mut curr = self.memtable.root;
+
         // Search for the key in the tree while storing visited nodes on stack
-        while curr != NULL {
-            stack.try_reserve(1).map_err(|_| DBError::OOM)?;
-            stack.push(curr);
+        while let Some(curr_node) = self.memtable.try_node(curr) {
+            self.stack.push(curr);
 
-            let node = memtable.node(curr);
-
-            match key.cmp(&node.key) {
-                Ordering::Less => curr = node.link[LEFT],
-                Ordering::Greater => curr = node.link[RIGHT],
+            match self.range.start().cmp(&curr_node.key) {
+                Ordering::Less => curr = curr_node.link[LEFT],
+                Ordering::Greater => curr = curr_node.link[RIGHT],
                 Ordering::Equal => {
-                    return Ok(MemTableIter {
-                        memtable,
-                        stack,
-                        end: range.end().clone(),
-                    });
+                    return;
                 }
             }
         }
 
-        Ok(MemTableIter {
-            memtable,
-            stack: Vec::new(),
-            end: range.end().clone(),
-        })
+        // If didn't find key directly, go in order starting at the last node seen until we find a key in the range
+        // or until we run out of nodes in the range
+        while self
+            .stack
+            .last()
+            .is_some_and(|&curr| self.memtable.node(curr).key < *self.range.start())
+        {
+            self.in_order_iterate();
+        }
     }
 
     /// Return key-value pair of node at the top of the stack,
     /// and move stack so the new top is the next inorder node of the memtable.
-    ///
-    /// Returns `DBError::OOM` if not enough memory for the stack
-    fn in_order_iterate(&mut self) -> Result<Option<(&'a K, &'a V)>, DBError> {
+    fn in_order_iterate(&mut self) -> Option<(&'a K, &'a V)> {
         if let Some(&curr) = self.stack.last() {
             let curr_node = self.memtable.node(curr);
 
             // key-value pair we will return
             let kv_pair = (&curr_node.key, &curr_node.value);
 
-            if curr_node.key > self.end {
+            if curr_node.key > *self.range.end() {
                 self.stack = Vec::new();
-                return Ok(None);
+                return None;
             }
 
             let right = curr_node.link[RIGHT];
 
-            if right == NULL {
+            if let Some(right_node) = self.memtable.try_node(right) {
+                // If curr has right child, go to its leftmost child
+                self.stack.push(right);
+                self.go_to_leftmost_child(right_node);
+                Some(kv_pair)
+            } else {
                 // If curr has no right child, go to the closest rightwards ancestor
                 self.go_to_rightwards_ancestor();
-                Ok(Some(kv_pair))
-            } else {
-                // If curr has right child, go to its leftmost child
-                self.go_to_leftmost_child(right)?;
-                Ok(Some(kv_pair))
+                Some(kv_pair)
             }
         } else {
-            Ok(None)
+            None
         }
     }
 
     /// Appends to the stack until we reach the leftmost child of `node`.
     /// This child could be `node` itself.
-    ///
-    /// Returns `DBError::OOM` if not enough memory for the stack
-    fn go_to_leftmost_child(&mut self, node: usize) -> Result<(), DBError> {
-        let mut curr = node;
-        loop {
-            self.stack.try_reserve(1).map_err(|_| DBError::OOM)?;
-            self.stack.push(curr);
+    fn go_to_leftmost_child(&mut self, node: &Node<K, V>) {
+        let mut left = node.link[LEFT];
 
-            // Traverse left in the tree
-            curr = self.memtable.node(curr).link[LEFT];
+        // Traverse left in the tree
+        while let Some(left_child) = self.memtable.try_node(left) {
+            self.stack.push(left);
 
-            if curr == NULL {
-                return Ok(());
-            }
+            left = left_child.link[LEFT];
         }
     }
 
-    /// Pops the stack until we get to a node that is further right than us.
+    /// Pops the stack until we get to a node that is further right than the current top of the stack.
     /// If there is no ancestor further right than us, pops the stack until it's empty.
     ///
     /// Panics if stack is empty.
@@ -383,6 +407,10 @@ mod tests {
     fn test_small() -> Result<(), DBError> {
         let mut memtable: MemTable<u64, u64> = MemTable::new(5)?;
 
+        // Test get and scan before inserting nodes
+        assert_eq!(memtable.get(50), None);
+        assert_eq!(memtable.scan(0..=100)?.next(), None);
+
         // Insert one node
         memtable.put(0, 0)?;
         dbg!(&memtable);
@@ -396,6 +424,17 @@ mod tests {
             memtable.put(5 + i, 10 + i)?;
             dbg!(&memtable);
         }
+
+        // Scan three last keys
+        let mut scan = memtable.scan(3..=10)?;
+        assert_eq!(scan.next(), Some((&5, &10)));
+        assert_eq!(scan.next(), Some((&6, &11)));
+        assert_eq!(scan.next(), Some((&7, &12)));
+        assert_eq!(scan.next(), None);
+
+        // Scan range in between existing keys
+        let mut scan = memtable.scan(3..=4)?;
+        assert_eq!(scan.next(), None);
 
         // Check memtable has 4 nodes and is a valid red black tree
         assert_eq!(memtable.size(), 4);
@@ -416,18 +455,24 @@ mod tests {
             memtable.put(i, i * 20)?;
         }
 
-        for i in 0..1_000_000 {
-            assert_eq!(memtable.get(i), Some(i * 10));
-        }
-        for i in 1_000_000..3_000_000 {
-            assert_eq!(memtable.get(i), Some(i * 20));
-        }
-        for i in 3_000_000..4_000_000 {
-            assert_eq!(memtable.get(i), Some(i * 10));
-        }
-
         memtable.put(10_000_000, 12345)?;
         assert_eq!(memtable.get(10_000_000), Some(12345));
+
+        for (i, pair) in memtable.scan(u64::MIN..=u64::MAX)?.enumerate() {
+            let (&k, &v) = pair;
+
+            if (0..1_000_000).contains(&i) || (3_000_000..4_000_000).contains(&i) {
+                assert_eq!(v, k * 10)
+            } else if (1_000_000..3_000_000).contains(&i) {
+                assert_eq!(v, k * 20)
+            } else {
+                assert_eq!(k, 10_000_000);
+                assert_eq!(v, 12345);
+            }
+        }
+
+        assert_eq!(memtable.size(), 4_000_001);
+        assert_eq!(memtable.scan(u64::MIN..=u64::MAX)?.count(), 4_000_001);
 
         Ok(())
     }
@@ -556,7 +601,7 @@ mod tests {
                 }
 
                 for i in lower..=upper.min(99) {
-                    let (&k, &v) = scan.next().unwrap()?;
+                    let (&k, &v) = scan.next().unwrap();
 
                     assert_eq!(k, i);
                     assert_eq!(v, i * 10);
@@ -617,10 +662,7 @@ mod tests {
         memtable: &MemTable<K, V>,
         root: usize,
     ) -> Result<usize, ()> {
-        if root == NULL {
-            Ok(1)
-        } else {
-            let root = memtable.node(root);
+        if let Some(root) = memtable.try_node(root) {
             let left = root.link[LEFT];
             let right = root.link[RIGHT];
 
@@ -632,8 +674,8 @@ mod tests {
             let left_bh = validate_red_black(memtable, left)?;
             let right_bh = validate_red_black(memtable, right)?;
 
-            if (left != NULL && memtable.node(left).key >= root.key)
-                || (right != NULL && memtable.node(right).key <= root.key)
+            if memtable.try_node(left).is_some_and(|l| l.key >= root.key)
+                || memtable.try_node(right).is_some_and(|r| r.key <= root.key)
             {
                 // Binary tree violation
                 return Err(());
@@ -649,6 +691,8 @@ mod tests {
             } else {
                 Ok(left_bh + 1)
             }
+        } else {
+            Ok(1)
         }
     }
 }
