@@ -566,33 +566,35 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn test_full_capacity_zero() {
-        if let Ok(mut memtable) = MemTable::new(0) {
-            memtable.put(0, 0);
-        }
+    fn test_full_capacity_zero() -> Result<(), DBError> {
+        let mut memtable = MemTable::new(0)?;
+
+        let result = std::panic::catch_unwind(move || memtable.put(0, 0));
+
+        assert!(result.is_err());
+        Ok(())
     }
 
     #[test]
-    #[should_panic]
-    fn test_full_capacity() {
-        if let Ok(mut memtable) = MemTable::new(100) {
-            // Fill memtable
-            for i in 0..100 {
-                memtable.put(i, i * 10);
-            }
+    fn test_full_capacity() -> Result<(), DBError> {
+        // Test 100 capacity
+        let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
 
-            if memtable.size() != 100 {
-                return; // No panic means error
-            }
-
-            if validate_red_black(&memtable, memtable.root).is_err() {
-                return; // No panic means error
-            }
-
-            // Try to insert new node when full should panic
-            memtable.put(150, 200);
+        // Fill memtable
+        for i in 0..100 {
+            memtable.put(i, i * 10);
         }
+        assert_eq!(memtable.size(), 100);
+
+        // Updating existing node doesn't panic
+        memtable.put(20, 200);
+
+        validate_red_black(&memtable, memtable.root).unwrap();
+
+        // Try to insert new node when full produces error
+        let result = std::panic::catch_unwind(move || memtable.put(150, 200));
+        assert!(result.is_err());
+        Ok(())
     }
 
     #[test]
