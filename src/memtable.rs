@@ -48,6 +48,15 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
         Ok(Self { root: NULL, nodes })
     }
 
+    /// Removes all key-value pairs stored in the `MemTable`.
+    ///
+    /// Doesn't deallocate the space, and doesn't change the max capacity.
+    /// This method just removes the current values so the allocated `MemTable` can be reused.
+    pub fn clear(&mut self) {
+        self.nodes.clear();
+        self.root = NULL;
+    }
+
     /// Searches `MemTable` for key-value pair with given key and returns the value associated, if it exists.
     pub fn get(&self, key: K) -> Option<V> {
         let mut curr = self.root;
@@ -662,6 +671,30 @@ mod tests {
             memtable.scan(0..=-1),
             Err(DBError::InvalidScanRange)
         ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_clear() -> Result<(), DBError> {
+        let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
+
+        for i in 0..50 {
+            memtable.put(i, i)?;
+        }
+
+        assert_eq!(memtable.size(), 50);
+
+        memtable.clear();
+
+        assert_eq!(memtable.size(), 0);
+
+        for i in 0..100 {
+            memtable.put(i, i)?;
+        }
+        assert_eq!(memtable.size(), 100);
+
+        assert_eq!(memtable.put(150, 150), Err(DBError::MemTableFull));
 
         Ok(())
     }
