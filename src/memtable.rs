@@ -77,14 +77,12 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
     /// If there is a pair with matching key already, it changes the value in-place.
     /// Otherwise, it inserts the new pair.
     ///
-    /// Returns `DBError::MemTableFull` if inserting would cause the Memtable to exceed capacity.
-    ///
     /// Based on the Top-Down `jsw_insert` implementation from [here](https://web.archive.org/web/20190207151651/http://www.eternallyconfuzzled.com/tuts/datastructures/jsw_tut_rbtree.aspx).
-    pub fn put(&mut self, key: K, value: V) -> Result<(), DBError> {
+    pub fn put(&mut self, key: K, value: V) {
         if self.size() == 0 {
-            self.root = self.make_node(key, value)?;
+            self.root = self.make_node(key, value);
             self.node_mut(self.root).red = false;
-            return Ok(());
+            return;
         }
 
         // Dummy root
@@ -119,7 +117,7 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
                 }
             } else {
                 // Insert new node as leaf
-                q = self.make_node(key.clone(), value.clone())?;
+                q = self.make_node(key.clone(), value.clone());
                 self.node_mut(p).link[dir] = q;
             }
 
@@ -165,8 +163,6 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
         self.root = head.link[1];
 
         self.node_mut(self.root).red = false;
-
-        Ok(())
     }
 
     /// Returns the number of key-value pairs currently stored in `MemTable`.
@@ -182,13 +178,9 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
         MemTableIter::new(self, range)
     }
 
-    /// Creates a new node in the memtable.
-    ///
-    /// Returns `DBError::MemTableFull` if this would make the memtable exceed capacity.
-    fn make_node(&mut self, key: K, value: V) -> Result<usize, DBError> {
-        if self.size() >= self.nodes.capacity() {
-            return Err(DBError::MemTableFull);
-        }
+    /// Creates a new node in the memtable and returns its index.
+    fn make_node(&mut self, key: K, value: V) -> usize {
+        assert!(self.size() < self.nodes.capacity());
 
         let node = Node {
             key,
@@ -197,7 +189,8 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
             red: true,
         };
         self.nodes.push(node);
-        Ok(self.nodes.len() - 1)
+
+        self.nodes.len() - 1
     }
 
     /// Tries to access a given node immutably.
@@ -429,16 +422,16 @@ mod tests {
         assert_eq!(memtable.scan(0..=100)?.next(), None);
 
         // Insert one node
-        memtable.put(0, 0)?;
+        memtable.put(0, 0);
         dbg!(&memtable);
 
         // Update node
-        memtable.put(0, 1)?;
+        memtable.put(0, 1);
         dbg!(&memtable);
 
         // Insert three nodes
         for i in 0..3 {
-            memtable.put(5 + i, 10 + i)?;
+            memtable.put(5 + i, 10 + i);
             dbg!(&memtable);
         }
 
@@ -465,14 +458,14 @@ mod tests {
         let mut memtable: MemTable<u64, u64> = MemTable::new(5_000_000)?;
 
         for i in 0..4_000_000 {
-            memtable.put(i, i * 10)?;
+            memtable.put(i, i * 10);
         }
 
         for i in 1_000_000..3_000_000 {
-            memtable.put(i, i * 20)?;
+            memtable.put(i, i * 20);
         }
 
-        memtable.put(10_000_000, 12345)?;
+        memtable.put(10_000_000, 12345);
         assert_eq!(memtable.get(10_000_000), Some(12345));
 
         for (i, pair) in memtable.scan(u64::MIN..=u64::MAX)?.enumerate() {
@@ -501,7 +494,7 @@ mod tests {
         // Insert 100 nodes
         for i in 0..100 {
             assert_eq!(memtable.size(), i as usize);
-            memtable.put(i, i * 10)?;
+            memtable.put(i, i * 10);
             assert_eq!(memtable.size(), i as usize + 1);
             validate_red_black(&memtable, memtable.root).unwrap();
         }
@@ -525,7 +518,7 @@ mod tests {
 
         // Insert 100 nodes
         for i in (0..100).rev() {
-            memtable.put(i, i * 10)?;
+            memtable.put(i, i * 10);
             validate_red_black(&memtable, memtable.root).unwrap();
         }
 
@@ -548,14 +541,14 @@ mod tests {
 
         // Insert 100 nodes
         for i in 0..100 {
-            memtable.put(i, i * 10)?;
+            memtable.put(i, i * 10);
         }
         assert_eq!(memtable.size(), 100);
 
         // Update the value of every other node
         for i in 0..100 {
             if i % 2 == 0 {
-                memtable.put(i, i * 20)?;
+                memtable.put(i, i * 20);
                 validate_red_black(&memtable, memtable.root).unwrap();
             }
         }
@@ -573,34 +566,33 @@ mod tests {
     }
 
     #[test]
-    fn test_full_capacity() -> Result<(), DBError> {
-        // Test zero capacity
-        let mut memtable: MemTable<u64, u64> = MemTable::new(0)?;
-        assert_eq!(memtable.put(0, 0), Err(DBError::MemTableFull));
-
-        // Test 100 capacity
-        let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
-
-        // Fill memtable
-        for i in 0..100 {
-            memtable.put(i, i * 10)?;
+    #[should_panic]
+    fn test_full_capacity_zero() {
+        if let Ok(mut memtable) = MemTable::new(0) {
+            memtable.put(0, 0);
         }
-        assert_eq!(memtable.size(), 100);
+    }
 
-        // Updating existing node
-        assert_eq!(memtable.put(20, 200), Ok(()));
+    #[test]
+    #[should_panic]
+    fn test_full_capacity() {
+        if let Ok(mut memtable) = MemTable::new(100) {
+            // Fill memtable
+            for i in 0..100 {
+                memtable.put(i, i * 10);
+            }
 
-        // Try to insert new node when full produces error
-        assert_eq!(memtable.put(150, 200), Err(DBError::MemTableFull));
+            if memtable.size() != 100 {
+                return; // No panic means error
+            }
 
-        // Check correct values still stored
-        for i in 0..100 {
-            assert_eq!(memtable.get(i), Some(i * 10));
+            if validate_red_black(&memtable, memtable.root).is_err() {
+                return; // No panic means error
+            }
+
+            // Try to insert new node when full should panic
+            memtable.put(150, 200);
         }
-
-        validate_red_black(&memtable, memtable.root).unwrap();
-
-        Ok(())
     }
 
     #[test]
@@ -609,7 +601,7 @@ mod tests {
 
         // Insert 100 nodes
         for i in 0..100 {
-            memtable.put(i, i * 10)?;
+            memtable.put(i, i * 10);
         }
 
         // Test all possible ranges
@@ -643,7 +635,7 @@ mod tests {
 
         // Insert 100 nodes
         for i in 0..100 {
-            memtable.put(i, i as u64 * 10)?;
+            memtable.put(i, i as u64 * 10);
         }
 
         // Test several invalid scan ranges
@@ -680,7 +672,7 @@ mod tests {
         let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
 
         for i in 0..50 {
-            memtable.put(i, i)?;
+            memtable.put(i, i);
         }
 
         assert_eq!(memtable.size(), 50);
@@ -690,11 +682,9 @@ mod tests {
         assert_eq!(memtable.size(), 0);
 
         for i in 0..100 {
-            memtable.put(i, i)?;
+            memtable.put(i, i);
         }
         assert_eq!(memtable.size(), 100);
-
-        assert_eq!(memtable.put(150, 150), Err(DBError::MemTableFull));
 
         Ok(())
     }
