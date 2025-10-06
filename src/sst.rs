@@ -1,3 +1,5 @@
+#![allow(warnings)]
+
 use std::{
     ops::RangeInclusive,
     path::{Path, PathBuf},
@@ -19,7 +21,7 @@ impl SST {
         todo!()
     }
 
-    pub fn get(&self) -> Result<Option<u64>, DBError> {
+    pub fn get(&self, key: u64) -> Result<Option<u64>, DBError> {
         todo!()
     }
 
@@ -30,7 +32,7 @@ impl SST {
 
 pub struct SSTIter {}
 impl Iterator for SSTIter {
-    type Item = (u64, u64);
+    type Item = Result<(u64, u64), DBError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         todo!()
