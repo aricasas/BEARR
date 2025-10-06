@@ -47,11 +47,14 @@ impl Database {
     pub fn create(name: impl AsRef<Path>, configuration: DBConfiguration) -> Result<Self, DBError> {
         let name = name.as_ref();
         fs::create_dir(name)?;
+
         let config_file = File::create_new(name.join(CONFIG_FILENAME))?;
         serde_json::to_writer_pretty(config_file, &configuration)?;
+
         let metadata = DBMetadata { num_ssts: 0 };
         let metadata_file = File::create_new(name.join(METADATA_FILENAME))?;
         serde_json::to_writer_pretty(metadata_file, &metadata)?;
+
         Self::new(name, configuration, metadata)
     }
 
@@ -64,10 +67,13 @@ impl Database {
     /// May return other errors if creation of the memtable or SSTs fails.
     pub fn open(name: impl AsRef<Path>) -> Result<Self, DBError> {
         let name = name.as_ref();
+
         let config_file = File::open(name.join(CONFIG_FILENAME))?;
         let configuration: DBConfiguration = serde_json::from_reader(config_file)?;
+
         let metadata_file = File::open(name.join(METADATA_FILENAME))?;
         let metadata: DBMetadata = serde_json::from_reader(metadata_file)?;
+
         Self::new(name, configuration, metadata)
     }
 
@@ -80,11 +86,13 @@ impl Database {
         metadata: DBMetadata,
     ) -> Result<Self, DBError> {
         let memtable = MemTable::new(configuration.memtable_size)?;
+
         let mut ssts = Vec::with_capacity(metadata.num_ssts);
         for i in 0..metadata.num_ssts {
             let sst = SST::open(&name.join(i.to_string()))?;
             ssts.push(sst);
         }
+
         Ok(Self {
             configuration,
             name: name.to_path_buf(),
@@ -98,10 +106,9 @@ impl Database {
     ///
     /// Returns an error if flushing fails. See `Database::flush` for more info.
     pub fn put(&mut self, key: u64, value: u64) -> Result<(), DBError> {
-        self.memtable
-            .put(key, value)
-            .expect("memtable should always be below capacity before putting a value");
+        self.memtable.put(key, value);
 
+        // Ensure memtable remains below capacity for the next put
         if self.memtable.size() == self.configuration.memtable_size {
             self.flush()?;
         }
@@ -125,20 +132,26 @@ impl Database {
         if self.memtable.size() == 0 {
             return Ok(());
         }
-        let key_values: Vec<_> = self
-            .memtable
-            .scan(u64::MIN..=u64::MAX)?
-            .map(|(&k, &v)| (k, v))
-            .collect();
+
+        let mut key_values = Vec::with_capacity(self.memtable.size());
+        key_values.extend(
+            self.memtable
+                .scan(u64::MIN..=u64::MAX)?
+                .map(|(&k, &v)| (k, v)),
+        );
+
         let path = self.name.join(self.num_ssts().to_string());
         let sst = SST::create(key_values, &path)?;
+
         let metadata = DBMetadata {
             num_ssts: self.num_ssts() + 1,
         };
         let metadata_file = File::create(self.name.join(METADATA_FILENAME))?;
         serde_json::to_writer_pretty(metadata_file, &metadata)?;
+
         self.ssts.push(sst);
         self.memtable.clear();
+
         Ok(())
     }
 
@@ -171,6 +184,7 @@ impl Database {
             .scan(range.clone())?
             .map(|(&k, &v)| Ok((k, v)))
             .peekable();
+
         // Further back SSTs are newer; bring them to the front.
         let sst_scans = self
             .ssts
@@ -178,6 +192,7 @@ impl Database {
             .rev()
             .map(|sst| sst.scan(range.clone()).map(|it| it.peekable()))
             .collect::<Result<Vec<_>, _>>()?;
+
         db_scan::scan(db_scan::DBSource {
             memtable_scan,
             sst_scans,
@@ -238,6 +253,7 @@ mod tests {
         let name = &path("basic");
         clear(name);
         let mut db = Database::create(name, DBConfiguration { memtable_size: 3 })?;
+
         put_many(
             &mut db,
             &[
@@ -252,6 +268,7 @@ mod tests {
                 (84, 6),
             ],
         )?;
+
         assert_eq!(
             get_many(&db, &[3, 4, 9, 2, 5, 8, 97, 32, 84, 1, 10, 90])?,
             &[
@@ -269,10 +286,12 @@ mod tests {
                 None,
             ]
         );
+
         assert_eq!(
             db.scan(4..=84)?,
             &[(4, 1), (5, 3), (8, 5), (9, 5), (32, 3), (84, 6)]
         );
+
         Ok(())
     }
 
@@ -280,10 +299,12 @@ mod tests {
     fn test_persistence() -> Result<(), DBError> {
         let name = &path("persistence");
         clear(name);
+
         {
             let mut db = Database::create(name, DBConfiguration { memtable_size: 10 })?;
             put_many(&mut db, &[(13, 15), (14, 1), (4, 19)])?;
         }
+
         {
             let mut db = Database::open(name)?;
             assert_eq!(get_many(&db, &[13, 14, 4])?, &[Some(15), Some(1), Some(19)]);
@@ -292,8 +313,10 @@ mod tests {
             put_many(&mut db, &[(3, 1), (20, 5), (7, 15), (18, 25)])?;
             db.close().map_err(|(_, e)| e)?;
         }
+
         {
             let mut db = Database::open(name)?;
+
             assert_eq!(
                 get_many(&db, &[13, 14, 4, 1, 3, 20, 7, 18])?,
                 &[
@@ -307,9 +330,11 @@ mod tests {
                     Some(25),
                 ]
             );
+
             put_many(&mut db, &[(5, 14), (4, 15)])?;
             db.flush()?;
             put_many(&mut db, &[(6, 21), (14, 3), (20, 15), (18, 19)])?;
+
             assert_eq!(
                 get_many(&db, &[13, 14, 4, 1, 3, 20, 7, 18, 5, 6])?,
                 &[
@@ -325,11 +350,13 @@ mod tests {
                     Some(21),
                 ]
             );
+
             assert_eq!(
                 db.scan(5..=15)?,
                 &[(5, 14), (6, 21), (7, 15), (13, 15), (14, 3)]
             );
         }
+
         Ok(())
     }
 }
