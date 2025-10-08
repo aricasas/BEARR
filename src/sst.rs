@@ -108,13 +108,15 @@ pub struct SSTIter<'a> {
     buffer: Vec<(u64, u64)>,
     range: RangeInclusive<u64>,
     sst: &'a SST,
+    reader: BufReader<&'a fs::File>,
+    ended: bool,
 }
 
 impl<'a> Iterator for SSTIter<'a> {
     type Item = Result<(u64, u64), DBError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!();
+        self.go_to_next()
     }
 }
 
@@ -133,6 +135,12 @@ impl<'a> SSTIter<'a> {
         let mut item_number = 0;
         let mut reader = BufReader::with_capacity(CHUNK_SIZE, sst.opened_file.as_ref().unwrap());
         let mut found = false;
+        let mut ended = false;
+
+        /* Set the reader to the start of the file
+         * TODO: Discuss this
+         * */
+        reader.seek(io::SeekFrom::Start(0))?;
 
         /* Read SST in pages(chuck size = CHUNK_SIZE) to find the start of the range
          * save page number, item_number and buffer the contents of the page
@@ -165,11 +173,6 @@ impl<'a> SSTIter<'a> {
             }
         }
 
-        /* Reset the reader to the start of the file
-         * TODO: Discuss this
-         * */
-        reader.seek(io::SeekFrom::Start(0))?;
-
         /* TODO: handle not found ?? */
         if !found {
             return Err(DBError::IOError("Start not found".to_string()));
@@ -181,10 +184,44 @@ impl<'a> SSTIter<'a> {
             buffer,
             range,
             sst,
+            reader,
+            ended,
         };
 
         /* iter.go_to_start(); */
         Ok(iter)
+    }
+
+    fn go_to_next(&mut self) -> Option<Result<(u64, u64), DBError>> {
+        if self.ended {
+            return None;
+        }
+        let item = self.buffer[self.item_number];
+        if (item.0 < *self.range.end()) {
+            self.item_number += 1;
+            if (self.item_number >= self.buffer.len()) {
+                match bincode::deserialize_from::<_, Vec<(u64, u64)>>(&mut self.reader) {
+                    Ok(buf) => {
+                        self.item_number = 0;
+                        self.page_number += 1;
+                        self.buffer = buf;
+                    }
+                    Err(_) => {
+                        // println!(
+                        //     "Some error occured while reading the file : {}",
+                        //     e.to_string()
+                        // );
+                        // return Some(Err(DBError::IOError(e.to_string())));
+                        self.ended = true;
+                        return None;
+                    }
+                }
+            }
+
+            return Some(Ok(item));
+        } else {
+            None
+        }
     }
 }
 
@@ -286,6 +323,44 @@ mod tests {
 
     #[test]
     fn test_scan_sst() {
-        todo!()
+        let file_name = "./db/SST_Test";
+        let path = Path::new(file_name);
+        let _cleanup = TestCleanup {
+            path: path.to_path_buf(),
+        };
+
+        let sst = SST::create(
+            vec![
+                (1, 2),
+                (3, 4),
+                (5, 6),
+                (7, 8),
+                (9, 10),
+                (11, 12),
+                (13, 14),
+                (15, 16),
+            ],
+            path,
+        );
+        assert!(!sst.is_err());
+
+        let sst = SST::open(path);
+        let sst = sst.unwrap();
+
+        let mut scan = match sst.scan(2..=12) {
+            Ok(scan) => scan,
+            Err(e) => {
+                println!("error : {}", e.to_string());
+                panic!();
+            }
+        };
+
+        assert_eq!(scan.next().unwrap(), Ok((3, 4)));
+        assert_eq!(scan.next().unwrap(), Ok((5, 6)));
+        assert_eq!(scan.next().unwrap(), Ok((7, 8)));
+        assert_eq!(scan.next().unwrap(), Ok((9, 10)));
+        assert_eq!(scan.next().unwrap(), Ok((11, 12)));
+        assert_eq!(scan.next().unwrap(), Ok((13, 14)));
+        assert_eq!(scan.next().unwrap(), Ok((15, 16)));
     }
 }
