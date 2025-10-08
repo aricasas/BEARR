@@ -199,6 +199,12 @@ impl<'a> SSTIter<'a> {
         Ok(iter)
     }
 
+    /*
+     * Finding the next item in a range
+     *
+     * While we have not reached the end of the range, go to the next item in the buffer,
+     * If we reach the end of the buffer, bring in the next page
+     * */
     fn go_to_next(&mut self) -> Option<Result<(u64, u64), DBError>> {
         if self.ended {
             return None;
