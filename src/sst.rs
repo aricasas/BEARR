@@ -1,22 +1,17 @@
-#![allow(warnings)]
-
 use std::{
     fs, io,
     io::{BufReader, Read, Seek, Write},
     ops::RangeInclusive,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use crate::DBError;
-use serde::{Deserialize, Serialize};
 
 const CHUNK_SIZE: usize = 4096;
 
 /// A handle to an SST of a database
 #[derive(Debug)]
 pub struct SST {
-    filename: PathBuf,
     opened_file: Option<fs::File>,
 }
 
@@ -38,12 +33,6 @@ impl SST {
             }
         };
 
-        /* TODO:: change this maybe - seems useless */
-        let sst = SST {
-            filename: path.clone(),
-            opened_file: None,
-        };
-
         /* Serialize the vector */
         let bytes = match bincode::serialize(&key_values) {
             Ok(bytes) => bytes,
@@ -55,8 +44,8 @@ impl SST {
 
         /* Write to file and make sure the write is flushed to disk */
         match file.write_all(&bytes) {
-            Ok(n) => {
-                file.sync_all();
+            Ok(_) => {
+                let _ = file.sync_all();
             }
             Err(e) => {
                 println!("failed to write : {}", e);
@@ -64,6 +53,8 @@ impl SST {
             }
         }
 
+        /* TODO: Discuss */
+        let sst = SST { opened_file: None };
         Ok(sst)
     }
 
@@ -76,21 +67,25 @@ impl SST {
         let path: PathBuf = path.to_path_buf();
 
         match fs::File::open(&path) {
-            Ok(file) => {
-                return Ok(SST {
-                    filename: path,
-                    opened_file: Some(file),
-                });
-            }
+            Ok(file) => Ok(SST {
+                opened_file: Some(file),
+            }),
             Err(e) => {
                 println!("failed to open : {}", e);
-                return Err(DBError::IOError(e.to_string()));
+                Err(DBError::IOError(e.to_string()))
             }
-        };
+        }
     }
 
     pub fn get(&self, key: u64) -> Result<Option<u64>, DBError> {
-        todo!()
+        let mut scan = match self.scan(key..=key) {
+            Ok(scan) => scan,
+            Err(_) => {
+                panic!();
+            }
+        };
+        let ans = scan.next().unwrap().unwrap().1;
+        Ok(Some(ans))
     }
 
     pub fn scan(&self, range: RangeInclusive<u64>) -> Result<SSTIter, DBError> {
@@ -230,6 +225,7 @@ impl<'a> SSTIter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     struct TestCleanup {
         path: PathBuf,
