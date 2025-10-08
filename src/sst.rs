@@ -103,7 +103,6 @@ pub struct SSTIter<'a> {
     item_number: usize,
     buffer: Vec<(u64, u64)>,
     range: RangeInclusive<u64>,
-    sst: &'a SST,
     reader: BufReader<&'a fs::File>,
     ended: bool,
 }
@@ -131,7 +130,7 @@ impl<'a> SSTIter<'a> {
         let mut item_number = 0;
         let mut reader = BufReader::with_capacity(CHUNK_SIZE, sst.opened_file.as_ref().unwrap());
         let mut found = false;
-        let mut ended = false;
+        let ended = false;
 
         /* Set the reader to the start of the file
          * TODO: Discuss this
@@ -174,12 +173,11 @@ impl<'a> SSTIter<'a> {
             return Err(DBError::IOError("Start not found".to_string()));
         }
 
-        let mut iter = Self {
+        let iter = Self {
             page_number,
             item_number,
             buffer,
             range,
-            sst,
             reader,
             ended,
         };
@@ -193,9 +191,9 @@ impl<'a> SSTIter<'a> {
             return None;
         }
         let item = self.buffer[self.item_number];
-        if (item.0 < *self.range.end()) {
+        if item.0 < *self.range.end() {
             self.item_number += 1;
-            if (self.item_number >= self.buffer.len()) {
+            if self.item_number >= self.buffer.len() {
                 /* TODO: Doesnt get here but it should at some point !!!! */
                 match bincode::deserialize_from::<_, Vec<(u64, u64)>>(&mut self.reader) {
                     Ok(buf) => {
@@ -214,7 +212,7 @@ impl<'a> SSTIter<'a> {
                 }
             }
 
-            return Some(Ok(item));
+            Some(Ok(item))
         } else {
             None
         }
