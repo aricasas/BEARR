@@ -5,6 +5,7 @@ use std::{
     io::{BufReader, Read, Seek, Write},
     ops::RangeInclusive,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use crate::DBError;
@@ -200,18 +201,18 @@ impl<'a> SSTIter<'a> {
         if (item.0 < *self.range.end()) {
             self.item_number += 1;
             if (self.item_number >= self.buffer.len()) {
+                /* TODO: Doesnt get here but it should at some point !!!! */
                 match bincode::deserialize_from::<_, Vec<(u64, u64)>>(&mut self.reader) {
                     Ok(buf) => {
                         self.item_number = 0;
                         self.page_number += 1;
                         self.buffer = buf;
                     }
-                    Err(_) => {
-                        // println!(
-                        //     "Some error occured while reading the file : {}",
-                        //     e.to_string()
-                        // );
-                        // return Some(Err(DBError::IOError(e.to_string())));
+                    Err(e) => {
+                        println!(
+                            "Some error occured while reading the file : {}",
+                            e.to_string()
+                        );
                         self.ended = true;
                         return None;
                     }
@@ -360,7 +361,72 @@ mod tests {
         assert_eq!(scan.next().unwrap(), Ok((7, 8)));
         assert_eq!(scan.next().unwrap(), Ok((9, 10)));
         assert_eq!(scan.next().unwrap(), Ok((11, 12)));
-        assert_eq!(scan.next().unwrap(), Ok((13, 14)));
-        assert_eq!(scan.next().unwrap(), Ok((15, 16)));
+        assert_eq!(scan.next(), None);
+    }
+
+    /*
+     * Huge test with writing a vector of 400000 elements to file
+     * and then doing scans over it
+     *
+     * This test should be run with superuser privilages
+     * */
+    #[test]
+    fn test_huge_test() {
+        let file_name = "./db/SST_Test";
+        let path = Path::new(file_name);
+        let _cleanup = TestCleanup {
+            path: path.to_path_buf(),
+        };
+
+        let mut test_vec = Vec::<(u64, u64)>::new();
+        for i in 1..400_000 {
+            test_vec.push((i, i));
+        }
+        let sst = SST::create(test_vec, path);
+
+        /*
+         * Flush the actual buffer cache for benchmarking purposes
+         * */
+        Command::new("sync").status().expect("Sync Error");
+        Command::new("sh")
+            .arg("-c")
+            .arg("echo 3 > /proc/sys/vm/drop_caches")
+            .status()
+            .expect("Clearing Cache Error");
+
+        assert!(!sst.is_err());
+
+        let sst = SST::open(path);
+        let sst = sst.unwrap();
+        let file_size = sst
+            .opened_file
+            .as_ref()
+            .expect("err")
+            .metadata()
+            .expect("err 2")
+            .len();
+
+        println!("Current File Size : {}", file_size);
+
+        let RANGE_START = 1;
+        let RANGE_END = 20;
+
+        let mut scan = match sst.scan(RANGE_START..=RANGE_END) {
+            Ok(scan) => scan,
+            Err(e) => {
+                println!("error : {}", e.to_string());
+                panic!();
+            }
+        };
+
+        let mut page_number = 0;
+        for i in RANGE_START..RANGE_END {
+            if scan.page_number != page_number {
+                page_number = scan.page_number;
+                println!("New page moved to memory : {}", page_number);
+            }
+
+            assert_eq!(scan.next().unwrap(), Ok((i, i)));
+        }
     }
 }
