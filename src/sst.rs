@@ -1,7 +1,8 @@
 use std::{
     fs, io,
-    io::{BufReader, Read, Seek, Write},
+    io::{Read, Seek, Write},
     ops::RangeInclusive,
+    os::unix::fs::{FileExt, OpenOptionsExt},
     path::{Path, PathBuf},
 };
 
@@ -12,7 +13,7 @@ const CHUNK_SIZE: usize = 4096;
 /// A handle to an SST of a database
 #[derive(Debug)]
 pub struct SST {
-    opened_file: Option<fs::File>,
+    opened_file: fs::File,
 }
 
 impl SST {
@@ -20,18 +21,16 @@ impl SST {
      * Create an SST table to store contents on disk
      * */
     pub fn create(key_values: Vec<(u64, u64)>, path: &Path) -> Result<SST, DBError> {
+        // dbg!(&key_values);
+
         let path: PathBuf = path.to_path_buf();
 
-        /* TODO : A less expensive way to check if file exists??
-         * */
-
-        let mut file = match fs::File::create_new(&path) {
-            Ok(file) => file,
-            Err(e) => {
-                println!("failed to create : {}", e);
-                return Err(DBError::IOError(e.to_string()));
-            }
-        };
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .read(true)
+            .custom_flags(libc::O_DIRECT | libc::O_SYNC)
+            .open(path)?;
 
         /* An 8 byte overhead to store the size of that page */
         let items_per_page = (CHUNK_SIZE - 8) / 16;
@@ -41,50 +40,38 @@ impl SST {
              */
             let bytes =
                 bincode::serialize(&chunk.to_vec()).map_err(|e| DBError::IOError(e.to_string()))?;
+            debug_assert_eq!(bytes.len(), items_per_page * size_of::<(u64, u64)>());
 
-            file.write_all(&(bytes.len() as u64).to_le_bytes())
-                .map_err(|e| DBError::IOError(e.to_string()))?;
-            file.write_all(&bytes)
-                .map_err(|e| DBError::IOError(e.to_string()))?;
+            file.write_all(&(bytes.len() as u64).to_le_bytes())?;
+            file.write_all(&bytes)?;
         }
 
-        file.sync_all()
-            .map_err(|e| DBError::IOError(e.to_string()))?;
-
-        /* TODO: Discuss */
-        let sst = SST { opened_file: None };
+        let sst = SST { opened_file: file };
         Ok(sst)
     }
 
     /* Open the file and add it to opened files
      * find the file's SST and give it back
-     *
-     * TODO:: mmap huge files into memory for faster future accesses
      * */
     pub fn open(path: &Path) -> Result<SST, DBError> {
         let path: PathBuf = path.to_path_buf();
 
-        match fs::File::open(&path) {
-            Ok(file) => Ok(SST {
-                opened_file: Some(file),
-            }),
-            Err(e) => {
-                println!("failed to open : {}", e);
-                Err(DBError::IOError(e.to_string()))
-            }
-        }
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .read(true)
+            .custom_flags(libc::O_DIRECT | libc::O_SYNC)
+            .open(path)?;
+
+        Ok(SST { opened_file: file })
     }
 
-    /* TODO: Clean */
     pub fn get(&self, key: u64) -> Result<Option<u64>, DBError> {
-        let mut scan = match self.scan(key..=key) {
-            Ok(scan) => scan,
-            Err(_) => {
-                panic!();
-            }
-        };
-        let ans = scan.next().unwrap().unwrap().1;
-        Ok(Some(ans))
+        let mut scanner = self.scan(key..=key)?;
+        match scanner.next() {
+            None => Ok(None),
+            Some(Err(e)) => Err(e),
+            Some(Ok((_, v))) => Ok(Some(v)),
+        }
     }
 
     pub fn scan(&self, range: RangeInclusive<u64>) -> Result<SSTIter<'_>, DBError> {
@@ -102,7 +89,7 @@ pub struct SSTIter<'a> {
     item_number: usize,
     buffer: Vec<(u64, u64)>,
     range: RangeInclusive<u64>,
-    reader: BufReader<&'a fs::File>,
+    reader: &'a fs::File,
     ended: bool,
 }
 
@@ -120,14 +107,10 @@ impl<'a> SSTIter<'a> {
             return Err(DBError::InvalidScanRange);
         }
 
-        if sst.opened_file.is_none() {
-            return Err(DBError::IOError("No File Opened".to_string()));
-        }
-
         let mut buffer = Vec::new();
         let mut page_number = 0;
         let mut item_number = 0;
-        let mut reader = BufReader::with_capacity(CHUNK_SIZE, sst.opened_file.as_ref().unwrap());
+        let mut reader = &sst.opened_file;
         let mut found = false;
         let mut ended = false;
 
@@ -139,7 +122,7 @@ impl<'a> SSTIter<'a> {
         /* Read SST in pages(chuck size = CHUNK_SIZE) to find the start of the range
          * save page number, item_number and buffer the contents of the page
          * */
-        for page in 1.. {
+        for page in 0.. {
             let mut len_bytes = [0u8; 8];
             match reader.read_exact(&mut len_bytes) {
                 Ok(_) => {
@@ -178,7 +161,12 @@ impl<'a> SSTIter<'a> {
                         }
                     }
                 }
-                Err(_) => todo!(),
+                Err(e) => {
+                    break;
+                    // dbg!(&e);
+                    // println!("Some error occured while reading the file : {}", e);
+                    // return Err(DBError::IOError(e.to_string()));
+                }
             }
         }
 
@@ -300,7 +288,7 @@ mod tests {
     /* Create an SST and then open it up to see if sane */
     #[test]
     fn test_create_open_sst() {
-        let file_name = "./db/SST_Test";
+        let file_name = "./db/SST_Test1";
         let path = Path::new(file_name);
         let _cleanup = TestCleanup {
             path: path.to_path_buf(),
@@ -315,7 +303,7 @@ mod tests {
     /* Write contents to SST and read them afterwards */
     #[test]
     fn test_read_write_to_sst() {
-        let file_name = "./db/SST_Test";
+        let file_name = "./db/SST_Test2";
         let path = Path::new(file_name);
         let _cleanup = TestCleanup {
             path: path.to_path_buf(),
@@ -348,7 +336,7 @@ mod tests {
 
         println!("{} {}", scan.page_number, scan.item_number);
 
-        assert_eq!(scan.page_number, 1);
+        assert_eq!(scan.page_number, 0);
         assert_eq!(scan.item_number, 5);
 
         let scan = match sst.scan(2..=12) {
@@ -360,13 +348,13 @@ mod tests {
         };
 
         println!("{} {}", scan.page_number, scan.item_number);
-        assert_eq!(scan.page_number, 1);
+        assert_eq!(scan.page_number, 0);
         assert_eq!(scan.item_number, 1);
     }
 
     #[test]
     fn test_scan_sst() {
-        let file_name = "./db/SST_Test";
+        let file_name = "./db/SST_Test3";
         let path = Path::new(file_name);
         let _cleanup = TestCleanup {
             path: path.to_path_buf(),
@@ -414,7 +402,7 @@ mod tests {
      * */
     #[test]
     fn test_huge_test() {
-        let file_name = "./db/SST_Test";
+        let file_name = "./db/SST_Test4";
         let path = Path::new(file_name);
         let _cleanup = TestCleanup {
             path: path.to_path_buf(),
@@ -440,13 +428,7 @@ mod tests {
 
         let sst = SST::open(path);
         let sst = sst.unwrap();
-        let file_size = sst
-            .opened_file
-            .as_ref()
-            .expect("err")
-            .metadata()
-            .expect("err 2")
-            .len();
+        let file_size = sst.opened_file.metadata().expect("err 2").len();
 
         println!("Current File Size : {}", file_size);
 

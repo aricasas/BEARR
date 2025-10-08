@@ -7,6 +7,7 @@ edition = "2024"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145" }
 bincode = "1.3"
+libc = "0.2.176"
 
 [[bin]]
 name = "tests"

@@ -49,6 +49,7 @@ name = "csc443-project"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "libc",
  "proptest",
  "serde",
  "serde_json",
