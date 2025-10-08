@@ -2,13 +2,15 @@
 
 use std::{
     fs, io,
-    io::Write,
+    io::{BufReader, Read, Seek, Write},
     ops::RangeInclusive,
     path::{Path, PathBuf},
 };
 
 use crate::DBError;
 use serde::{Deserialize, Serialize};
+
+const CHUNK_SIZE: usize = 4096;
 
 /// A handle to an SST of a database
 #[derive(Debug)]
@@ -91,17 +93,98 @@ impl SST {
     }
 
     pub fn scan(&self, range: RangeInclusive<u64>) -> Result<SSTIter, DBError> {
-        todo!()
+        SSTIter::new(self, range)
     }
 }
 
-/* SST iterator */
-pub struct SSTIter {}
-impl Iterator for SSTIter {
+/* SST iterator
+ * Contains a 4KB buffer that keeps the wanted SST page in memory
+ *
+ *
+ * */
+pub struct SSTIter<'a> {
+    page_number: usize,
+    item_number: usize,
+    buffer: Vec<(u64, u64)>,
+    range: RangeInclusive<u64>,
+    sst: &'a SST,
+}
+
+impl<'a> Iterator for SSTIter<'a> {
     type Item = Result<(u64, u64), DBError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        todo!();
+    }
+}
+
+impl<'a> SSTIter<'a> {
+    fn new(sst: &'a SST, range: RangeInclusive<u64>) -> Result<Self, DBError> {
+        if range.start() > range.end() {
+            return Err(DBError::InvalidScanRange);
+        }
+
+        if sst.opened_file.is_none() {
+            return Err(DBError::IOError("No File Opened".to_string()));
+        }
+
+        let mut buffer = Vec::new();
+        let mut page_number = 0;
+        let mut item_number = 0;
+        let mut reader = BufReader::with_capacity(CHUNK_SIZE, sst.opened_file.as_ref().unwrap());
+        let mut found = false;
+
+        /* Read SST in pages(chuck size = CHUNK_SIZE) to find the start of the range
+         * save page number, item_number and buffer the contents of the page
+         * */
+        for page in 1.. {
+            match bincode::deserialize_from::<_, Vec<(u64, u64)>>(&mut reader) {
+                Ok(buf) => {
+                    /* TODO: Need to change the implementation to binary search */
+                    for (index, item) in buf.iter().enumerate() {
+                        if item.0 >= *range.start() {
+                            page_number = page;
+                            buffer = buf;
+                            item_number = index;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if found {
+                        break;
+                    }
+                }
+                /* TODO: Handle EOF ?? */
+                Err(e) => {
+                    println!(
+                        "Some error occured while reading the file : {}",
+                        e.to_string()
+                    );
+                    return Err(DBError::IOError(e.to_string()));
+                }
+            }
+        }
+
+        /* Reset the reader to the start of the file
+         * TODO: Discuss this
+         * */
+        reader.seek(io::SeekFrom::Start(0))?;
+
+        /* TODO: handle not found ?? */
+        if !found {
+            return Err(DBError::IOError("Start not found".to_string()));
+        }
+
+        let mut iter = Self {
+            page_number,
+            item_number,
+            buffer,
+            range,
+            sst,
+        };
+
+        /* iter.go_to_start(); */
+        Ok(iter)
     }
 }
 
@@ -109,6 +192,16 @@ impl Iterator for SSTIter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestCleanup {
+        path: PathBuf,
+    }
+
+    impl Drop for TestCleanup {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
 
     #[test]
     fn test_problematic_ssts() {
@@ -128,19 +221,25 @@ mod tests {
     fn test_create_open_sst() {
         let file_name = "./db/SST_Test";
         let path = Path::new(file_name);
+        let _cleanup = TestCleanup {
+            path: path.to_path_buf(),
+        };
         let sst = SST::create(vec![], path);
         assert!(!sst.is_err());
 
         let sst = SST::open(path);
         assert!(!sst.is_err());
-
-        fs::remove_file(path);
     }
 
     /* Write contents to SST and read them afterwards */
     #[test]
     fn test_read_write_to_sst() {
-        let path = Path::new("./db/SST_Test");
+        let file_name = "./db/SST_Test";
+        let path = Path::new(file_name);
+        let _cleanup = TestCleanup {
+            path: path.to_path_buf(),
+        };
+
         let sst = SST::create(
             vec![
                 (1, 2),
@@ -155,7 +254,34 @@ mod tests {
             path,
         );
         assert!(!sst.is_err());
-        fs::remove_file(path);
+
+        let sst = SST::open(path);
+        let sst = sst.unwrap();
+
+        let mut scan = match sst.scan(11..=12) {
+            Ok(scan) => scan,
+            Err(e) => {
+                panic!();
+            }
+        };
+
+        /* TODO: Add some automation to these tests */
+        println!("{} {}", scan.page_number, scan.item_number);
+
+        assert_eq!(scan.page_number, 1);
+        assert_eq!(scan.item_number, 5);
+
+        let mut scan = match sst.scan(2..=12) {
+            Ok(scan) => scan,
+            Err(e) => {
+                println!("error : {}", e.to_string());
+                panic!();
+            }
+        };
+
+        println!("{} {}", scan.page_number, scan.item_number);
+        assert_eq!(scan.page_number, 1);
+        assert_eq!(scan.item_number, 1);
     }
 
     #[test]
