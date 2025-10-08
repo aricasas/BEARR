@@ -33,25 +33,23 @@ impl SST {
             }
         };
 
-        /* Serialize the vector */
-        let bytes = match bincode::serialize(&key_values) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                println!("Serialization Error : {}", e);
-                return Err(DBError::IOError(e.to_string()));
-            }
-        };
+        /* An 8 byte overhead to store the size of that page */
+        let items_per_page = (CHUNK_SIZE - 8) / 16;
+        for chunk in key_values.chunks(items_per_page) {
+            /* Serialize the vector in fixed chunk sizes, append the
+             * actual size to it and store on disk
+             */
+            let bytes =
+                bincode::serialize(&chunk.to_vec()).map_err(|e| DBError::IOError(e.to_string()))?;
 
-        /* Write to file and make sure the write is flushed to disk */
-        match file.write_all(&bytes) {
-            Ok(_) => {
-                let _ = file.sync_all();
-            }
-            Err(e) => {
-                println!("failed to write : {}", e);
-                return Err(DBError::IOError(e.to_string()));
-            }
+            file.write_all(&(bytes.len() as u64).to_le_bytes())
+                .map_err(|e| DBError::IOError(e.to_string()))?;
+            file.write_all(&bytes)
+                .map_err(|e| DBError::IOError(e.to_string()))?;
         }
+
+        file.sync_all()
+            .map_err(|e| DBError::IOError(e.to_string()))?;
 
         /* TODO: Discuss */
         let sst = SST { opened_file: None };
@@ -77,6 +75,7 @@ impl SST {
         }
     }
 
+    /* TODO: Clean */
     pub fn get(&self, key: u64) -> Result<Option<u64>, DBError> {
         let mut scan = match self.scan(key..=key) {
             Ok(scan) => scan,
@@ -88,7 +87,7 @@ impl SST {
         Ok(Some(ans))
     }
 
-    pub fn scan(&self, range: RangeInclusive<u64>) -> Result<SSTIter, DBError> {
+    pub fn scan(&self, range: RangeInclusive<u64>) -> Result<SSTIter<'_>, DBError> {
         SSTIter::new(self, range)
     }
 }
@@ -130,7 +129,7 @@ impl<'a> SSTIter<'a> {
         let mut item_number = 0;
         let mut reader = BufReader::with_capacity(CHUNK_SIZE, sst.opened_file.as_ref().unwrap());
         let mut found = false;
-        let ended = false;
+        let mut ended = false;
 
         /* Set the reader to the start of the file
          * TODO: Discuss this
@@ -141,36 +140,50 @@ impl<'a> SSTIter<'a> {
          * save page number, item_number and buffer the contents of the page
          * */
         for page in 1.. {
-            match bincode::deserialize_from::<_, Vec<(u64, u64)>>(&mut reader) {
-                Ok(buf) => {
-                    /* TODO: Need to change the implementation to binary search */
-                    for (index, item) in buf.iter().enumerate() {
-                        if item.0 >= *range.start() {
-                            page_number = page;
-                            buffer = buf;
-                            item_number = index;
-                            found = true;
-                            break;
+            let mut len_bytes = [0u8; 8];
+            match reader.read_exact(&mut len_bytes) {
+                Ok(_) => {
+                    let chunk_len = u64::from_le_bytes(len_bytes) as usize;
+
+                    let mut chunk_data = vec![0u8; chunk_len];
+                    match reader.read_exact(&mut chunk_data) {
+                        Ok(_) => {
+                            match bincode::deserialize::<Vec<(u64, u64)>>(&chunk_data) {
+                                Ok(buf) => {
+                                    /* TODO: Need to change the implementation to binary search */
+                                    for (index, item) in buf.iter().enumerate() {
+                                        if item.0 >= *range.start() {
+                                            page_number = page;
+                                            buffer = buf;
+                                            item_number = index;
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                    if found {
+                                        break;
+                                    }
+                                }
+
+                                Err(e) => {
+                                    println!("Some error occured while reading the file : {}", e);
+                                    return Err(DBError::IOError(e.to_string()));
+                                }
+                            }
+                        }
+
+                        Err(e) => {
+                            println!("Some error occured while reading the file : {}", e);
+                            return Err(DBError::IOError(e.to_string()));
                         }
                     }
-                    if found {
-                        break;
-                    }
                 }
-                /* TODO: Handle EOF ?? */
-                Err(e) => {
-                    println!(
-                        "Some error occured while reading the file : {}",
-                        e.to_string()
-                    );
-                    return Err(DBError::IOError(e.to_string()));
-                }
+                Err(_) => todo!(),
             }
         }
 
-        /* TODO: handle not found ?? */
         if !found {
-            return Err(DBError::IOError("Start not found".to_string()));
+            ended = true;
         }
 
         let iter = Self {
@@ -190,22 +203,50 @@ impl<'a> SSTIter<'a> {
         if self.ended {
             return None;
         }
+
         let item = self.buffer[self.item_number];
-        if item.0 < *self.range.end() {
+
+        /* Check item range */
+        if item.0 <= *self.range.end() {
             self.item_number += 1;
+
             if self.item_number >= self.buffer.len() {
-                /* TODO: Doesnt get here but it should at some point !!!! */
-                match bincode::deserialize_from::<_, Vec<(u64, u64)>>(&mut self.reader) {
-                    Ok(buf) => {
-                        self.item_number = 0;
-                        self.page_number += 1;
-                        self.buffer = buf;
+                let mut len_bytes = [0u8; 8];
+                match self.reader.read_exact(&mut len_bytes) {
+                    Ok(_) => {
+                        let chunk_len = u64::from_le_bytes(len_bytes) as usize;
+                        let mut chunk_data = vec![0u8; chunk_len];
+
+                        match self.reader.read_exact(&mut chunk_data) {
+                            Ok(_) => match bincode::deserialize::<Vec<(u64, u64)>>(&chunk_data) {
+                                Ok(buf) => {
+                                    self.item_number = 0;
+                                    self.page_number += 1;
+                                    self.buffer = buf;
+                                }
+                                Err(e) => {
+                                    println!("Deserialization error: {}", e);
+                                    self.ended = true;
+                                    return None;
+                                }
+                            },
+                            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                                self.ended = true;
+                                return None;
+                            }
+                            Err(e) => {
+                                println!("Error Reading File : {}", e);
+                                self.ended = true;
+                                return None;
+                            }
+                        }
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                        self.ended = true;
+                        return None;
                     }
                     Err(e) => {
-                        println!(
-                            "Some error occured while reading the file : {}",
-                            e.to_string()
-                        );
+                        println!("Error Reading File : {}", e);
                         self.ended = true;
                         return None;
                     }
@@ -214,6 +255,7 @@ impl<'a> SSTIter<'a> {
 
             Some(Ok(item))
         } else {
+            self.ended = true;
             None
         }
     }
@@ -223,7 +265,6 @@ impl<'a> SSTIter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
 
     struct TestCleanup {
         path: PathBuf,
@@ -239,13 +280,15 @@ mod tests {
     fn test_problematic_ssts() {
         let path = Path::new("/xyz/abc/file");
         let sst = SST::create(vec![], path);
-        assert!(sst.is_err());
+        let _cleanup = TestCleanup {
+            path: path.to_path_buf(),
+        };
 
+        assert!(sst.is_err());
         let path = Path::new("./db/SSTe");
-        let sst = SST::create(vec![], path);
+        let _ = SST::create(vec![], path);
         let sst = SST::create(vec![], path);
         assert!(sst.is_err());
-        fs::remove_file(path);
     }
 
     /* Create an SST and then open it up to see if sane */
@@ -257,10 +300,10 @@ mod tests {
             path: path.to_path_buf(),
         };
         let sst = SST::create(vec![], path);
-        assert!(!sst.is_err());
+        assert!(sst.is_ok());
 
         let sst = SST::open(path);
-        assert!(!sst.is_err());
+        assert!(sst.is_ok());
     }
 
     /* Write contents to SST and read them afterwards */
@@ -285,28 +328,27 @@ mod tests {
             ],
             path,
         );
-        assert!(!sst.is_err());
+        assert!(sst.is_ok());
 
         let sst = SST::open(path);
         let sst = sst.unwrap();
 
-        let mut scan = match sst.scan(11..=12) {
+        let scan = match sst.scan(11..=12) {
             Ok(scan) => scan,
-            Err(e) => {
+            Err(_) => {
                 panic!();
             }
         };
 
-        /* TODO: Add some automation to these tests */
         println!("{} {}", scan.page_number, scan.item_number);
 
         assert_eq!(scan.page_number, 1);
         assert_eq!(scan.item_number, 5);
 
-        let mut scan = match sst.scan(2..=12) {
+        let scan = match sst.scan(2..=12) {
             Ok(scan) => scan,
             Err(e) => {
-                println!("error : {}", e.to_string());
+                println!("error : {}", e);
                 panic!();
             }
         };
@@ -337,7 +379,7 @@ mod tests {
             ],
             path,
         );
-        assert!(!sst.is_err());
+        assert!(sst.is_ok());
 
         let sst = SST::open(path);
         let sst = sst.unwrap();
@@ -345,7 +387,7 @@ mod tests {
         let mut scan = match sst.scan(2..=12) {
             Ok(scan) => scan,
             Err(e) => {
-                println!("error : {}", e.to_string());
+                println!("error : {}", e);
                 panic!();
             }
         };
@@ -381,14 +423,14 @@ mod tests {
         /*
          * Flush the actual buffer cache for benchmarking purposes
          * */
-        Command::new("sync").status().expect("Sync Error");
-        Command::new("sh")
-            .arg("-c")
-            .arg("echo 3 > /proc/sys/vm/drop_caches")
-            .status()
-            .expect("Clearing Cache Error");
+        // Command::new("sync").status().expect("Sync Error");
+        // Command::new("sh")
+        //     .arg("-c")
+        //     .arg("echo 3 > /proc/sys/vm/drop_caches")
+        //     .status()
+        //     .expect("Clearing Cache Error");
 
-        assert!(!sst.is_err());
+        assert!(sst.is_ok());
 
         let sst = SST::open(path);
         let sst = sst.unwrap();
@@ -402,19 +444,19 @@ mod tests {
 
         println!("Current File Size : {}", file_size);
 
-        let RANGE_START = 1;
-        let RANGE_END = 20;
+        let range_start = 1;
+        let range_end = 4000;
 
-        let mut scan = match sst.scan(RANGE_START..=RANGE_END) {
+        let mut scan = match sst.scan(range_start..=range_end) {
             Ok(scan) => scan,
             Err(e) => {
-                println!("error : {}", e.to_string());
+                println!("error : {}", e);
                 panic!();
             }
         };
 
         let mut page_number = 0;
-        for i in RANGE_START..RANGE_END {
+        for i in range_start..range_end {
             if scan.page_number != page_number {
                 page_number = scan.page_number;
                 println!("New page moved to memory : {}", page_number);
