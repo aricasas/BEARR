@@ -89,7 +89,7 @@ impl Database {
 
         let mut ssts = Vec::with_capacity(metadata.num_ssts);
         for i in 0..metadata.num_ssts {
-            let sst = SST::open(&name.join(i.to_string()))?;
+            let sst = SST::open(name.join(i.to_string()))?;
             ssts.push(sst);
         }
 
