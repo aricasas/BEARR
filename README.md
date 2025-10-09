@@ -1,2 +1,2 @@
-# csc443-project
+# BEARR
 csc443 group programming project
