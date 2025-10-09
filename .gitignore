@@ -21,7 +21,8 @@ target
 #.idea/
 
 database_test_files/**
-db/*
+db/**
 src/tests.rs
 !database_test_files/.gitkeep
+!db/.gitkeep
 proptest-regressions

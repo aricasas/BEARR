@@ -1,5 +1,5 @@
 [package]
-name = "BEARR"
+name = "bearr"
 version = "0.1.0"
 edition = "2024"
 
@@ -22,4 +22,5 @@ default = []
 mock = []
 
 [dev-dependencies]
+anyhow = { version = "1.0.100", features = ["backtrace"] }
 proptest = "1.8.0"

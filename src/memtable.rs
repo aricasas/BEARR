@@ -411,10 +411,12 @@ impl<'a, K: Ord + Clone + Default, V: Clone + Default> MemTableIter<'a, K, V> {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Result;
+
     use super::*;
 
     #[test]
-    fn test_small() -> Result<(), DBError> {
+    fn test_small() -> Result<()> {
         let mut memtable: MemTable<u64, u64> = MemTable::new(5)?;
 
         // Test get and scan before inserting nodes
@@ -454,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn test_large() -> Result<(), DBError> {
+    fn test_large() -> Result<()> {
         let mut memtable: MemTable<u64, u64> = MemTable::new(5_000_000)?;
 
         for i in 0..4_000_000 {
@@ -488,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_in_order() -> Result<(), DBError> {
+    fn test_insert_in_order() -> Result<()> {
         let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
 
         // Insert 100 nodes
@@ -513,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_in_reverse() -> Result<(), DBError> {
+    fn test_insert_in_reverse() -> Result<()> {
         let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
 
         // Insert 100 nodes
@@ -536,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update() -> Result<(), DBError> {
+    fn test_update() -> Result<()> {
         let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
 
         // Insert 100 nodes
@@ -566,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn test_full_capacity_zero() -> Result<(), DBError> {
+    fn test_full_capacity_zero() -> Result<()> {
         let mut memtable = MemTable::new(0)?;
 
         let result = std::panic::catch_unwind(move || memtable.put(0, 0));
@@ -576,7 +578,7 @@ mod tests {
     }
 
     #[test]
-    fn test_full_capacity() -> Result<(), DBError> {
+    fn test_full_capacity() -> Result<()> {
         // Test 100 capacity
         let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
 
@@ -598,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_valid_ranges() -> Result<(), DBError> {
+    fn test_scan_valid_ranges() -> Result<()> {
         let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
 
         // Insert 100 nodes
@@ -632,7 +634,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::reversed_empty_ranges)]
-    fn test_scan_invalid_ranges() -> Result<(), DBError> {
+    fn test_scan_invalid_ranges() -> Result<()> {
         let mut memtable: MemTable<i64, u64> = MemTable::new(100)?;
 
         // Insert 100 nodes
@@ -670,7 +672,7 @@ mod tests {
     }
 
     #[test]
-    fn test_clear() -> Result<(), DBError> {
+    fn test_clear() -> Result<()> {
         let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
 
         for i in 0..50 {

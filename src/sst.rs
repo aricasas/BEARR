@@ -273,6 +273,8 @@ impl<'a> SSTIter<'a> {
 mod tests {
     use std::path::PathBuf;
 
+    use anyhow::Result;
+
     use super::*;
 
     struct TestPath {
@@ -311,7 +313,7 @@ mod tests {
 
     /* Create an SST and then open it up to see if sane */
     #[test]
-    fn test_create_open_sst() -> Result<(), DBError> {
+    fn test_create_open_sst() -> Result<()> {
         let file_name = "./db/SST_Test_Create_Open";
         let path = &TestPath::new(file_name);
 
@@ -324,7 +326,7 @@ mod tests {
 
     /* Write contents to SST and read them afterwards */
     #[test]
-    fn test_read_write_to_sst() -> Result<(), DBError> {
+    fn test_read_write_to_sst() -> Result<()> {
         let file_name = "./db/SST_Test_Read_Write";
         let path = &TestPath::new(file_name);
 
@@ -358,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_sst() -> Result<(), DBError> {
+    fn test_scan_sst() -> Result<()> {
         let file_name = "./db/SST_Test_Scan";
         let path = &TestPath::new(file_name);
 
@@ -394,7 +396,7 @@ mod tests {
      * and then doing scans over it
      * */
     #[test]
-    fn test_huge_test() -> Result<(), DBError> {
+    fn test_huge_test() -> Result<()> {
         let file_name = "./db/SST_Test_Huge";
         let path = &TestPath::new(file_name);
 

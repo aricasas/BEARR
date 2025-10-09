@@ -223,6 +223,8 @@ mod tests {
         path::{Path, PathBuf},
     };
 
+    use anyhow::Result;
+
     use super::*;
 
     fn path(name: &str) -> PathBuf {
@@ -233,14 +235,14 @@ mod tests {
         _ = fs::remove_dir_all(path);
     }
 
-    fn put_many(db: &mut Database, pairs: &[(u64, u64)]) -> Result<(), DBError> {
+    fn put_many(db: &mut Database, pairs: &[(u64, u64)]) -> Result<()> {
         for &(k, v) in pairs {
             db.put(k, v)?;
         }
         Ok(())
     }
 
-    fn get_many(db: &Database, keys: &[u64]) -> Result<Vec<Option<u64>>, DBError> {
+    fn get_many(db: &Database, keys: &[u64]) -> Result<Vec<Option<u64>>> {
         let mut result = Vec::new();
         for &k in keys {
             result.push(db.get(k)?);
@@ -249,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn test_basic() -> Result<(), DBError> {
+    fn test_basic() -> Result<()> {
         let name = &path("basic");
         clear(name);
         let mut db = Database::create(name, DBConfiguration { memtable_size: 3 })?;
@@ -296,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn test_persistence() -> Result<(), DBError> {
+    fn test_persistence() -> Result<()> {
         let name = &path("persistence");
         clear(name);
 
