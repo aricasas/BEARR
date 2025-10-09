@@ -1,14 +1,18 @@
 use std::{
-    fs, io,
-    io::{Read, Seek, Write},
+    fs,
+    io::Write,
     ops::RangeInclusive,
     os::unix::fs::{FileExt, OpenOptionsExt},
     path::{Path, PathBuf},
 };
 
+use bincode::config::{Fixint, LittleEndian, NoLimit};
+
 use crate::DBError;
 
 const CHUNK_SIZE: usize = 4096;
+const PAIRS_PER_CHUNK: usize = (CHUNK_SIZE - 8) / 16;
+const PADDING: usize = CHUNK_SIZE - PAIRS_PER_CHUNK * 16 - 8;
 
 /// A handle to an SST of a database
 #[derive(Debug)]
@@ -16,13 +20,41 @@ pub struct SST {
     opened_file: fs::File,
 }
 
+#[repr(C)]
+#[derive(bincode::Encode, bincode::Decode)]
+struct Page {
+    /// Number of pairs stored in this page
+    length: u64,
+    pairs: [(u64, u64); PAIRS_PER_CHUNK],
+    padding: [u8; PADDING],
+}
+
+impl Default for Page {
+    fn default() -> Self {
+        Self {
+            length: Default::default(),
+            pairs: [(0, 0); _],
+            padding: Default::default(),
+        }
+    }
+}
+
+impl Page {
+    fn empty() -> Box<Self> {
+        Box::new(Self::default())
+    }
+}
+
+const _: () = assert!(size_of::<Page>() == CHUNK_SIZE);
+
+const BINCODE_CONFIG: bincode::config::Configuration<LittleEndian, Fixint, NoLimit> =
+    bincode::config::legacy();
+
 impl SST {
     /*
      * Create an SST table to store contents on disk
      * */
     pub fn create(key_values: Vec<(u64, u64)>, path: &Path) -> Result<SST, DBError> {
-        // dbg!(&key_values);
-
         let path: PathBuf = path.to_path_buf();
 
         let mut file = fs::OpenOptions::new()
@@ -32,18 +64,35 @@ impl SST {
             .custom_flags(libc::O_DIRECT | libc::O_SYNC)
             .open(path)?;
 
-        /* An 8 byte overhead to store the size of that page */
-        let items_per_page = (CHUNK_SIZE - 8) / 16;
-        for chunk in key_values.chunks(items_per_page) {
-            /* Serialize the vector in fixed chunk sizes, append the
-             * actual size to it and store on disk
-             */
-            let bytes =
-                bincode::serialize(&chunk.to_vec()).map_err(|e| DBError::IOError(e.to_string()))?;
-            debug_assert_eq!(bytes.len(), items_per_page * size_of::<(u64, u64)>());
+        let mut buffer = vec![0u8; CHUNK_SIZE];
 
-            file.write_all(&(bytes.len() as u64).to_le_bytes())?;
-            file.write_all(&bytes)?;
+        let (chunks, remainder) = key_values.as_chunks::<PAIRS_PER_CHUNK>();
+
+        let mut page = Page::empty();
+
+        for chunk in chunks {
+            page.pairs.copy_from_slice(chunk);
+            page.length = chunk.len() as u64;
+
+            let byte_len = bincode::encode_into_slice(&page, &mut buffer, BINCODE_CONFIG)
+                .map_err(|e| DBError::IOError(e.to_string()))?;
+            debug_assert_eq!(byte_len, CHUNK_SIZE);
+
+            file.write_all(&buffer)?;
+        }
+
+        if !remainder.is_empty() {
+            let mut page = Page::empty();
+            page.length = remainder.len() as u64;
+
+            let (actual_pairs, _) = page.pairs.split_at_mut(remainder.len());
+            actual_pairs.copy_from_slice(remainder);
+
+            let byte_len = bincode::encode_into_slice(&page, &mut buffer, BINCODE_CONFIG)
+                .map_err(|e| DBError::IOError(e.to_string()))?;
+            debug_assert_eq!(byte_len, CHUNK_SIZE);
+
+            file.write_all(&buffer)?;
         }
 
         let sst = SST { opened_file: file };
@@ -87,9 +136,10 @@ impl SST {
 pub struct SSTIter<'a> {
     page_number: usize,
     item_number: usize,
-    buffer: Vec<(u64, u64)>,
+    buffered_page: Box<Page>,
     range: RangeInclusive<u64>,
-    reader: &'a fs::File,
+    file: &'a fs::File,
+    num_pages: usize,
     ended: bool,
 }
 
@@ -107,83 +157,57 @@ impl<'a> SSTIter<'a> {
             return Err(DBError::InvalidScanRange);
         }
 
-        let mut buffer = Vec::new();
+        let mut buffer_bytes = vec![0u8; CHUNK_SIZE];
+        let mut buffered_page = Page::empty();
         let mut page_number = 0;
         let mut item_number = 0;
-        let mut reader = &sst.opened_file;
         let mut found = false;
-        let mut ended = false;
 
-        /* Set the reader to the start of the file
-         * TODO: Discuss this
-         * */
-        reader.seek(io::SeekFrom::Start(0))?;
+        let file_size = sst.opened_file.metadata()?.len() as usize;
+        if !file_size.is_multiple_of(CHUNK_SIZE) {
+            return Err(DBError::IOError("SST file size not aligned".to_string()));
+        }
 
-        /* Read SST in pages(chuck size = CHUNK_SIZE) to find the start of the range
-         * save page number, item_number and buffer the contents of the page
-         * */
-        for page in 0.. {
-            let mut len_bytes = [0u8; 8];
-            match reader.read_exact(&mut len_bytes) {
-                Ok(_) => {
-                    let chunk_len = u64::from_le_bytes(len_bytes) as usize;
+        let num_pages = file_size / CHUNK_SIZE;
 
-                    let mut chunk_data = vec![0u8; chunk_len];
-                    match reader.read_exact(&mut chunk_data) {
-                        Ok(_) => {
-                            match bincode::deserialize::<Vec<(u64, u64)>>(&chunk_data) {
-                                Ok(buf) => {
-                                    /* TODO: Need to change the implementation to binary search */
-                                    for (index, item) in buf.iter().enumerate() {
-                                        if item.0 >= *range.start() {
-                                            page_number = page;
-                                            buffer = buf;
-                                            item_number = index;
-                                            found = true;
-                                            break;
-                                        }
-                                    }
-                                    if found {
-                                        break;
-                                    }
-                                }
+        // Linear search
+        'outer: for page in 0..num_pages {
+            let page_offset = page * CHUNK_SIZE;
 
-                                Err(e) => {
-                                    println!("Some error occured while reading the file : {}", e);
-                                    return Err(DBError::IOError(e.to_string()));
-                                }
-                            }
-                        }
+            sst.opened_file
+                .read_exact_at(&mut buffer_bytes, page_offset as u64)?;
 
-                        Err(e) => {
-                            println!("Some error occured while reading the file : {}", e);
-                            return Err(DBError::IOError(e.to_string()));
-                        }
-                    }
-                }
-                Err(e) => {
-                    break;
-                    // dbg!(&e);
-                    // println!("Some error occured while reading the file : {}", e);
-                    // return Err(DBError::IOError(e.to_string()));
+            let mut byte_len = 0;
+            (*buffered_page, byte_len) =
+                bincode::borrow_decode_from_slice(&buffer_bytes, BINCODE_CONFIG)
+                    .map_err(|e| DBError::IOError(e.to_string()))?;
+            debug_assert_eq!(byte_len, CHUNK_SIZE);
+
+            for i in 0..buffered_page.length as usize {
+                let (key, _) = buffered_page.pairs[i];
+
+                if &key >= range.start() {
+                    // Found starting key
+                    page_number = page;
+                    item_number = i;
+                    found = true;
+                    break 'outer;
                 }
             }
         }
 
-        if !found {
-            ended = true;
-        }
+        let ended = !found;
 
         let iter = Self {
             page_number,
             item_number,
-            buffer,
+            buffered_page,
             range,
-            reader,
+            file: &sst.opened_file,
+            num_pages,
             ended,
         };
 
-        /* iter.go_to_start(); */
         Ok(iter)
     }
 
@@ -198,60 +222,53 @@ impl<'a> SSTIter<'a> {
             return None;
         }
 
-        let item = self.buffer[self.item_number];
+        let item = self.buffered_page.pairs[self.item_number];
 
-        /* Check item range */
-        if item.0 <= *self.range.end() {
-            self.item_number += 1;
-
-            if self.item_number >= self.buffer.len() {
-                let mut len_bytes = [0u8; 8];
-                match self.reader.read_exact(&mut len_bytes) {
-                    Ok(_) => {
-                        let chunk_len = u64::from_le_bytes(len_bytes) as usize;
-                        let mut chunk_data = vec![0u8; chunk_len];
-
-                        match self.reader.read_exact(&mut chunk_data) {
-                            Ok(_) => match bincode::deserialize::<Vec<(u64, u64)>>(&chunk_data) {
-                                Ok(buf) => {
-                                    self.item_number = 0;
-                                    self.page_number += 1;
-                                    self.buffer = buf;
-                                }
-                                Err(e) => {
-                                    println!("Deserialization error: {}", e);
-                                    self.ended = true;
-                                    return None;
-                                }
-                            },
-                            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                                self.ended = true;
-                                return None;
-                            }
-                            Err(e) => {
-                                println!("Error Reading File : {}", e);
-                                self.ended = true;
-                                return None;
-                            }
-                        }
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                        self.ended = true;
-                        return None;
-                    }
-                    Err(e) => {
-                        println!("Error Reading File : {}", e);
-                        self.ended = true;
-                        return None;
-                    }
-                }
-            }
-
-            Some(Ok(item))
-        } else {
+        if &item.0 > self.range.end() {
             self.ended = true;
-            None
+            return None;
         }
+
+        self.item_number += 1;
+
+        if self.item_number < self.buffered_page.length as usize {
+            return Some(Ok(item));
+        }
+
+        // Have to buffer a new page
+        self.page_number += 1;
+        self.item_number = 0;
+
+        if self.page_number >= self.num_pages {
+            // EOF
+            self.ended = true;
+            return Some(Ok(item));
+        }
+
+        let mut byte_buffer = vec![0u8; CHUNK_SIZE];
+        let page_offset = self.page_number * CHUNK_SIZE;
+
+        let res = self
+            .file
+            .read_exact_at(&mut byte_buffer, page_offset as u64)
+            .map_err(|e| DBError::IOError(e.to_string()));
+        if let Err(e) = res {
+            self.ended = true;
+            return Some(Err(e));
+        }
+
+        let mut byte_len = 0;
+        let res = bincode::borrow_decode_from_slice(&byte_buffer, BINCODE_CONFIG)
+            .map_err(|e| DBError::IOError(e.to_string()));
+        if let Err(e) = res {
+            self.ended = true;
+            return Some(Err(e));
+        }
+
+        (*self.buffered_page, byte_len) = res.unwrap();
+        debug_assert_eq!(byte_len, CHUNK_SIZE);
+
+        Some(Ok(item))
     }
 }
 
