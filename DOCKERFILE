@@ -1,38 +1,22 @@
 
-# Use latest Ubuntu as the base
-FROM ubuntu:24.04
-
-# Install dependencies for Rust and building
-RUN apt-get update && apt-get install -y \
-    curl \
-    build-essential \
-    pkg-config \
-    libssl-dev \
-    ca-certificates \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Rust via rustup
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-
-# Add Cargo to PATH
-ENV PATH="/root/.cargo/bin:${PATH}"
+# Use Rust image with full toolchain
+FROM rust:latest
 
 # Set working directory
 WORKDIR /app
 
-# Copy Cargo manifests first to leverage Docker cache
+# Copy Cargo.toml and Cargo.lock first to cache dependencies
 COPY Cargo.toml Cargo.lock ./
 
 # Pre-fetch dependencies
 RUN cargo fetch
 
-# Copy source code
+# Copy the source code
 COPY src ./src
 
-# Create directories
-RUN mkdir -p db database_test_files
+RUN mkdir db 
+RUN mkdir database_test_files
 
-# Run tests by default
+# Run tests
 CMD ["cargo", "test"]
 
