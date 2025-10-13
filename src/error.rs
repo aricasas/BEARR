@@ -30,15 +30,3 @@ impl From<serde_json::Error> for DBError {
         Self::IOError(value.to_string())
     }
 }
-
-impl From<bincode::error::EncodeError> for DBError {
-    fn from(value: bincode::error::EncodeError) -> Self {
-        Self::IOError(value.to_string())
-    }
-}
-
-impl From<bincode::error::DecodeError> for DBError {
-    fn from(value: bincode::error::DecodeError) -> Self {
-        Self::IOError(value.to_string())
-    }
-}

@@ -6,8 +6,8 @@ edition = "2024"
 [dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145" }
-bincode = "2.0.1"
 libc = "0.2.176"
+bytemuck = { version = "1.24.0", features = ["derive", "min_const_generics"] }
 
 [[bin]]
 name = "tests"

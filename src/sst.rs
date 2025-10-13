@@ -6,8 +6,6 @@ use std::{
     path::Path,
 };
 
-use bincode::config::{Fixint, LittleEndian, NoLimit};
-
 use crate::DBError;
 
 const CHUNK_SIZE: usize = 4096;
@@ -22,11 +20,11 @@ pub struct SST {
 }
 
 #[repr(C)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 struct Page {
     /// Number of pairs stored in this page
     length: u64,
-    pairs: [(u64, u64); PAIRS_PER_CHUNK],
+    pairs: [[u64; 2]; PAIRS_PER_CHUNK],
     padding: [u8; PADDING],
 }
 
@@ -40,16 +38,28 @@ impl Default for Page {
     }
 }
 
+#[repr(C, align(0x8))]
+struct Aligned([u8; CHUNK_SIZE]);
+impl Aligned {
+    pub fn new() -> Box<Self> {
+        Box::new(Self([0; _]))
+    }
+}
+
 impl Page {
     fn empty() -> Box<Self> {
         Box::new(Self::default())
     }
+
+    fn encode(&self) -> &[u8] {
+        bytemuck::bytes_of(self)
+    }
+    fn decode(bytes: &Aligned) -> &Self {
+        bytemuck::from_bytes(&bytes.0)
+    }
 }
 
 const _: () = assert!(size_of::<Page>() == CHUNK_SIZE);
-
-const BINCODE_CONFIG: bincode::config::Configuration<LittleEndian, Fixint, NoLimit> =
-    bincode::config::legacy();
 
 impl SST {
     /*
@@ -63,34 +73,40 @@ impl SST {
             .custom_flags(libc::O_DIRECT | libc::O_SYNC)
             .open(path)?;
 
-        let mut buffer = vec![0u8; CHUNK_SIZE];
-
         let (chunks, remainder) = key_values.as_chunks::<PAIRS_PER_CHUNK>();
 
         let mut page = Page::empty();
 
         for chunk in chunks {
-            page.pairs.copy_from_slice(chunk);
+            for i in 0..PAIRS_PER_CHUNK {
+                page.pairs[i] = [chunk[i].0, chunk[i].1];
+            }
 
             page.length = chunk.len() as u64;
 
-            let byte_len = bincode::encode_into_slice(&page, &mut buffer, BINCODE_CONFIG)?;
-            debug_assert_eq!(byte_len, CHUNK_SIZE);
+            // let byte_len = bincode::encode_into_slice(&page, &mut buffer, BINCODE_CONFIG)?;
 
-            file.write_all(&buffer)?;
+            let page_bytes = page.encode();
+
+            debug_assert_eq!(page_bytes.len(), CHUNK_SIZE);
+
+            file.write_all(page_bytes)?;
         }
 
         if !remainder.is_empty() {
-            let (actual_pairs, empty_pairs) = page.pairs.split_at_mut(remainder.len());
-            actual_pairs.copy_from_slice(remainder);
-            empty_pairs.fill(Default::default());
+            for i in 0..remainder.len() {
+                page.pairs[i] = [remainder[i].0, remainder[i].1];
+            }
+
+            page.pairs[remainder.len()..PAIRS_PER_CHUNK].fill(Default::default());
 
             page.length = remainder.len() as u64;
 
-            let byte_len = bincode::encode_into_slice(&page, &mut buffer, BINCODE_CONFIG)?;
-            debug_assert_eq!(byte_len, CHUNK_SIZE);
+            let page_bytes = page.encode();
+            // let byte_len = bincode::encode_into_slice(&page, &mut buffer, BINCODE_CONFIG)?;
+            debug_assert_eq!(page_bytes.len(), CHUNK_SIZE);
 
-            file.write_all(&buffer)?;
+            file.write_all(page_bytes)?;
         }
 
         Ok(SST { opened_file: file })
@@ -132,7 +148,7 @@ impl SST {
 pub struct SSTIter<'a> {
     page_number: usize,
     item_number: usize,
-    buffered_page: Box<Page>,
+    buffered_page_bytes: Box<Aligned>,
     range: RangeInclusive<u64>,
     file: &'a fs::File,
     num_pages: usize,
@@ -153,8 +169,7 @@ impl<'a> SSTIter<'a> {
             return Err(DBError::InvalidScanRange);
         }
 
-        let mut buffer_bytes = vec![0u8; CHUNK_SIZE];
-        let mut buffered_page = Page::empty();
+        let mut buffered_page_bytes = Aligned::new();
         let mut page_number = 0;
         let mut item_number = 0;
         let mut found = false;
@@ -171,15 +186,12 @@ impl<'a> SSTIter<'a> {
             let page_offset = page * CHUNK_SIZE;
 
             sst.opened_file
-                .read_exact_at(&mut buffer_bytes, page_offset as u64)?;
+                .read_exact_at(&mut buffered_page_bytes.0, page_offset as u64)?;
 
-            let byte_len;
-            (*buffered_page, byte_len) =
-                bincode::borrow_decode_from_slice(&buffer_bytes, BINCODE_CONFIG)?;
-            debug_assert_eq!(byte_len, CHUNK_SIZE);
+            let buffered_page = Page::decode(&buffered_page_bytes);
 
             for i in 0..buffered_page.length as usize {
-                let (key, _) = buffered_page.pairs[i];
+                let [key, _] = buffered_page.pairs[i];
 
                 if &key >= range.start() {
                     // Found starting key
@@ -196,7 +208,7 @@ impl<'a> SSTIter<'a> {
         let iter = Self {
             page_number,
             item_number,
-            buffered_page,
+            buffered_page_bytes,
             range,
             file: &sst.opened_file,
             num_pages,
@@ -217,7 +229,9 @@ impl<'a> SSTIter<'a> {
             return None;
         }
 
-        let item @ (key, _) = self.buffered_page.pairs[self.item_number];
+        let buffered_page = Page::decode(&self.buffered_page_bytes);
+
+        let item @ [key, _] = buffered_page.pairs[self.item_number];
 
         if &key > self.range.end() {
             self.ended = true;
@@ -226,8 +240,8 @@ impl<'a> SSTIter<'a> {
 
         self.item_number += 1;
 
-        if self.item_number < self.buffered_page.length as usize {
-            return Some(Ok(item));
+        if self.item_number < buffered_page.length as usize {
+            return Some(Ok((item[0], item[1])));
         }
 
         // Have to buffer a new page
@@ -237,34 +251,20 @@ impl<'a> SSTIter<'a> {
         if self.page_number >= self.num_pages {
             // EOF
             self.ended = true;
-            return Some(Ok(item));
+            return Some(Ok((item[0], item[1])));
         }
 
-        let mut byte_buffer = vec![0u8; CHUNK_SIZE];
         let page_offset = self.page_number * CHUNK_SIZE;
 
         let res = self
             .file
-            .read_exact_at(&mut byte_buffer, page_offset as u64);
+            .read_exact_at(&mut self.buffered_page_bytes.0, page_offset as u64);
         if let Err(e) = res {
             self.ended = true;
             return Some(Err(e.into()));
         }
 
-        let res = bincode::borrow_decode_from_slice(&byte_buffer, BINCODE_CONFIG);
-        match res {
-            Ok(res) => {
-                let byte_len;
-                (*self.buffered_page, byte_len) = res;
-                debug_assert_eq!(byte_len, CHUNK_SIZE);
-
-                Some(Ok(item))
-            }
-            Err(e) => {
-                self.ended = true;
-                Some(Err(e.into()))
-            }
-        }
+        Some(Ok((item[0], item[1])))
     }
 }
 
