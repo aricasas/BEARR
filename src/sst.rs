@@ -54,6 +54,7 @@ impl Page {
     fn encode(&self) -> &[u8] {
         bytemuck::bytes_of(self)
     }
+
     fn decode(bytes: &Aligned) -> &Self {
         bytemuck::from_bytes(&bytes.0)
     }
@@ -78,13 +79,11 @@ impl SST {
         let mut page = Page::empty();
 
         for chunk in chunks {
-            for i in 0..PAIRS_PER_CHUNK {
-                page.pairs[i] = [chunk[i].0, chunk[i].1];
+            for (pair, &(key, value)) in page.pairs.iter_mut().zip(chunk) {
+                *pair = [key, value];
             }
 
             page.length = chunk.len() as u64;
-
-            // let byte_len = bincode::encode_into_slice(&page, &mut buffer, BINCODE_CONFIG)?;
 
             let page_bytes = page.encode();
 
@@ -94,16 +93,16 @@ impl SST {
         }
 
         if !remainder.is_empty() {
-            for i in 0..remainder.len() {
-                page.pairs[i] = [remainder[i].0, remainder[i].1];
+            for (pair, &(key, value)) in page.pairs.iter_mut().zip(remainder) {
+                *pair = [key, value];
             }
 
-            page.pairs[remainder.len()..PAIRS_PER_CHUNK].fill(Default::default());
+            page.pairs[remainder.len()..].fill(Default::default());
 
             page.length = remainder.len() as u64;
 
             let page_bytes = page.encode();
-            // let byte_len = bincode::encode_into_slice(&page, &mut buffer, BINCODE_CONFIG)?;
+
             debug_assert_eq!(page_bytes.len(), CHUNK_SIZE);
 
             file.write_all(page_bytes)?;
@@ -231,7 +230,8 @@ impl<'a> SSTIter<'a> {
 
         let buffered_page = Page::decode(&self.buffered_page_bytes);
 
-        let item @ [key, _] = buffered_page.pairs[self.item_number];
+        let [key, value] = buffered_page.pairs[self.item_number];
+        let item = (key, value);
 
         if &key > self.range.end() {
             self.ended = true;
@@ -241,7 +241,7 @@ impl<'a> SSTIter<'a> {
         self.item_number += 1;
 
         if self.item_number < buffered_page.length as usize {
-            return Some(Ok((item[0], item[1])));
+            return Some(Ok(item));
         }
 
         // Have to buffer a new page
@@ -251,7 +251,7 @@ impl<'a> SSTIter<'a> {
         if self.page_number >= self.num_pages {
             // EOF
             self.ended = true;
-            return Some(Ok((item[0], item[1])));
+            return Some(Ok(item));
         }
 
         let page_offset = self.page_number * CHUNK_SIZE;
@@ -264,7 +264,7 @@ impl<'a> SSTIter<'a> {
             return Some(Err(e.into()));
         }
 
-        Some(Ok((item[0], item[1])))
+        Some(Ok(item))
     }
 }
 
