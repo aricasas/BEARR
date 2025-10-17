@@ -1,6 +1,6 @@
 use std::{cmp::Ordering, ops::RangeInclusive};
 
-use crate::DBError;
+use crate::DbError;
 
 /// An in-memory memtable.
 ///
@@ -38,12 +38,12 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
     /// Creates a new empty `MemTable`.
     ///
     /// Allocates enough space to hold `capacity` key-value pairs.
-    /// If allocation fails, returns `DBError::OOM`.
-    pub fn new(capacity: usize) -> Result<Self, DBError> {
+    /// If allocation fails, returns `DbError::Oom`.
+    pub fn new(capacity: usize) -> Result<Self, DbError> {
         let mut nodes = Vec::new();
         nodes
             .try_reserve_exact(capacity)
-            .map_err(|_| DBError::OOM)?;
+            .map_err(|_| DbError::Oom)?;
 
         Ok(Self { root: NULL, nodes })
     }
@@ -173,8 +173,8 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
     /// Returns an iterator of key-value pairs over the given range of keys.
     /// The pairs returned are ordered increasing by their key.
     ///
-    /// Returns `DBError::OOM` if there is not enough memory to store the state of the iterator.
-    pub fn scan(&self, range: RangeInclusive<K>) -> Result<MemTableIter<'_, K, V>, DBError> {
+    /// Returns `DbError::Oom` if there is not enough memory to store the state of the iterator.
+    pub fn scan(&self, range: RangeInclusive<K>) -> Result<MemTableIter<'_, K, V>, DbError> {
         MemTableIter::new(self, range)
     }
 
@@ -280,10 +280,10 @@ impl<'a, K: Ord + Clone + Default, V: Clone + Default> MemTableIter<'a, K, V> {
     /// Create an iterator that returns key-value pairs from `memtable` with keys in the given
     /// range, sorted increasing by key.
     ///
-    /// Returns `DBError::OOM` if not enough memory for the stack
-    fn new(memtable: &'a MemTable<K, V>, range: RangeInclusive<K>) -> Result<Self, DBError> {
+    /// Returns `DbError::Oom` if not enough memory for the stack
+    fn new(memtable: &'a MemTable<K, V>, range: RangeInclusive<K>) -> Result<Self, DbError> {
         if range.start() > range.end() {
-            return Err(DBError::InvalidScanRange);
+            return Err(DbError::InvalidScanRange);
         }
 
         if memtable.size() == 0 {
@@ -302,7 +302,7 @@ impl<'a, K: Ord + Clone + Default, V: Clone + Default> MemTableIter<'a, K, V> {
         // Only about ~300 bytes for n=1_000_000
         stack
             .try_reserve_exact(tree_height_bound)
-            .map_err(|_| DBError::OOM)?;
+            .map_err(|_| DbError::Oom)?;
 
         let mut iter = Self {
             memtable,
@@ -645,27 +645,27 @@ mod tests {
         // Test several invalid scan ranges
         assert!(matches!(
             memtable.scan(20..=10),
-            Err(DBError::InvalidScanRange)
+            Err(DbError::InvalidScanRange)
         ));
 
         assert!(matches!(
             memtable.scan(10..=0),
-            Err(DBError::InvalidScanRange)
+            Err(DbError::InvalidScanRange)
         ));
 
         assert!(matches!(
             memtable.scan(100..=99),
-            Err(DBError::InvalidScanRange)
+            Err(DbError::InvalidScanRange)
         ));
 
         assert!(matches!(
             memtable.scan(99..=98),
-            Err(DBError::InvalidScanRange)
+            Err(DbError::InvalidScanRange)
         ));
 
         assert!(matches!(
             memtable.scan(0..=-1),
-            Err(DBError::InvalidScanRange)
+            Err(DbError::InvalidScanRange)
         ));
 
         Ok(())

@@ -7,5 +7,5 @@ mod sst;
 #[cfg(feature = "mock")]
 mod mock;
 
-pub use database::{DBConfiguration, Database};
-pub use error::DBError;
+pub use database::{Database, DbConfiguration};
+pub use error::DbError;

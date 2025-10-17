@@ -5,15 +5,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::error::DBError;
+use crate::error::DbError;
 
 #[allow(clippy::upper_case_acronyms)]
-pub struct SST {
+pub struct Sst {
     filename: PathBuf,
 }
 
-impl SST {
-    pub fn create(key_values: Vec<(u64, u64)>, path: impl AsRef<Path>) -> Result<SST, DBError> {
+impl Sst {
+    pub fn create(key_values: Vec<(u64, u64)>, path: impl AsRef<Path>) -> Result<Sst, DbError> {
         let path = path.as_ref();
         let mut file = File::create_new(path)?;
         write!(&mut file, "{}", serde_json::to_string(&key_values).unwrap())?;
@@ -22,14 +22,14 @@ impl SST {
         })
     }
 
-    pub fn open(path: impl AsRef<Path>) -> Result<SST, DBError> {
+    pub fn open(path: impl AsRef<Path>) -> Result<Sst, DbError> {
         let path = path.as_ref();
         Ok(Self {
             filename: path.to_path_buf(),
         })
     }
 
-    pub fn get(&self, key: u64) -> Result<Option<u64>, DBError> {
+    pub fn get(&self, key: u64) -> Result<Option<u64>, DbError> {
         let key_values = fs::read_to_string(&self.filename)?;
         let key_values: Vec<(u64, u64)> = serde_json::from_str(&key_values).unwrap();
         Ok(key_values
@@ -40,7 +40,7 @@ impl SST {
     pub fn scan(
         &self,
         range: RangeInclusive<u64>,
-    ) -> Result<impl Iterator<Item = Result<(u64, u64), DBError>>, DBError> {
+    ) -> Result<impl Iterator<Item = Result<(u64, u64), DbError>>, DbError> {
         let key_values = fs::read_to_string(&self.filename)?;
         let mut key_values: Vec<(u64, u64)> = serde_json::from_str(&key_values).unwrap();
         key_values.sort();
