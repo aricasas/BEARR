@@ -13,7 +13,8 @@ pub struct SST {
 }
 
 impl SST {
-    pub fn create(key_values: Vec<(u64, u64)>, path: &Path) -> Result<SST, DBError> {
+    pub fn create(key_values: Vec<(u64, u64)>, path: impl AsRef<Path>) -> Result<SST, DBError> {
+        let path = path.as_ref();
         let mut file = File::create_new(path)?;
         write!(&mut file, "{}", serde_json::to_string(&key_values).unwrap())?;
         Ok(Self {
@@ -21,7 +22,8 @@ impl SST {
         })
     }
 
-    pub fn open(path: &Path) -> Result<SST, DBError> {
+    pub fn open(path: impl AsRef<Path>) -> Result<SST, DBError> {
+        let path = path.as_ref();
         Ok(Self {
             filename: path.to_path_buf(),
         })

@@ -1,11 +1,13 @@
 [package]
-name = "csc443-project"
+name = "bearr"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145" }
+libc = "0.2.176"
+bytemuck = { version = "1.24.0", features = ["derive", "min_const_generics"] }
 
 [[bin]]
 name = "tests"
@@ -20,4 +22,5 @@ default = []
 mock = []
 
 [dev-dependencies]
+anyhow = { version = "1.0.100", features = ["backtrace"] }
 proptest = "1.8.0"
