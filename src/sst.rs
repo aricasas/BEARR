@@ -6,11 +6,16 @@ use std::{
     path::Path,
 };
 
-use crate::DbError;
+use crate::{DbError, PAGE_SIZE, file_system::Aligned};
 
-const CHUNK_SIZE: usize = 4096;
-const PAIRS_PER_CHUNK: usize = (CHUNK_SIZE - 8) / 16;
-const PADDING: usize = CHUNK_SIZE - 8 - PAIRS_PER_CHUNK * 16;
+#[cfg(not(feature = "mock"))]
+use crate::file_system::FileSystem;
+
+#[cfg(feature = "mock")]
+use crate::mock::FileSystem;
+
+const PAIRS_PER_CHUNK: usize = (PAGE_SIZE - 8) / 16;
+const PADDING: usize = PAGE_SIZE - 8 - PAIRS_PER_CHUNK * 16;
 
 /// A handle to an SST of a database
 #[allow(clippy::upper_case_acronyms)]
@@ -19,7 +24,7 @@ pub struct Sst {
     opened_file: fs::File,
 }
 
-#[repr(C)]
+#[repr(C, align(4096))]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 struct Page {
     /// Number of pairs stored in this page
@@ -38,14 +43,6 @@ impl Default for Page {
     }
 }
 
-#[repr(C, align(0x8))]
-struct Aligned([u8; CHUNK_SIZE]);
-impl Aligned {
-    pub fn new() -> Box<Self> {
-        Box::new(Self([0; _]))
-    }
-}
-
 impl Page {
     fn empty() -> Box<Self> {
         Box::new(Self::default())
@@ -60,13 +57,17 @@ impl Page {
     }
 }
 
-const _: () = assert!(size_of::<Page>() == CHUNK_SIZE);
+const _: () = assert!(size_of::<Page>() == PAGE_SIZE);
 
 impl Sst {
     /*
      * Create an SST table to store contents on disk
      * */
-    pub fn create(key_values: Vec<(u64, u64)>, path: impl AsRef<Path>) -> Result<Sst, DbError> {
+    pub fn create(
+        key_values: Vec<(u64, u64)>,
+        path: impl AsRef<Path>,
+        file_system: &mut FileSystem,
+    ) -> Result<Sst, DbError> {
         let mut file = fs::OpenOptions::new()
             .create_new(true)
             .write(true)
@@ -87,7 +88,7 @@ impl Sst {
 
             let page_bytes = page.encode();
 
-            debug_assert_eq!(page_bytes.len(), CHUNK_SIZE);
+            debug_assert_eq!(page_bytes.len(), PAGE_SIZE);
 
             file.write_all(page_bytes)?;
         }
@@ -103,7 +104,7 @@ impl Sst {
 
             let page_bytes = page.encode();
 
-            debug_assert_eq!(page_bytes.len(), CHUNK_SIZE);
+            debug_assert_eq!(page_bytes.len(), PAGE_SIZE);
 
             file.write_all(page_bytes)?;
         }
@@ -124,8 +125,8 @@ impl Sst {
         Ok(Sst { opened_file: file })
     }
 
-    pub fn get(&self, key: u64) -> Result<Option<u64>, DbError> {
-        let mut scanner = self.scan(key..=key)?;
+    pub fn get(&self, key: u64, file_system: &mut FileSystem) -> Result<Option<u64>, DbError> {
+        let mut scanner = self.scan(key..=key, file_system)?;
 
         match scanner.next() {
             None => Ok(None),
@@ -134,7 +135,11 @@ impl Sst {
         }
     }
 
-    pub fn scan(&self, range: RangeInclusive<u64>) -> Result<SstIter<'_>, DbError> {
+    pub fn scan(
+        &self,
+        range: RangeInclusive<u64>,
+        file_system: &mut FileSystem,
+    ) -> Result<SstIter<'_>, DbError> {
         SstIter::new(self, range)
     }
 }
@@ -174,15 +179,15 @@ impl<'a> SstIter<'a> {
         let mut found = false;
 
         let file_size = sst.opened_file.metadata()?.len() as usize;
-        if !file_size.is_multiple_of(CHUNK_SIZE) {
+        if !file_size.is_multiple_of(PAGE_SIZE) {
             return Err(DbError::IoError("SST file size not aligned".to_string()));
         }
 
-        let num_pages = file_size / CHUNK_SIZE;
+        let num_pages = file_size / PAGE_SIZE;
 
         // Linear search
         'outer: for page in 0..num_pages {
-            let page_offset = page * CHUNK_SIZE;
+            let page_offset = page * PAGE_SIZE;
 
             sst.opened_file
                 .read_exact_at(&mut buffered_page_bytes.0, page_offset as u64)?;
@@ -254,7 +259,7 @@ impl<'a> SstIter<'a> {
             return Some(Ok(item));
         }
 
-        let page_offset = self.page_number * CHUNK_SIZE;
+        let page_offset = self.page_number * PAGE_SIZE;
 
         let res = self
             .file
@@ -304,11 +309,11 @@ mod tests {
     #[test]
     fn test_problematic_ssts() {
         let path = &TestPath::new("/xyz/abc/file");
-        Sst::create(vec![], path).unwrap_err();
+        Sst::create(vec![], path, &mut Default::default()).unwrap_err();
 
         let path = &TestPath::new("./db/SST_Duplicate");
-        _ = Sst::create(vec![], path);
-        Sst::create(vec![], path).unwrap_err();
+        _ = Sst::create(vec![], path, &mut Default::default());
+        Sst::create(vec![], path, &mut Default::default()).unwrap_err();
     }
 
     /* Create an SST and then open it up to see if sane */
@@ -317,7 +322,7 @@ mod tests {
         let file_name = "./db/SST_Test_Create_Open";
         let path = &TestPath::new(file_name);
 
-        Sst::create(vec![], path)?;
+        Sst::create(vec![], path, &mut Default::default())?;
 
         Sst::open(path)?;
 
@@ -342,16 +347,17 @@ mod tests {
                 (15, 16),
             ],
             path,
+            &mut Default::default(),
         )?;
 
         let sst = Sst::open(path)?;
 
-        let scan = sst.scan(11..=12)?;
+        let scan = sst.scan(11..=12, &mut Default::default())?;
         println!("{} {}", scan.page_number, scan.item_number);
         assert_eq!(scan.page_number, 0);
         assert_eq!(scan.item_number, 5);
 
-        let scan = sst.scan(2..=12)?;
+        let scan = sst.scan(2..=12, &mut Default::default())?;
         println!("{} {}", scan.page_number, scan.item_number);
         assert_eq!(scan.page_number, 0);
         assert_eq!(scan.item_number, 1);
@@ -376,11 +382,12 @@ mod tests {
                 (15, 16),
             ],
             path,
+            &mut Default::default(),
         )?;
 
         let sst = Sst::open(path)?;
 
-        let mut scan = sst.scan(2..=12)?;
+        let mut scan = sst.scan(2..=12, &mut Default::default())?;
         assert_eq!(scan.next().unwrap()?, (3, 4));
         assert_eq!(scan.next().unwrap()?, (5, 6));
         assert_eq!(scan.next().unwrap()?, (7, 8));
@@ -404,7 +411,7 @@ mod tests {
         for i in 1..400_000 {
             test_vec.push((i, i));
         }
-        Sst::create(test_vec, path)?;
+        Sst::create(test_vec, path, &mut Default::default())?;
 
         let sst = Sst::open(path)?;
 
@@ -414,7 +421,7 @@ mod tests {
         let range_start = 1;
         let range_end = 4000;
 
-        let mut scan = sst.scan(range_start..=range_end)?;
+        let mut scan = sst.scan(range_start..=range_end, &mut Default::default())?;
 
         let mut page_number = 0;
         for i in range_start..range_end {

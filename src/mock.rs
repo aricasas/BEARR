@@ -1,51 +1,28 @@
-use std::{
-    fs::{self, File},
-    io::Write,
-    ops::RangeInclusive,
-    path::{Path, PathBuf},
-};
+use std::{fs::File, io::Write, os::unix::fs::FileExt, path::Path};
 
-use crate::error::DbError;
+use crate::{PAGE_SIZE, error::DbError, file_system::Aligned};
 
-#[allow(clippy::upper_case_acronyms)]
-pub struct Sst {
-    filename: PathBuf,
-}
-
-impl Sst {
-    pub fn create(key_values: Vec<(u64, u64)>, path: impl AsRef<Path>) -> Result<Sst, DbError> {
-        let path = path.as_ref();
-        let mut file = File::create_new(path)?;
-        write!(&mut file, "{}", serde_json::to_string(&key_values).unwrap())?;
-        Ok(Self {
-            filename: path.to_path_buf(),
-        })
+#[derive(Default)]
+pub struct FileSystem;
+impl FileSystem {
+    pub fn new(capacity: usize) -> Result<Self, DbError> {
+        Ok(Self)
     }
-
-    pub fn open(path: impl AsRef<Path>) -> Result<Sst, DbError> {
-        let path = path.as_ref();
-        Ok(Self {
-            filename: path.to_path_buf(),
-        })
+    pub fn get(&mut self, path: impl AsRef<Path>, page_number: usize) -> Result<&Aligned, DbError> {
+        let mut page = Aligned::new();
+        File::open(&path)?.read_exact_at(&mut page.0, (page_number * PAGE_SIZE) as u64)?;
+        Ok(Box::leak(page))
     }
-
-    pub fn get(&self, key: u64) -> Result<Option<u64>, DbError> {
-        let key_values = fs::read_to_string(&self.filename)?;
-        let key_values: Vec<(u64, u64)> = serde_json::from_str(&key_values).unwrap();
-        Ok(key_values
-            .iter()
-            .find_map(|&(k, v)| (k == key).then_some(v)))
-    }
-
-    pub fn scan(
-        &self,
-        range: RangeInclusive<u64>,
-    ) -> Result<impl Iterator<Item = Result<(u64, u64), DbError>>, DbError> {
-        let key_values = fs::read_to_string(&self.filename)?;
-        let mut key_values: Vec<(u64, u64)> = serde_json::from_str(&key_values).unwrap();
-        key_values.sort();
-        Ok(key_values
-            .into_iter()
-            .filter_map(move |(k, v)| range.contains(&k).then_some(Ok((k, v)))))
+    pub fn append(
+        &mut self,
+        path: impl AsRef<Path>,
+        page: &[u8; PAGE_SIZE],
+    ) -> Result<(), DbError> {
+        File::options()
+            .append(true)
+            .create(true)
+            .open(path)?
+            .write_all(page)?;
+        Ok(())
     }
 }

@@ -6,11 +6,13 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(not(feature = "mock"))]
 use crate::{DbError, db_scan, memtable::MemTable, sst::Sst};
 
+#[cfg(not(feature = "mock"))]
+use crate::file_system::FileSystem;
+
 #[cfg(feature = "mock")]
-use crate::{DbError, db_scan, memtable::MemTable, mock::Sst};
+use crate::mock::FileSystem;
 
 /// An open connection to a database
 pub struct Database {
@@ -18,12 +20,14 @@ pub struct Database {
     name: PathBuf,
     memtable: MemTable<u64, u64>,
     ssts: Vec<Sst>,
+    file_system: FileSystem,
 }
 
 /// Configuration options for a database
 #[derive(Serialize, Deserialize)]
 pub struct DbConfiguration {
-    pub memtable_size: usize,
+    pub memtable_capacity: usize,
+    pub buffer_pool_capacity: usize,
 }
 
 /// Metadata for a database
@@ -85,7 +89,8 @@ impl Database {
         configuration: DbConfiguration,
         metadata: DbMetadata,
     ) -> Result<Self, DbError> {
-        let memtable = MemTable::new(configuration.memtable_size)?;
+        let memtable = MemTable::new(configuration.memtable_capacity)?;
+        let file_system = FileSystem::new(configuration.buffer_pool_capacity)?;
 
         let mut ssts = Vec::with_capacity(metadata.num_ssts);
         for i in 0..metadata.num_ssts {
@@ -98,6 +103,7 @@ impl Database {
             name: name.to_path_buf(),
             memtable,
             ssts,
+            file_system,
         })
     }
 
@@ -109,7 +115,7 @@ impl Database {
         self.memtable.put(key, value);
 
         // Ensure memtable remains below capacity for the next put
-        if self.memtable.size() == self.configuration.memtable_size {
+        if self.memtable.size() == self.configuration.memtable_capacity {
             self.flush()?;
         }
 
@@ -141,7 +147,7 @@ impl Database {
         );
 
         let path = self.name.join(self.num_ssts().to_string());
-        let sst = Sst::create(key_values, &path)?;
+        let sst = Sst::create(key_values, &path, &mut self.file_system)?;
 
         let metadata = DbMetadata {
             num_ssts: self.num_ssts() + 1,
@@ -158,7 +164,7 @@ impl Database {
     /// Returns the value associated with the given key, if it exists.
     ///
     /// Returns an error if searching fails in an SST.
-    pub fn get(&self, key: u64) -> Result<Option<u64>, DbError> {
+    pub fn get(&mut self, key: u64) -> Result<Option<u64>, DbError> {
         let val = self.memtable.get(key);
         if val.is_some() {
             return Ok(val);
@@ -166,7 +172,7 @@ impl Database {
 
         // Further-back (higher-numbered) SSTs are newer, so search them first.
         for sst in self.ssts.iter().rev() {
-            let val = sst.get(key)?;
+            let val = sst.get(key, &mut self.file_system)?;
             if val.is_some() {
                 return Ok(val);
             }
@@ -178,7 +184,7 @@ impl Database {
     /// Returns a sorted list of all key-value pairs where the key is in the given range.
     ///
     /// Returns an error if scanning fails in the memtable or SSTs.
-    pub fn scan(&self, range: RangeInclusive<u64>) -> Result<Vec<(u64, u64)>, DbError> {
+    pub fn scan(&mut self, range: RangeInclusive<u64>) -> Result<Vec<(u64, u64)>, DbError> {
         let memtable_scan = self
             .memtable
             .scan(range.clone())?
@@ -190,7 +196,10 @@ impl Database {
             .ssts
             .iter()
             .rev()
-            .map(|sst| sst.scan(range.clone()).map(|it| it.peekable()))
+            .map(|sst| {
+                sst.scan(range.clone(), &mut self.file_system)
+                    .map(|it| it.peekable())
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
         db_scan::scan(db_scan::DbSource {
@@ -242,7 +251,7 @@ mod tests {
         Ok(())
     }
 
-    fn get_many(db: &Database, keys: &[u64]) -> Result<Vec<Option<u64>>> {
+    fn get_many(db: &mut Database, keys: &[u64]) -> Result<Vec<Option<u64>>> {
         let mut result = Vec::new();
         for &k in keys {
             result.push(db.get(k)?);
@@ -254,7 +263,13 @@ mod tests {
     fn test_basic() -> Result<()> {
         let name = &path("basic");
         clear(name);
-        let mut db = Database::create(name, DbConfiguration { memtable_size: 3 })?;
+        let mut db = Database::create(
+            name,
+            DbConfiguration {
+                memtable_capacity: 3,
+                buffer_pool_capacity: 0,
+            },
+        )?;
 
         put_many(
             &mut db,
@@ -272,7 +287,7 @@ mod tests {
         )?;
 
         assert_eq!(
-            get_many(&db, &[3, 4, 9, 2, 5, 8, 97, 32, 84, 1, 10, 90])?,
+            get_many(&mut db, &[3, 4, 9, 2, 5, 8, 97, 32, 84, 1, 10, 90])?,
             &[
                 Some(1),
                 Some(1),
@@ -303,13 +318,22 @@ mod tests {
         clear(name);
 
         {
-            let mut db = Database::create(name, DbConfiguration { memtable_size: 10 })?;
+            let mut db = Database::create(
+                name,
+                DbConfiguration {
+                    memtable_capacity: 10,
+                    buffer_pool_capacity: 0,
+                },
+            )?;
             put_many(&mut db, &[(13, 15), (14, 1), (4, 19)])?;
         }
 
         {
             let mut db = Database::open(name)?;
-            assert_eq!(get_many(&db, &[13, 14, 4])?, &[Some(15), Some(1), Some(19)]);
+            assert_eq!(
+                get_many(&mut db, &[13, 14, 4])?,
+                &[Some(15), Some(1), Some(19)]
+            );
             put_many(&mut db, &[(13, 15), (14, 15), (1, 19)])?;
             db.flush()?;
             put_many(&mut db, &[(3, 1), (20, 5), (7, 15), (18, 25)])?;
@@ -320,7 +344,7 @@ mod tests {
             let mut db = Database::open(name)?;
 
             assert_eq!(
-                get_many(&db, &[13, 14, 4, 1, 3, 20, 7, 18])?,
+                get_many(&mut db, &[13, 14, 4, 1, 3, 20, 7, 18])?,
                 &[
                     Some(15),
                     Some(15),
@@ -338,7 +362,7 @@ mod tests {
             put_many(&mut db, &[(6, 21), (14, 3), (20, 15), (18, 19)])?;
 
             assert_eq!(
-                get_many(&db, &[13, 14, 4, 1, 3, 20, 7, 18, 5, 6])?,
+                get_many(&mut db, &[13, 14, 4, 1, 3, 20, 7, 18, 5, 6])?,
                 &[
                     Some(15),
                     Some(3),
