@@ -3,7 +3,7 @@ use bearr::Database;
 const M: usize = 1048576;
 
 fn main() {
-let config = bearr::DbConfiguration {
+    let config = bearr::DbConfiguration {
         memtable_size: 2 * M,
     };
     let mut db = Database::create("poop_db", config).unwrap();
@@ -17,7 +17,7 @@ let config = bearr::DbConfiguration {
         }
     }
 
-    let mut db = Database::open("poop_db").unwrap();
+    let db = Database::open("poop_db").unwrap();
     let full_scan = db.scan(0..=u64::MAX).unwrap();
 
     eprintln!("Scan completed, n_entries={}", full_scan.len());

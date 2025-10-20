@@ -19,7 +19,6 @@ pub struct Sst {
     opened_file: fs::File,
 }
 
-
 #[repr(C, align(4096))]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 struct Page {
@@ -71,7 +70,7 @@ impl Sst {
         let mut file = fs::OpenOptions::new()
             .create_new(true)
             .write(true)
-            .read(true) 
+            .read(true)
             .open(&path)?;
 
         let (chunks, remainder) = key_values.as_chunks::<PAIRS_PER_CHUNK>();
@@ -111,7 +110,7 @@ impl Sst {
 
         let file = fs::OpenOptions::new()
             .write(true)
-            .read(true) 
+            .read(true)
             .custom_flags(libc::O_DIRECT | libc::O_SYNC)
             .open(path)?;
         Ok(Sst { opened_file: file })
