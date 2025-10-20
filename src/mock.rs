@@ -13,11 +13,7 @@ impl FileSystem {
         File::open(&path)?.read_exact_at(&mut page.0, (page_number * PAGE_SIZE) as u64)?;
         Ok(Box::leak(page))
     }
-    pub fn append(
-        &mut self,
-        path: impl AsRef<Path>,
-        page: &[u8; PAGE_SIZE],
-    ) -> Result<(), DbError> {
+    pub fn append(&mut self, path: impl AsRef<Path>, page: &Aligned) -> Result<(), DbError> {
         File::options()
             .append(true)
             .create(true)

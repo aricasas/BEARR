@@ -6,6 +6,7 @@ use crate::{
 };
 
 #[repr(C, align(4096))]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 pub struct Aligned(pub [u8; PAGE_SIZE]);
 impl Aligned {
     pub fn new() -> Box<Self> {
@@ -35,11 +36,7 @@ impl FileSystem {
         // Remember to register new page in eviction handler
         todo!()
     }
-    pub fn append(
-        &mut self,
-        path: impl AsRef<Path>,
-        page: &[u8; PAGE_SIZE],
-    ) -> Result<(), DbError> {
+    pub fn append(&mut self, path: impl AsRef<Path>, page: &Aligned) -> Result<(), DbError> {
         todo!()
     }
 }
