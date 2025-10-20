@@ -72,8 +72,7 @@ impl Sst {
             .create_new(true)
             .write(true)
             .read(true)
-            .custom_flags(libc::O_DIRECT | libc::O_SYNC)
-            .open(path)?;
+            .open(&path)?;
 
         let (chunks, remainder) = key_values.as_chunks::<PAIRS_PER_CHUNK>();
 
@@ -108,7 +107,13 @@ impl Sst {
 
             file.write_all(page_bytes)?;
         }
+        drop(file);
 
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .read(true)
+            .custom_flags(libc::O_DIRECT | libc::O_SYNC)
+            .open(path)?;
         Ok(Sst { opened_file: file })
     }
 
