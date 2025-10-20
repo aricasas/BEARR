@@ -1,6 +1,6 @@
 use std::iter::Peekable;
 
-use crate::DBError;
+use crate::DbError;
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 /// An `Option`-like enum for the elements of a level.
@@ -28,30 +28,30 @@ pub trait Source<K, V> {
     fn num_levels(&self) -> usize;
 
     /// Returns the key at the given level, without advancing.
-    fn peek(&mut self, i: usize) -> Result<Element<K>, DBError>;
+    fn peek(&mut self, i: usize) -> Result<Element<K>, DbError>;
 
     /// Returns the next key-value pair for the given level and advances the level.
-    fn next(&mut self, i: usize) -> Result<Element<(K, V)>, DBError>;
+    fn next(&mut self, i: usize) -> Result<Element<(K, V)>, DbError>;
 }
 
 /// A source that takes from the memtable and SSTs.
 ///
 /// The topmost SST should be in front for `sst_scans`.
-pub struct DBSource<M: Iterator, S: Iterator> {
+pub struct DbSource<M: Iterator, S: Iterator> {
     pub memtable_scan: Peekable<M>,
     pub sst_scans: Vec<Peekable<S>>,
 }
 
 impl<
-    M: Iterator<Item = Result<(u64, u64), DBError>>,
-    S: Iterator<Item = Result<(u64, u64), DBError>>,
-> Source<u64, u64> for DBSource<M, S>
+    M: Iterator<Item = Result<(u64, u64), DbError>>,
+    S: Iterator<Item = Result<(u64, u64), DbError>>,
+> Source<u64, u64> for DbSource<M, S>
 {
     fn num_levels(&self) -> usize {
         self.sst_scans.len() + 1
     }
 
-    fn peek(&mut self, i: usize) -> Result<Element<u64>, DBError> {
+    fn peek(&mut self, i: usize) -> Result<Element<u64>, DbError> {
         let next_element = if i == 0 {
             self.memtable_scan.peek()
         } else {
@@ -64,7 +64,7 @@ impl<
         }
     }
 
-    fn next(&mut self, i: usize) -> Result<Element<(u64, u64)>, DBError> {
+    fn next(&mut self, i: usize) -> Result<Element<(u64, u64)>, DbError> {
         let next_element = if i == 0 {
             self.memtable_scan.next()
         } else {
@@ -78,7 +78,7 @@ impl<
     }
 }
 
-pub fn scan<K: Ord, V>(mut source: impl Source<K, V>) -> Result<Vec<(K, V)>, DBError> {
+pub fn scan<K: Ord, V>(mut source: impl Source<K, V>) -> Result<Vec<(K, V)>, DbError> {
     let mut out = Vec::new();
     sweep(&mut source, &Element::End, 0, &mut out)?;
     Ok(out)
@@ -96,7 +96,7 @@ fn sweep<K: Ord, V>(
     m: &Element<K>,
     s: usize,
     out: &mut Vec<(K, V)>,
-) -> Result<(), DBError> {
+) -> Result<(), DbError> {
     // Invariants for a key `k` on a level `s`:
     // (c) `k` is advanced only after all keys `<= k` on levels `>= s + 1` are advanced.
     // (d) `k` is advanced before any key `> k` on a level `>= s + 1` is advanced.
@@ -166,10 +166,10 @@ mod tests {
         fn num_levels(&self) -> usize {
             self.data.len()
         }
-        fn peek(&mut self, i: usize) -> Result<Element<u64>, DBError> {
+        fn peek(&mut self, i: usize) -> Result<Element<u64>, DbError> {
             Ok(element_from_option(self.data[i].peek().map(|&(k, _)| k)))
         }
-        fn next(&mut self, i: usize) -> Result<Element<(u64, u64)>, DBError> {
+        fn next(&mut self, i: usize) -> Result<Element<(u64, u64)>, DbError> {
             Ok(element_from_option(self.data[i].next()))
         }
     }
@@ -201,7 +201,7 @@ mod tests {
 
     fn oracle<K: Ord + Copy + Hash + Eq, V>(
         mut source: impl Source<K, V>,
-    ) -> Result<Vec<(K, V)>, DBError> {
+    ) -> Result<Vec<(K, V)>, DbError> {
         let mut result = HashMap::new();
         for i in (0..source.num_levels()).rev() {
             while let Element::Regular((k, v)) = source.next(i)? {

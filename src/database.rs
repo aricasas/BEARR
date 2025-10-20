@@ -7,28 +7,28 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 #[cfg(not(feature = "mock"))]
-use crate::{DBError, db_scan, memtable::MemTable, sst::SST};
+use crate::{DbError, db_scan, memtable::MemTable, sst::Sst};
 
 #[cfg(feature = "mock")]
-use crate::{DBError, db_scan, memtable::MemTable, mock::SST};
+use crate::{DbError, db_scan, memtable::MemTable, mock::Sst};
 
 /// An open connection to a database
 pub struct Database {
-    configuration: DBConfiguration,
+    configuration: DbConfiguration,
     name: PathBuf,
     memtable: MemTable<u64, u64>,
-    ssts: Vec<SST>,
+    ssts: Vec<Sst>,
 }
 
 /// Configuration options for a database
 #[derive(Serialize, Deserialize)]
-pub struct DBConfiguration {
+pub struct DbConfiguration {
     pub memtable_size: usize,
 }
 
 /// Metadata for a database
 #[derive(Serialize, Deserialize)]
-struct DBMetadata {
+struct DbMetadata {
     num_ssts: usize,
 }
 
@@ -38,20 +38,20 @@ const METADATA_FILENAME: &str = "metadata.json";
 impl Database {
     /// Creates and returns an empty database, initializing a folder with the given path.
     ///
-    /// Returns `DBError::IOError` if:
+    /// Returns `DbError::IoError` if:
     /// - The path already exists.
     /// - A parent of the path does not exist.
     /// - There are problems with creating/writing to files.
     ///
     /// May return other errors if creation of the memtable or SSTs fails.
-    pub fn create(name: impl AsRef<Path>, configuration: DBConfiguration) -> Result<Self, DBError> {
+    pub fn create(name: impl AsRef<Path>, configuration: DbConfiguration) -> Result<Self, DbError> {
         let name = name.as_ref();
         fs::create_dir(name)?;
 
         let config_file = File::create_new(name.join(CONFIG_FILENAME))?;
         serde_json::to_writer_pretty(config_file, &configuration)?;
 
-        let metadata = DBMetadata { num_ssts: 0 };
+        let metadata = DbMetadata { num_ssts: 0 };
         let metadata_file = File::create_new(name.join(METADATA_FILENAME))?;
         serde_json::to_writer_pretty(metadata_file, &metadata)?;
 
@@ -60,19 +60,19 @@ impl Database {
 
     /// Opens the database located at the given path.
     ///
-    /// Returns `DBError::IOError` if:
+    /// Returns `DbError::IoError` if:
     /// - The path does not exist.
     /// - There are problems with reading files.
     ///
     /// May return other errors if creation of the memtable or SSTs fails.
-    pub fn open(name: impl AsRef<Path>) -> Result<Self, DBError> {
+    pub fn open(name: impl AsRef<Path>) -> Result<Self, DbError> {
         let name = name.as_ref();
 
         let config_file = File::open(name.join(CONFIG_FILENAME))?;
-        let configuration: DBConfiguration = serde_json::from_reader(config_file)?;
+        let configuration: DbConfiguration = serde_json::from_reader(config_file)?;
 
         let metadata_file = File::open(name.join(METADATA_FILENAME))?;
-        let metadata: DBMetadata = serde_json::from_reader(metadata_file)?;
+        let metadata: DbMetadata = serde_json::from_reader(metadata_file)?;
 
         Self::new(name, configuration, metadata)
     }
@@ -82,14 +82,14 @@ impl Database {
     /// Returns an error if creation of the memtable or SSTs fails.
     fn new(
         name: &Path,
-        configuration: DBConfiguration,
-        metadata: DBMetadata,
-    ) -> Result<Self, DBError> {
+        configuration: DbConfiguration,
+        metadata: DbMetadata,
+    ) -> Result<Self, DbError> {
         let memtable = MemTable::new(configuration.memtable_size)?;
 
         let mut ssts = Vec::with_capacity(metadata.num_ssts);
         for i in 0..metadata.num_ssts {
-            let sst = SST::open(name.join(i.to_string()))?;
+            let sst = Sst::open(name.join(i.to_string()))?;
             ssts.push(sst);
         }
 
@@ -105,7 +105,7 @@ impl Database {
     /// flushing the memtable if it reaches capacity.
     ///
     /// Returns an error if flushing fails. See `Database::flush` for more info.
-    pub fn put(&mut self, key: u64, value: u64) -> Result<(), DBError> {
+    pub fn put(&mut self, key: u64, value: u64) -> Result<(), DbError> {
         self.memtable.put(key, value);
 
         // Ensure memtable remains below capacity for the next put
@@ -128,7 +128,7 @@ impl Database {
     /// - Scanning the memtable fails.
     /// - Creation of the new SST fails.
     /// - Creation of the new memtable fails.
-    pub fn flush(&mut self) -> Result<(), DBError> {
+    pub fn flush(&mut self) -> Result<(), DbError> {
         if self.memtable.size() == 0 {
             return Ok(());
         }
@@ -141,9 +141,9 @@ impl Database {
         );
 
         let path = self.name.join(self.num_ssts().to_string());
-        let sst = SST::create(key_values, &path)?;
+        let sst = Sst::create(key_values, &path)?;
 
-        let metadata = DBMetadata {
+        let metadata = DbMetadata {
             num_ssts: self.num_ssts() + 1,
         };
         let metadata_file = File::create(self.name.join(METADATA_FILENAME))?;
@@ -158,7 +158,7 @@ impl Database {
     /// Returns the value associated with the given key, if it exists.
     ///
     /// Returns an error if searching fails in an SST.
-    pub fn get(&self, key: u64) -> Result<Option<u64>, DBError> {
+    pub fn get(&self, key: u64) -> Result<Option<u64>, DbError> {
         let val = self.memtable.get(key);
         if val.is_some() {
             return Ok(val);
@@ -178,7 +178,7 @@ impl Database {
     /// Returns a sorted list of all key-value pairs where the key is in the given range.
     ///
     /// Returns an error if scanning fails in the memtable or SSTs.
-    pub fn scan(&self, range: RangeInclusive<u64>) -> Result<Vec<(u64, u64)>, DBError> {
+    pub fn scan(&self, range: RangeInclusive<u64>) -> Result<Vec<(u64, u64)>, DbError> {
         let memtable_scan = self
             .memtable
             .scan(range.clone())?
@@ -193,7 +193,7 @@ impl Database {
             .map(|sst| sst.scan(range.clone()).map(|it| it.peekable()))
             .collect::<Result<Vec<_>, _>>()?;
 
-        db_scan::scan(db_scan::DBSource {
+        db_scan::scan(db_scan::DbSource {
             memtable_scan,
             sst_scans,
         })
@@ -202,7 +202,7 @@ impl Database {
     /// Closes the database.
     ///
     /// If flushing fails, returns an error along with `self` to allow retrying the close.
-    pub fn close(mut self) -> Result<(), (Self, DBError)> {
+    pub fn close(mut self) -> Result<(), (Self, DbError)> {
         self.flush().map_err(|e| (self, e))
     }
 }
@@ -254,7 +254,7 @@ mod tests {
     fn test_basic() -> Result<()> {
         let name = &path("basic");
         clear(name);
-        let mut db = Database::create(name, DBConfiguration { memtable_size: 3 })?;
+        let mut db = Database::create(name, DbConfiguration { memtable_size: 3 })?;
 
         put_many(
             &mut db,
@@ -303,7 +303,7 @@ mod tests {
         clear(name);
 
         {
-            let mut db = Database::create(name, DBConfiguration { memtable_size: 10 })?;
+            let mut db = Database::create(name, DbConfiguration { memtable_size: 10 })?;
             put_many(&mut db, &[(13, 15), (14, 1), (4, 19)])?;
         }
 

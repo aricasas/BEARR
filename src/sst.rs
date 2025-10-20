@@ -6,7 +6,7 @@ use std::{
     path::Path,
 };
 
-use crate::DBError;
+use crate::DbError;
 
 const CHUNK_SIZE: usize = 4096;
 const PAIRS_PER_CHUNK: usize = (CHUNK_SIZE - 8) / 16;
@@ -15,7 +15,7 @@ const PADDING: usize = CHUNK_SIZE - 8 - PAIRS_PER_CHUNK * 16;
 /// A handle to an SST of a database
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug)]
-pub struct SST {
+pub struct Sst {
     opened_file: fs::File,
 }
 
@@ -63,11 +63,11 @@ impl Page {
 
 const _: () = assert!(size_of::<Page>() == CHUNK_SIZE);
 
-impl SST {
+impl Sst {
     /*
      * Create an SST table to store contents on disk
      * */
-    pub fn create(key_values: Vec<(u64, u64)>, path: impl AsRef<Path>) -> Result<SST, DBError> {
+    pub fn create(key_values: Vec<(u64, u64)>, path: impl AsRef<Path>) -> Result<Sst, DbError> {
         let mut file = fs::OpenOptions::new()
             .create_new(true)
             .write(true)
@@ -120,17 +120,17 @@ impl SST {
     /* Open the file and add it to opened files
      * find the file's SST and give it back
      * */
-    pub fn open(path: impl AsRef<Path>) -> Result<SST, DBError> {
+    pub fn open(path: impl AsRef<Path>) -> Result<Sst, DbError> {
         let file = fs::OpenOptions::new()
             .write(true)
             .read(true)
             .custom_flags(libc::O_DIRECT | libc::O_SYNC)
             .open(path)?;
 
-        Ok(SST { opened_file: file })
+        Ok(Sst { opened_file: file })
     }
 
-    pub fn get(&self, key: u64) -> Result<Option<u64>, DBError> {
+    pub fn get(&self, key: u64) -> Result<Option<u64>, DbError> {
         let mut scanner = self.scan(key..=key)?;
 
         match scanner.next() {
@@ -140,8 +140,8 @@ impl SST {
         }
     }
 
-    pub fn scan(&self, range: RangeInclusive<u64>) -> Result<SSTIter<'_>, DBError> {
-        SSTIter::new(self, range)
+    pub fn scan(&self, range: RangeInclusive<u64>) -> Result<SstIter<'_>, DbError> {
+        SstIter::new(self, range)
     }
 }
 
@@ -150,7 +150,7 @@ impl SST {
  *
  *
  * */
-pub struct SSTIter<'a> {
+pub struct SstIter<'a> {
     page_number: usize,
     item_number: usize,
     buffered_page_bytes: Box<Aligned>,
@@ -160,18 +160,18 @@ pub struct SSTIter<'a> {
     ended: bool,
 }
 
-impl<'a> Iterator for SSTIter<'a> {
-    type Item = Result<(u64, u64), DBError>;
+impl<'a> Iterator for SstIter<'a> {
+    type Item = Result<(u64, u64), DbError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.go_to_next()
     }
 }
 
-impl<'a> SSTIter<'a> {
-    fn new(sst: &'a SST, range: RangeInclusive<u64>) -> Result<Self, DBError> {
+impl<'a> SstIter<'a> {
+    fn new(sst: &'a Sst, range: RangeInclusive<u64>) -> Result<Self, DbError> {
         if range.start() > range.end() {
-            return Err(DBError::InvalidScanRange);
+            return Err(DbError::InvalidScanRange);
         }
 
         let mut buffered_page_bytes = Aligned::new();
@@ -181,7 +181,7 @@ impl<'a> SSTIter<'a> {
 
         let file_size = sst.opened_file.metadata()?.len() as usize;
         if !file_size.is_multiple_of(CHUNK_SIZE) {
-            return Err(DBError::IOError("SST file size not aligned".to_string()));
+            return Err(DbError::IoError("SST file size not aligned".to_string()));
         }
 
         let num_pages = file_size / CHUNK_SIZE;
@@ -229,7 +229,7 @@ impl<'a> SSTIter<'a> {
      * While we have not reached the end of the range, go to the next item in the buffer,
      * If we reach the end of the buffer, bring in the next page
      * */
-    fn go_to_next(&mut self) -> Option<Result<(u64, u64), DBError>> {
+    fn go_to_next(&mut self) -> Option<Result<(u64, u64), DbError>> {
         if self.ended {
             return None;
         }
@@ -310,11 +310,11 @@ mod tests {
     #[test]
     fn test_problematic_ssts() {
         let path = &TestPath::new("/xyz/abc/file");
-        SST::create(vec![], path).unwrap_err();
+        Sst::create(vec![], path).unwrap_err();
 
         let path = &TestPath::new("./db/SST_Duplicate");
-        _ = SST::create(vec![], path);
-        SST::create(vec![], path).unwrap_err();
+        _ = Sst::create(vec![], path);
+        Sst::create(vec![], path).unwrap_err();
     }
 
     /* Create an SST and then open it up to see if sane */
@@ -323,9 +323,9 @@ mod tests {
         let file_name = "./db/SST_Test_Create_Open";
         let path = &TestPath::new(file_name);
 
-        SST::create(vec![], path)?;
+        Sst::create(vec![], path)?;
 
-        SST::open(path)?;
+        Sst::open(path)?;
 
         Ok(())
     }
@@ -336,7 +336,7 @@ mod tests {
         let file_name = "./db/SST_Test_Read_Write";
         let path = &TestPath::new(file_name);
 
-        SST::create(
+        Sst::create(
             vec![
                 (1, 2),
                 (3, 4),
@@ -350,7 +350,7 @@ mod tests {
             path,
         )?;
 
-        let sst = SST::open(path)?;
+        let sst = Sst::open(path)?;
 
         let scan = sst.scan(11..=12)?;
         println!("{} {}", scan.page_number, scan.item_number);
@@ -370,7 +370,7 @@ mod tests {
         let file_name = "./db/SST_Test_Scan";
         let path = &TestPath::new(file_name);
 
-        SST::create(
+        Sst::create(
             vec![
                 (1, 2),
                 (3, 4),
@@ -384,7 +384,7 @@ mod tests {
             path,
         )?;
 
-        let sst = SST::open(path)?;
+        let sst = Sst::open(path)?;
 
         let mut scan = sst.scan(2..=12)?;
         assert_eq!(scan.next().unwrap()?, (3, 4));
@@ -410,9 +410,9 @@ mod tests {
         for i in 1..400_000 {
             test_vec.push((i, i));
         }
-        SST::create(test_vec, path)?;
+        Sst::create(test_vec, path)?;
 
-        let sst = SST::open(path)?;
+        let sst = Sst::open(path)?;
 
         let file_size = sst.opened_file.metadata()?.len();
         println!("Current File Size : {}", file_size);
