@@ -19,7 +19,7 @@ pub struct Sst {
     opened_file: fs::File,
 }
 
-#[repr(C)]
+#[repr(C, align(4096))]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 struct Page {
     /// Number of pairs stored in this page
@@ -38,7 +38,7 @@ impl Default for Page {
     }
 }
 
-#[repr(C, align(0x8))]
+#[repr(C, align(4096))]
 struct Aligned([u8; CHUNK_SIZE]);
 impl Aligned {
     pub fn new() -> Box<Self> {
@@ -71,8 +71,7 @@ impl Sst {
             .create_new(true)
             .write(true)
             .read(true)
-            .custom_flags(libc::O_DIRECT | libc::O_SYNC)
-            .open(path)?;
+            .open(&path)?;
 
         let (chunks, remainder) = key_values.as_chunks::<PAIRS_PER_CHUNK>();
 
@@ -107,7 +106,13 @@ impl Sst {
 
             file.write_all(page_bytes)?;
         }
+        drop(file);
 
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .read(true)
+            .custom_flags(libc::O_DIRECT | libc::O_SYNC)
+            .open(path)?;
         Ok(Sst { opened_file: file })
     }
 
