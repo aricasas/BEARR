@@ -86,8 +86,6 @@ impl SST {
             page.length = chunk.len() as u64;
 
             let page_bytes = page.encode();
-            let page_ptr = page_bytes as *const [u8] as *const u8 as usize;
-            println!("page ptr :: {:?}",page_ptr%4096);
 
             debug_assert_eq!(page_bytes.len(), CHUNK_SIZE);
 
