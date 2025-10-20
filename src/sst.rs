@@ -114,7 +114,7 @@ impl Sst {
             .read(true) 
             .custom_flags(libc::O_DIRECT | libc::O_SYNC)
             .open(path)?;
-        Ok(SST { opened_file: file })
+        Ok(Sst { opened_file: file })
     }
 
     /* Open the file and add it to opened files

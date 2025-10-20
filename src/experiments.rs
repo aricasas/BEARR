@@ -3,8 +3,8 @@ use bearr::Database;
 const M: usize = 1048576;
 
 fn main() {
-let config = bearr::DBConfiguration {
-        memtable_capacity: 2 * M,
+let config = bearr::DbConfiguration {
+        memtable_size: 2 * M,
     };
     let mut db = Database::create("poop_db", config).unwrap();
 
