@@ -139,15 +139,10 @@ impl Database {
             return Ok(());
         }
 
-        let mut key_values = Vec::with_capacity(self.memtable.size());
-        key_values.extend(
-            self.memtable
-                .scan(u64::MIN..=u64::MAX)?
-                .map(|(&k, &v)| (k, v)),
-        );
+        let key_values = self.memtable.scan(u64::MIN..=u64::MAX)?;
 
         let path = self.name.join(self.num_ssts().to_string());
-        let sst = Sst::create(key_values, &path, &mut self.file_system)?;
+        let sst = Sst::create(key_values.map(Ok), &path, &mut self.file_system)?;
 
         let metadata = DbMetadata {
             num_ssts: self.num_ssts() + 1,
@@ -164,7 +159,7 @@ impl Database {
     /// Returns the value associated with the given key, if it exists.
     ///
     /// Returns an error if searching fails in an SST.
-    pub fn get(&mut self, key: u64) -> Result<Option<u64>, DbError> {
+    pub fn get(&self, key: u64) -> Result<Option<u64>, DbError> {
         let val = self.memtable.get(key);
         if val.is_some() {
             return Ok(val);
@@ -172,7 +167,7 @@ impl Database {
 
         // Further-back (higher-numbered) SSTs are newer, so search them first.
         for sst in self.ssts.iter().rev() {
-            let val = sst.get(key, &mut self.file_system)?;
+            let val = sst.get(key, &self.file_system)?;
             if val.is_some() {
                 return Ok(val);
             }
@@ -185,11 +180,7 @@ impl Database {
     ///
     /// Returns an error if scanning fails in the memtable or SSTs.
     pub fn scan(&mut self, range: RangeInclusive<u64>) -> Result<Vec<(u64, u64)>, DbError> {
-        let memtable_scan = self
-            .memtable
-            .scan(range.clone())?
-            .map(|(&k, &v)| Ok((k, v)))
-            .peekable();
+        let memtable_scan = self.memtable.scan(range.clone())?.map(Ok).peekable();
 
         // Further back SSTs are newer; bring them to the front.
         let sst_scans = self
@@ -197,7 +188,7 @@ impl Database {
             .iter()
             .rev()
             .map(|sst| {
-                sst.scan(range.clone(), &mut self.file_system)
+                sst.scan(range.clone(), &self.file_system)
                     .map(|it| it.peekable())
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -267,7 +258,7 @@ mod tests {
             name,
             DbConfiguration {
                 memtable_capacity: 3,
-                buffer_pool_capacity: 0,
+                buffer_pool_capacity: 1,
             },
         )?;
 
@@ -322,7 +313,7 @@ mod tests {
                 name,
                 DbConfiguration {
                     memtable_capacity: 10,
-                    buffer_pool_capacity: 0,
+                    buffer_pool_capacity: 1,
                 },
             )?;
             put_many(&mut db, &[(13, 15), (14, 1), (4, 19)])?;

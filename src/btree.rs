@@ -1,10 +1,6 @@
 use std::{ops::RangeInclusive, path::Path};
 
-use crate::{
-    DbError, PAGE_SIZE,
-    file_system::{Aligned, FileSystem},
-    sst::Sst,
-};
+use crate::{DbError, PAGE_SIZE, file_system::FileSystem, sst::Sst};
 
 #[repr(C, align(4096))]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
@@ -27,7 +23,6 @@ const LEAF_CAPACITY: usize = 0;
 pub struct BTreeIter<'a, 'b> {
     sst: &'a Sst,
     file_system: &'b mut FileSystem,
-    // curr_page:Option<&Aligned>, ?
     page_number: usize,
     item_number: usize,
     range: RangeInclusive<u64>,
@@ -54,9 +49,9 @@ impl<'a, 'b> BTreeIter<'a, 'b> {
 }
 
 /// Creates a static B tree in a file (probably B+ tree?) (should we make an implicit B tree? (i.e. don't store pointers))
-pub fn write_btree_to_file(
-    path: impl AsRef<Path>,
-    pairs: &[(u64, u64)],
+pub fn write_btree_to_files(
+    path_prefix: impl AsRef<Path>,
+    pairs: &impl Iterator<Item = Result<(u64, u64), DbError>>,
     file_system: &mut FileSystem,
 ) -> Result<(), DbError> {
     todo!()

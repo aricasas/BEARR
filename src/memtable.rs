@@ -269,7 +269,7 @@ pub struct MemTableIter<'a, K: Ord + Clone + Default, V: Clone + Default> {
     range: RangeInclusive<K>,
 }
 impl<'a, K: Ord + Clone + Default, V: Clone + Default> Iterator for MemTableIter<'a, K, V> {
-    type Item = (&'a K, &'a V);
+    type Item = (K, V);
 
     fn next(&mut self) -> Option<Self::Item> {
         self.in_order_iterate()
@@ -347,7 +347,7 @@ impl<'a, K: Ord + Clone + Default, V: Clone + Default> MemTableIter<'a, K, V> {
 
     /// Return key-value pair of node at the top of the stack,
     /// and move stack so the new top is the next inorder node of the memtable.
-    fn in_order_iterate(&mut self) -> Option<(&'a K, &'a V)> {
+    fn in_order_iterate(&mut self) -> Option<(K, V)> {
         if let Some(&curr) = self.stack.last() {
             let curr_node = self.memtable.node(curr);
 
@@ -365,11 +365,11 @@ impl<'a, K: Ord + Clone + Default, V: Clone + Default> MemTableIter<'a, K, V> {
                 // If curr has right child, go to its leftmost child
                 self.stack.push(right);
                 self.go_to_leftmost_child(right_node);
-                Some(kv_pair)
+                Some((kv_pair.0.clone(), kv_pair.1.clone()))
             } else {
                 // If curr has no right child, go to the closest rightwards ancestor
                 self.go_to_rightwards_ancestor();
-                Some(kv_pair)
+                Some((kv_pair.0.clone(), kv_pair.1.clone()))
             }
         } else {
             None
@@ -439,9 +439,9 @@ mod tests {
 
         // Scan three last keys
         let mut scan = memtable.scan(3..=10)?;
-        assert_eq!(scan.next(), Some((&5, &10)));
-        assert_eq!(scan.next(), Some((&6, &11)));
-        assert_eq!(scan.next(), Some((&7, &12)));
+        assert_eq!(scan.next(), Some((5, 10)));
+        assert_eq!(scan.next(), Some((6, 11)));
+        assert_eq!(scan.next(), Some((7, 12)));
         assert_eq!(scan.next(), None);
 
         // Scan range in between existing keys
@@ -471,7 +471,7 @@ mod tests {
         assert_eq!(memtable.get(10_000_000), Some(12345));
 
         for (i, pair) in memtable.scan(u64::MIN..=u64::MAX)?.enumerate() {
-            let (&k, &v) = pair;
+            let (k, v) = pair;
 
             if (0..1_000_000).contains(&i) || (3_000_000..4_000_000).contains(&i) {
                 assert_eq!(v, k * 10)
@@ -619,7 +619,7 @@ mod tests {
                 }
 
                 for i in lower..=upper.min(99) {
-                    let (&k, &v) = scan.next().unwrap();
+                    let (k, v) = scan.next().unwrap();
 
                     assert_eq!(k, i);
                     assert_eq!(v, i * 10);
