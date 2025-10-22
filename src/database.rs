@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     DbError,
     memtable::MemTable,
-    merge::{self, MergedIterator, Sources},
+    merge::{self, MergedIterator},
     sst::Sst,
 };
 
@@ -200,22 +200,19 @@ impl Database {
     /// Returns a sorted list of all key-value pairs where the key is in the given range.
     ///
     /// Returns an error if scanning fails in the memtable or SSTs.
-    pub fn scan<'a>(
-        &'a self,
+    pub fn scan(
+        &self,
         range: RangeInclusive<u64>,
-    ) -> Result<MergedIterator<Sources<'a>>, DbError> {
-        let memtable_scan = self.memtable.scan(range.clone())?;
-        let mut sst_scans = self
-            .ssts
-            .iter()
-            .rev()
-            .map(|sst| sst.scan(range.clone(), &self.file_system))
-            .map(|res| res.map(merge::Sources::Sst))
-            .collect::<Result<Vec<_>, DbError>>()?;
-
+    ) -> Result<impl Iterator<Item = Result<(u64, u64), DbError>>, DbError> {
         let mut scans = Vec::new();
+
+        let memtable_scan = self.memtable.scan(range.clone())?;
         scans.push(merge::Sources::MemTable(memtable_scan));
-        scans.append(&mut sst_scans);
+
+        for sst in self.ssts.iter().rev() {
+            let sst_scan = sst.scan(range.clone(), &self.file_system)?;
+            scans.push(merge::Sources::Sst(sst_scan));
+        }
 
         MergedIterator::new(scans)
     }

@@ -1,13 +1,14 @@
 use std::{
-    cmp::{Ordering, Reverse},
+    cmp::{self, Ordering},
     collections::BinaryHeap,
 };
 
-use crate::{DbError, memtable::MemTableIter, sst::SstIter};
+use crate::{DbError, btree::BTreeIter, memtable::MemTableIter, sst::SstIter};
 
 pub enum Sources<'a> {
     MemTable(MemTableIter<'a, u64, u64>),
-    Sst(SstIter<'a, 'a>),
+    Sst(SstIter<'a, 'a>), // TODO remove once we use BtreeIter in Ssts
+    Btree(BTreeIter<'a, 'a>),
 }
 
 impl<'a> Iterator for Sources<'a> {
@@ -15,24 +16,25 @@ impl<'a> Iterator for Sources<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            Sources::MemTable(mem_table_iter) => {
+            Self::MemTable(mem_table_iter) => {
                 let kv = mem_table_iter.next()?;
                 Some(Ok(kv))
             }
-            Sources::Sst(sst_iter) => sst_iter.next(),
+            Self::Sst(sst_iter) => sst_iter.next(),
+            Self::Btree(btree_iter) => btree_iter.next(),
         }
     }
 }
 
 pub struct MergedIterator<I: Iterator<Item = Result<(u64, u64), DbError>>> {
-    /// Smaller index means newer
+    /// Sorted by age, lower index means newer
     levels: Vec<I>,
-    heap: BinaryHeap<Reverse<Entry>>,
+    heap: BinaryHeap<cmp::Reverse<Entry>>,
     last_key: Option<u64>,
     ended: bool,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct Entry {
     key: u64,
     level: usize,
@@ -52,6 +54,12 @@ impl PartialOrd for Entry {
 }
 
 impl<I: Iterator<Item = Result<(u64, u64), DbError>>> MergedIterator<I> {
+    /// Creates a new iterator that merges several iterators into a single output.
+    /// It merges them sorted by keys, while skipping repeated keys.
+    /// For a key with several iterators returning it, only the value of the iterator at the highest level is
+    /// returned and the others are skipped.
+    ///
+    /// `levels[0]`is the highest level and `levels[levels.len() - 1]` is the lowest level
     pub fn new(mut levels: Vec<I>) -> Result<Self, DbError> {
         let mut starting = Vec::new();
         starting.try_reserve_exact(levels.len())?;
@@ -59,7 +67,7 @@ impl<I: Iterator<Item = Result<(u64, u64), DbError>>> MergedIterator<I> {
         for (level, iter) in levels.iter_mut().enumerate() {
             if let Some(entry) = iter.next() {
                 let (key, value) = entry?;
-                starting.push(Reverse(Entry { key, level, value }));
+                starting.push(cmp::Reverse(Entry { key, level, value }));
             }
         }
         let heap = BinaryHeap::from(starting);
@@ -72,6 +80,31 @@ impl<I: Iterator<Item = Result<(u64, u64), DbError>>> MergedIterator<I> {
             ended,
         })
     }
+    fn pop_and_replace(&mut self) -> Result<Option<Entry>, DbError> {
+        // PeekMut allows doing extract_min and insert_new without performing sift_down twice
+        let Some(mut min) = self.heap.peek_mut() else {
+            return Ok(None);
+        };
+
+        let cmp::Reverse(save) = *min;
+
+        let replacement = self.levels[min.0.level].next();
+        match replacement {
+            Some(Ok((key, value))) => {
+                // Insert the new key value pair in the spot of the one we're removing
+                // PeekMut takes care of sifting it down
+                min.0.key = key;
+                min.0.value = value;
+            }
+            None => {
+                // No replacement, have to actually remove the min
+                drop(min);
+                self.heap.pop();
+            }
+            Some(Err(e)) => return Err(e),
+        }
+        Ok(Some(save))
+    }
 }
 
 impl<I: Iterator<Item = Result<(u64, u64), DbError>>> Iterator for MergedIterator<I> {
@@ -82,43 +115,29 @@ impl<I: Iterator<Item = Result<(u64, u64), DbError>>> Iterator for MergedIterato
             return None;
         }
 
-        let mut key;
-        let mut value;
-
+        let mut min;
         loop {
-            let Some(mut head) = self.heap.peek_mut() else {
-                self.ended = true;
-                return None;
+            min = match self.pop_and_replace() {
+                Ok(Some(min)) => min,
+                Ok(None) => {
+                    // No key value pairs left in the minheap, so we're done
+                    self.ended = true;
+                    return None;
+                }
+                Err(e) => {
+                    self.ended = true;
+                    return Some(Err(e));
+                }
             };
 
-            let level = head.0.level;
-            key = head.0.key;
-            value = head.0.value;
-
-            let iter = &mut self.levels[level];
-
-            if let Some(entry) = iter.next() {
-                let (key, value) = match entry {
-                    Ok(kv) => kv,
-                    Err(e) => {
-                        self.ended = true;
-                        return Some(Err(e));
-                    }
-                };
-
-                *head = Reverse(Entry { key, level, value });
-            } else {
-                drop(head);
-                self.heap.pop();
-            }
-
-            if self.last_key.is_none_or(|last_key| last_key < key) {
-                self.last_key = Some(key);
+            // Skip entries with keys we've seen at a higher level already
+            if self.last_key.is_none_or(|last_key| min.key > last_key) {
                 break;
             }
         }
 
-        Some(Ok((key, value)))
+        self.last_key = Some(min.key);
+        Some(Ok((min.key, min.value)))
     }
 }
 
