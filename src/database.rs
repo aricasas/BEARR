@@ -6,7 +6,12 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{DbError, db_scan, memtable::MemTable, sst::Sst};
+use crate::{
+    DbError,
+    memtable::MemTable,
+    merge::{self, MergedIterator, Sources},
+    sst::Sst,
+};
 
 #[cfg(not(feature = "mock"))]
 use crate::file_system::FileSystem;
@@ -28,6 +33,17 @@ pub struct Database {
 pub struct DbConfiguration {
     pub memtable_capacity: usize,
     pub buffer_pool_capacity: usize,
+    pub write_buffering: usize,
+}
+
+impl DbConfiguration {
+    fn validate(&self) -> Result<(), DbError> {
+        if self.memtable_capacity > 0 && self.buffer_pool_capacity > 0 && self.write_buffering > 0 {
+            Ok(())
+        } else {
+            Err(DbError::InvalidConfiguration)
+        }
+    }
 }
 
 /// Metadata for a database
@@ -89,8 +105,13 @@ impl Database {
         configuration: DbConfiguration,
         metadata: DbMetadata,
     ) -> Result<Self, DbError> {
+        configuration.validate()?;
+
         let memtable = MemTable::new(configuration.memtable_capacity)?;
-        let file_system = FileSystem::new(configuration.buffer_pool_capacity)?;
+        let file_system = FileSystem::new(
+            configuration.buffer_pool_capacity,
+            configuration.write_buffering,
+        )?;
 
         let mut ssts = Vec::with_capacity(metadata.num_ssts);
         for i in 0..metadata.num_ssts {
@@ -179,24 +200,24 @@ impl Database {
     /// Returns a sorted list of all key-value pairs where the key is in the given range.
     ///
     /// Returns an error if scanning fails in the memtable or SSTs.
-    pub fn scan(&mut self, range: RangeInclusive<u64>) -> Result<Vec<(u64, u64)>, DbError> {
-        let memtable_scan = self.memtable.scan(range.clone())?.map(Ok).peekable();
-
-        // Further back SSTs are newer; bring them to the front.
-        let sst_scans = self
+    pub fn scan<'a>(
+        &'a self,
+        range: RangeInclusive<u64>,
+    ) -> Result<MergedIterator<Sources<'a>>, DbError> {
+        let memtable_scan = self.memtable.scan(range.clone())?;
+        let mut sst_scans = self
             .ssts
             .iter()
             .rev()
-            .map(|sst| {
-                sst.scan(range.clone(), &self.file_system)
-                    .map(|it| it.peekable())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|sst| sst.scan(range.clone(), &self.file_system))
+            .map(|res| res.map(merge::Sources::Sst))
+            .collect::<Result<Vec<_>, DbError>>()?;
 
-        db_scan::scan(db_scan::DbSource {
-            memtable_scan,
-            sst_scans,
-        })
+        let mut scans = Vec::new();
+        scans.push(merge::Sources::MemTable(memtable_scan));
+        scans.append(&mut sst_scans);
+
+        MergedIterator::new(scans)
     }
 
     /// Closes the database.
@@ -259,6 +280,7 @@ mod tests {
             DbConfiguration {
                 memtable_capacity: 3,
                 buffer_pool_capacity: 1,
+                write_buffering: 1,
             },
         )?;
 
@@ -296,8 +318,8 @@ mod tests {
         );
 
         assert_eq!(
-            db.scan(4..=84)?,
-            &[(4, 1), (5, 3), (8, 5), (9, 5), (32, 3), (84, 6)]
+            db.scan(4..=84)?.collect::<Result<Vec<_>, _>>()?,
+            vec![(4, 1), (5, 3), (8, 5), (9, 5), (32, 3), (84, 6)]
         );
 
         Ok(())
@@ -314,6 +336,7 @@ mod tests {
                 DbConfiguration {
                     memtable_capacity: 10,
                     buffer_pool_capacity: 1,
+                    write_buffering: 1,
                 },
             )?;
             put_many(&mut db, &[(13, 15), (14, 1), (4, 19)])?;
@@ -369,8 +392,8 @@ mod tests {
             );
 
             assert_eq!(
-                db.scan(5..=15)?,
-                &[(5, 14), (6, 21), (7, 15), (13, 15), (14, 3)]
+                db.scan(5..=15)?.collect::<Result<Vec<_>, _>>()?,
+                vec![(5, 14), (6, 21), (7, 15), (13, 15), (14, 3)]
             );
         }
 

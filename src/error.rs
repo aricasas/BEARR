@@ -1,10 +1,11 @@
-use std::{error::Error, fmt::Display, io};
+use std::{collections, error::Error, fmt::Display, io};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum DbError {
     Oom,
     InvalidScanRange,
     IoError(String),
+    InvalidConfiguration,
 }
 
 impl Display for DbError {
@@ -13,6 +14,7 @@ impl Display for DbError {
             DbError::Oom => write!(f, "out of memory"),
             DbError::InvalidScanRange => write!(f, "invalid scan range"),
             DbError::IoError(s) => write!(f, "(I/O) {s}"),
+            DbError::InvalidConfiguration => write!(f, "invalid database configuration"),
         }
     }
 }
@@ -28,5 +30,11 @@ impl From<io::Error> for DbError {
 impl From<serde_json::Error> for DbError {
     fn from(value: serde_json::Error) -> Self {
         Self::IoError(value.to_string())
+    }
+}
+
+impl From<collections::TryReserveError> for DbError {
+    fn from(_: collections::TryReserveError) -> Self {
+        Self::Oom
     }
 }

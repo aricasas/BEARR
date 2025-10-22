@@ -2,6 +2,7 @@ use std::{
     fs,
     ops::RangeInclusive,
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 use crate::{DbError, PAGE_SIZE, file_system::Aligned};
@@ -12,6 +13,7 @@ use crate::file_system::FileSystem;
 #[cfg(feature = "mock")]
 use crate::mock::FileSystem;
 
+// TODO remove this constants, define any page stuff in btree.rs
 const PAIRS_PER_CHUNK: usize = (PAGE_SIZE - 8) / 16;
 const PADDING: usize = PAGE_SIZE - 8 - PAIRS_PER_CHUNK * 16;
 
@@ -19,10 +21,13 @@ const PADDING: usize = PAGE_SIZE - 8 - PAIRS_PER_CHUNK * 16;
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug)]
 pub struct Sst {
+    // TODO: store paths to all levels of the Btree, possibly with their file sizes?
+    // TODO add whatever metadata is needed for Btree traversal
     path: PathBuf,
     num_pages: usize,
 }
 
+// TODO remove this and use whatever page structs you need for the Btree in the btree.rs file
 #[repr(C, align(4096))]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 struct Page {
@@ -59,6 +64,9 @@ impl Sst {
         path: impl AsRef<Path>,
         file_system: &mut FileSystem,
     ) -> Result<Sst, DbError> {
+        // TODO make a directory at path, and
+        // TODO call write_btree_to_files to write the Btree inside it
+
         let mut key_values = key_values.into_iter();
 
         // Closure that will fill a page with the next key value pairs
@@ -89,9 +97,9 @@ impl Sst {
      * find the file's SST and give it back
      * */
     pub fn open(path: impl AsRef<Path>) -> Result<Sst, DbError> {
+        // TODO change this since now a Sst is a directory containing Btree files
         let file = fs::OpenOptions::new().read(true).open(&path)?;
         let file_size = file.metadata()?.len() as usize;
-        println!("File size of {:?} is {}", path.as_ref(), file_size);
         assert!(file_size.is_multiple_of(PAGE_SIZE));
         let num_pages = file_size / PAGE_SIZE;
 
@@ -116,10 +124,12 @@ impl Sst {
         range: RangeInclusive<u64>,
         file_system: &'a FileSystem,
     ) -> Result<SstIter<'a, 'b>, DbError> {
+        // TODO use BTreeIter
         SstIter::new(self, range, file_system)
     }
 }
 
+// TODO remove this and use BTreeIter
 /* SST iterator
  * Contains a 4KB buffer that keeps the wanted SST page in memory
  *
@@ -160,7 +170,7 @@ impl<'a, 'b> SstIter<'a, 'b> {
         'outer: for page_num in 0..sst.num_pages {
             let page_bytes = file_system.get(&sst.path, page_num)?;
 
-            let buffered_page: &Page = bytemuck::cast_ref(page_bytes);
+            let buffered_page: Rc<Page> = bytemuck::cast_rc(page_bytes);
 
             for i in 0..buffered_page.length as usize {
                 let [key, _] = buffered_page.pairs[i];
@@ -201,10 +211,11 @@ impl<'a, 'b> SstIter<'a, 'b> {
         }
 
         let page_bytes = self.file_system.get(&self.sst.path, self.page_number);
-        if let Err(error) = page_bytes {
-            return Some(Err(error));
-        }
-        let buffered_page: &Page = bytemuck::cast_ref(page_bytes.unwrap());
+
+        let buffered_page: Rc<Page> = match page_bytes {
+            Ok(bytes) => bytemuck::cast_rc(bytes),
+            Err(e) => return Some(Err(e)),
+        };
 
         let [key, value] = buffered_page.pairs[self.item_number];
         let item = (key, value);
@@ -315,7 +326,7 @@ mod tests {
 
         let sst = Sst::open(path)?;
 
-        let file_system = FileSystem::new(1)?;
+        let file_system = FileSystem::default();
 
         let scan = sst.scan(11..=12, &file_system)?;
         println!("{} {}", scan.page_number, scan.item_number);
@@ -353,7 +364,7 @@ mod tests {
         )?;
 
         let sst = Sst::open(path)?;
-        let file_system = FileSystem::new(1)?;
+        let file_system = FileSystem::default();
 
         let mut scan = sst.scan(2..=12, &file_system)?;
         assert_eq!(scan.next().unwrap()?, (3, 4));
@@ -388,7 +399,7 @@ mod tests {
 
         let range_start = 1;
         let range_end = 4000;
-        let file_system = FileSystem::new(1)?;
+        let file_system = FileSystem::default();
 
         let mut scan = sst.scan(range_start..=range_end, &file_system)?;
 

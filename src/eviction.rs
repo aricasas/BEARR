@@ -6,7 +6,7 @@ const NULL: usize = usize::MAX;
 
 #[derive(Debug, Clone, Copy)]
 pub enum EvictionId {
-    MOCK,
+    Mock,
     In(usize),
     Out(usize),
     M(usize),
@@ -43,7 +43,7 @@ impl<T: Clone> Eviction<T> {
 
     pub fn insert_new(&mut self, entry: T) -> EvictionId {
         self.mock_queue.push_back(entry);
-        EvictionId::MOCK
+        EvictionId::Mock
     }
 
     pub fn touch(&mut self, id: EvictionId) {}
@@ -59,9 +59,7 @@ struct Queue<T> {
 impl<T> Queue<T> {
     fn new(capacity: usize) -> Result<Self, DbError> {
         let mut inner = Vec::new();
-        inner
-            .try_reserve_exact(capacity)
-            .map_err(|_| DbError::Oom)?;
+        inner.try_reserve_exact(capacity)?;
 
         Ok(Self {
             inner,

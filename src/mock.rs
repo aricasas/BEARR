@@ -1,25 +1,44 @@
-use std::{fs::OpenOptions, io::Write, os::unix::fs::FileExt, path::Path};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    fs::OpenOptions,
+    io::Write,
+    os::unix::fs::FileExt,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use crate::{PAGE_SIZE, error::DbError, file_system::Aligned};
 
 #[derive(Default)]
-pub struct FileSystem;
+pub struct FileSystem(RefCell<HashMap<(PathBuf, usize), Rc<Aligned>>>);
 impl FileSystem {
-    pub fn new(capacity: usize) -> Result<Self, DbError> {
+    pub fn new(capacity: usize, write_buffering: usize) -> Result<Self, DbError> {
         let _ = capacity;
-        Ok(Self)
+        let _ = write_buffering;
+
+        Ok(Self(RefCell::new(HashMap::new())))
     }
-    pub fn get(&self, path: impl AsRef<Path>, page_number: usize) -> Result<&Aligned, DbError> {
-        let mut page = Aligned::new();
+    pub fn get(&self, path: impl AsRef<Path>, page_number: usize) -> Result<Rc<Aligned>, DbError> {
+        let mut buffer_pool = self.0.borrow_mut();
 
-        let file = OpenOptions::new().read(true).open(&path)?;
+        let key = (path.as_ref().to_owned(), page_number);
 
-        file.read_exact_at(&mut page.0, (page_number * PAGE_SIZE) as u64)?;
+        if let Some(page) = buffer_pool.get(&key) {
+            Ok(Rc::clone(page))
+        } else {
+            let mut page = Aligned::new();
+            let buffer = Rc::get_mut(&mut page).unwrap();
 
-        Ok(Box::leak(page))
+            let file = OpenOptions::new().read(true).open(&path)?;
+
+            file.read_exact_at(&mut buffer.0, (page_number * PAGE_SIZE) as u64)?;
+            buffer_pool.insert(key.clone(), page.clone());
+            Ok(page)
+        }
     }
     pub fn write_file(
-        &self,
+        &mut self,
         path: impl AsRef<Path>,
         mut write_next: impl FnMut(&mut Aligned) -> Result<bool, DbError>,
     ) -> Result<usize, DbError> {
@@ -32,10 +51,11 @@ impl FileSystem {
         let mut num_pages = 0;
 
         let mut page_bytes = Aligned::new();
-        while write_next(&mut page_bytes)? {
-            file.write_all(&page_bytes.0)?;
+        let buffer = Rc::get_mut(&mut page_bytes).unwrap();
+        while write_next(buffer)? {
+            file.write_all(&buffer.0)?;
             num_pages += 1;
-            page_bytes.clear();
+            buffer.clear();
         }
 
         Ok(num_pages)

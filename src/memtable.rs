@@ -41,9 +41,7 @@ impl<K: Ord + Clone + Default, V: Clone + Default> MemTable<K, V> {
     /// If allocation fails, returns `DbError::Oom`.
     pub fn new(capacity: usize) -> Result<Self, DbError> {
         let mut nodes = Vec::new();
-        nodes
-            .try_reserve_exact(capacity)
-            .map_err(|_| DbError::Oom)?;
+        nodes.try_reserve_exact(capacity)?;
 
         Ok(Self { root: NULL, nodes })
     }
@@ -300,9 +298,7 @@ impl<'a, K: Ord + Clone + Default, V: Clone + Default> MemTableIter<'a, K, V> {
 
         // Reserve all potential space now, so we don't worry about OOM conditions when iterating
         // Only about ~300 bytes for n=1_000_000
-        stack
-            .try_reserve_exact(tree_height_bound)
-            .map_err(|_| DbError::Oom)?;
+        stack.try_reserve_exact(tree_height_bound)?;
 
         let mut iter = Self {
             memtable,
