@@ -1,24 +1,33 @@
 use std::{
     fs,
-    io::Write,
     ops::RangeInclusive,
-    os::unix::fs::{FileExt, OpenOptionsExt},
-    path::Path,
+    path::{Path, PathBuf},
+    rc::Rc,
 };
 
-use crate::DbError;
+use crate::{DbError, PAGE_SIZE, file_system::Aligned};
 
-const CHUNK_SIZE: usize = 4096;
-const PAIRS_PER_CHUNK: usize = (CHUNK_SIZE - 8) / 16;
-const PADDING: usize = CHUNK_SIZE - 8 - PAIRS_PER_CHUNK * 16;
+#[cfg(not(feature = "mock"))]
+use crate::file_system::FileSystem;
+
+#[cfg(feature = "mock")]
+use crate::mock::FileSystem;
+
+// TODO remove this constants, define any page stuff in btree.rs
+const PAIRS_PER_CHUNK: usize = (PAGE_SIZE - 8) / 16;
+const PADDING: usize = PAGE_SIZE - 8 - PAIRS_PER_CHUNK * 16;
 
 /// A handle to an SST of a database
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug)]
 pub struct Sst {
-    opened_file: fs::File,
+    // TODO: store paths to all levels of the Btree, possibly with their file sizes?
+    // TODO add whatever metadata is needed for Btree traversal
+    path: PathBuf,
+    num_pages: usize,
 }
 
+// TODO remove this and use whatever page structs you need for the Btree in the btree.rs file
 #[repr(C, align(4096))]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 struct Page {
@@ -38,99 +47,70 @@ impl Default for Page {
     }
 }
 
-#[repr(C, align(4096))]
-struct Aligned([u8; CHUNK_SIZE]);
-impl Aligned {
-    pub fn new() -> Box<Self> {
-        Box::new(Self([0; _]))
-    }
-}
-
 impl Page {
-    fn empty() -> Box<Self> {
+    fn new() -> Box<Self> {
         Box::new(Self::default())
     }
-
-    fn encode(&self) -> &[u8] {
-        bytemuck::bytes_of(self)
-    }
-
-    fn decode(bytes: &Aligned) -> &Self {
-        bytemuck::from_bytes(&bytes.0)
-    }
 }
 
-const _: () = assert!(size_of::<Page>() == CHUNK_SIZE);
+const _: () = assert!(size_of::<Page>() == PAGE_SIZE);
 
 impl Sst {
     /*
      * Create an SST table to store contents on disk
      * */
-    pub fn create(key_values: Vec<(u64, u64)>, path: impl AsRef<Path>) -> Result<Sst, DbError> {
-        let mut file = fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .read(true)
-            .open(&path)?;
+    pub fn create(
+        key_values: impl IntoIterator<Item = Result<(u64, u64), DbError>>,
+        path: impl AsRef<Path>,
+        file_system: &mut FileSystem,
+    ) -> Result<Sst, DbError> {
+        // TODO make a directory at path, and
+        // TODO call write_btree_to_files to write the Btree inside it
 
-        let (chunks, remainder) = key_values.as_chunks::<PAIRS_PER_CHUNK>();
+        let mut key_values = key_values.into_iter();
 
-        let mut page = Page::empty();
-
-        for chunk in chunks {
-            for (pair, &(key, value)) in page.pairs.iter_mut().zip(chunk) {
-                *pair = [key, value];
+        // Closure that will fill a page with the next key value pairs
+        let write_next_page = |page_bytes: &mut Aligned| {
+            let page: &mut Page = bytemuck::cast_mut(page_bytes);
+            page.length = 0;
+            for (pair, k_v) in page.pairs.iter_mut().zip(&mut key_values) {
+                match k_v {
+                    Ok((k, v)) => *pair = [k, v],
+                    Err(e) => return Err(e),
+                }
+                page.length += 1;
             }
 
-            page.length = chunk.len() as u64;
+            // Return false when there's no more key value pairs to write
+            Ok(page.length > 0)
+        };
 
-            let page_bytes = page.encode();
+        let num_pages = file_system.write_file(&path, write_next_page)?;
 
-            debug_assert_eq!(page_bytes.len(), CHUNK_SIZE);
-
-            file.write_all(page_bytes)?;
-        }
-
-        if !remainder.is_empty() {
-            for (pair, &(key, value)) in page.pairs.iter_mut().zip(remainder) {
-                *pair = [key, value];
-            }
-
-            page.pairs[remainder.len()..].fill(Default::default());
-
-            page.length = remainder.len() as u64;
-
-            let page_bytes = page.encode();
-
-            debug_assert_eq!(page_bytes.len(), CHUNK_SIZE);
-
-            file.write_all(page_bytes)?;
-        }
-        drop(file);
-
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .read(true)
-            .custom_flags(libc::O_DIRECT | libc::O_SYNC)
-            .open(path)?;
-        Ok(Sst { opened_file: file })
+        Ok(Sst {
+            path: path.as_ref().to_owned(),
+            num_pages,
+        })
     }
 
     /* Open the file and add it to opened files
      * find the file's SST and give it back
      * */
     pub fn open(path: impl AsRef<Path>) -> Result<Sst, DbError> {
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .read(true)
-            .custom_flags(libc::O_DIRECT | libc::O_SYNC)
-            .open(path)?;
+        // TODO change this since now a Sst is a directory containing Btree files
+        let file = fs::OpenOptions::new().read(true).open(&path)?;
+        let file_size = file.metadata()?.len() as usize;
+        assert!(file_size.is_multiple_of(PAGE_SIZE));
+        let num_pages = file_size / PAGE_SIZE;
 
-        Ok(Sst { opened_file: file })
+        Ok(Sst {
+            path: path.as_ref().to_owned(),
+            num_pages,
+        })
     }
 
-    pub fn get(&self, key: u64) -> Result<Option<u64>, DbError> {
-        let mut scanner = self.scan(key..=key)?;
+    pub fn get(&self, key: u64, file_system: &FileSystem) -> Result<Option<u64>, DbError> {
+        let mut scanner = self.scan(key..=key, file_system)?;
 
         match scanner.next() {
             None => Ok(None),
@@ -139,27 +119,32 @@ impl Sst {
         }
     }
 
-    pub fn scan(&self, range: RangeInclusive<u64>) -> Result<SstIter<'_>, DbError> {
-        SstIter::new(self, range)
+    pub fn scan<'a, 'b>(
+        &'b self,
+        range: RangeInclusive<u64>,
+        file_system: &'a FileSystem,
+    ) -> Result<SstIter<'a, 'b>, DbError> {
+        // TODO use BTreeIter
+        SstIter::new(self, range, file_system)
     }
 }
 
+// TODO remove this and use BTreeIter
 /* SST iterator
  * Contains a 4KB buffer that keeps the wanted SST page in memory
  *
  *
  * */
-pub struct SstIter<'a> {
+pub struct SstIter<'a, 'b> {
+    file_system: &'a FileSystem,
+    sst: &'b Sst,
     page_number: usize,
     item_number: usize,
-    buffered_page_bytes: Box<Aligned>,
     range: RangeInclusive<u64>,
-    file: &'a fs::File,
-    num_pages: usize,
     ended: bool,
 }
 
-impl<'a> Iterator for SstIter<'a> {
+impl<'a, 'b> Iterator for SstIter<'a, 'b> {
     type Item = Result<(u64, u64), DbError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -167,40 +152,33 @@ impl<'a> Iterator for SstIter<'a> {
     }
 }
 
-impl<'a> SstIter<'a> {
-    fn new(sst: &'a Sst, range: RangeInclusive<u64>) -> Result<Self, DbError> {
+impl<'a, 'b> SstIter<'a, 'b> {
+    fn new(
+        sst: &'b Sst,
+        range: RangeInclusive<u64>,
+        file_system: &'a FileSystem,
+    ) -> Result<Self, DbError> {
         if range.start() > range.end() {
             return Err(DbError::InvalidScanRange);
         }
 
-        let mut buffered_page_bytes = Aligned::new();
-        let mut page_number = 0;
-        let mut item_number = 0;
+        let mut match_page_number = 0;
+        let mut match_item_number = 0;
         let mut found = false;
 
-        let file_size = sst.opened_file.metadata()?.len() as usize;
-        if !file_size.is_multiple_of(CHUNK_SIZE) {
-            return Err(DbError::IoError("SST file size not aligned".to_string()));
-        }
-
-        let num_pages = file_size / CHUNK_SIZE;
-
         // Linear search
-        'outer: for page in 0..num_pages {
-            let page_offset = page * CHUNK_SIZE;
+        'outer: for page_num in 0..sst.num_pages {
+            let page_bytes = file_system.get(&sst.path, page_num)?;
 
-            sst.opened_file
-                .read_exact_at(&mut buffered_page_bytes.0, page_offset as u64)?;
-
-            let buffered_page = Page::decode(&buffered_page_bytes);
+            let buffered_page: Rc<Page> = bytemuck::cast_rc(page_bytes);
 
             for i in 0..buffered_page.length as usize {
                 let [key, _] = buffered_page.pairs[i];
 
                 if &key >= range.start() {
                     // Found starting key
-                    page_number = page;
-                    item_number = i;
+                    match_page_number = page_num;
+                    match_item_number = i;
                     found = true;
                     break 'outer;
                 }
@@ -210,12 +188,11 @@ impl<'a> SstIter<'a> {
         let ended = !found;
 
         let iter = Self {
-            page_number,
-            item_number,
-            buffered_page_bytes,
+            sst,
+            file_system,
+            page_number: match_page_number,
+            item_number: match_item_number,
             range,
-            file: &sst.opened_file,
-            num_pages,
             ended,
         };
 
@@ -233,7 +210,12 @@ impl<'a> SstIter<'a> {
             return None;
         }
 
-        let buffered_page = Page::decode(&self.buffered_page_bytes);
+        let page_bytes = self.file_system.get(&self.sst.path, self.page_number);
+
+        let buffered_page: Rc<Page> = match page_bytes {
+            Ok(bytes) => bytemuck::cast_rc(bytes),
+            Err(e) => return Some(Err(e)),
+        };
 
         let [key, value] = buffered_page.pairs[self.item_number];
         let item = (key, value);
@@ -253,20 +235,10 @@ impl<'a> SstIter<'a> {
         self.page_number += 1;
         self.item_number = 0;
 
-        if self.page_number >= self.num_pages {
+        if self.page_number >= self.sst.num_pages {
             // EOF
             self.ended = true;
             return Some(Ok(item));
-        }
-
-        let page_offset = self.page_number * CHUNK_SIZE;
-
-        let res = self
-            .file
-            .read_exact_at(&mut self.buffered_page_bytes.0, page_offset as u64);
-        if let Err(e) = res {
-            self.ended = true;
-            return Some(Err(e.into()));
         }
 
         Some(Ok(item))
@@ -309,11 +281,11 @@ mod tests {
     #[test]
     fn test_problematic_ssts() {
         let path = &TestPath::new("/xyz/abc/file");
-        Sst::create(vec![], path).unwrap_err();
+        Sst::create(vec![], path, &mut Default::default()).unwrap_err();
 
         let path = &TestPath::new("./db/SST_Duplicate");
-        _ = Sst::create(vec![], path);
-        Sst::create(vec![], path).unwrap_err();
+        _ = Sst::create(vec![], path, &mut Default::default());
+        Sst::create(vec![], path, &mut Default::default()).unwrap_err();
     }
 
     /* Create an SST and then open it up to see if sane */
@@ -322,7 +294,7 @@ mod tests {
         let file_name = "./db/SST_Test_Create_Open";
         let path = &TestPath::new(file_name);
 
-        Sst::create(vec![], path)?;
+        Sst::create(vec![], path, &mut Default::default())?;
 
         Sst::open(path)?;
 
@@ -336,7 +308,7 @@ mod tests {
         let path = &TestPath::new(file_name);
 
         Sst::create(
-            vec![
+            [
                 (1, 2),
                 (3, 4),
                 (5, 6),
@@ -345,18 +317,23 @@ mod tests {
                 (11, 12),
                 (13, 14),
                 (15, 16),
-            ],
+            ]
+            .into_iter()
+            .map(Ok),
             path,
+            &mut Default::default(),
         )?;
 
         let sst = Sst::open(path)?;
 
-        let scan = sst.scan(11..=12)?;
+        let file_system = FileSystem::default();
+
+        let scan = sst.scan(11..=12, &file_system)?;
         println!("{} {}", scan.page_number, scan.item_number);
         assert_eq!(scan.page_number, 0);
         assert_eq!(scan.item_number, 5);
 
-        let scan = sst.scan(2..=12)?;
+        let scan = sst.scan(2..=12, &file_system)?;
         println!("{} {}", scan.page_number, scan.item_number);
         assert_eq!(scan.page_number, 0);
         assert_eq!(scan.item_number, 1);
@@ -370,7 +347,7 @@ mod tests {
         let path = &TestPath::new(file_name);
 
         Sst::create(
-            vec![
+            [
                 (1, 2),
                 (3, 4),
                 (5, 6),
@@ -379,13 +356,17 @@ mod tests {
                 (11, 12),
                 (13, 14),
                 (15, 16),
-            ],
+            ]
+            .into_iter()
+            .map(Ok),
             path,
+            &mut Default::default(),
         )?;
 
         let sst = Sst::open(path)?;
+        let file_system = FileSystem::default();
 
-        let mut scan = sst.scan(2..=12)?;
+        let mut scan = sst.scan(2..=12, &file_system)?;
         assert_eq!(scan.next().unwrap()?, (3, 4));
         assert_eq!(scan.next().unwrap()?, (5, 6));
         assert_eq!(scan.next().unwrap()?, (7, 8));
@@ -409,17 +390,18 @@ mod tests {
         for i in 1..400_000 {
             test_vec.push((i, i));
         }
-        Sst::create(test_vec, path)?;
+        Sst::create(test_vec.into_iter().map(Ok), path, &mut Default::default())?;
 
         let sst = Sst::open(path)?;
 
-        let file_size = sst.opened_file.metadata()?.len();
+        let file_size = sst.num_pages * PAGE_SIZE;
         println!("Current File Size : {}", file_size);
 
         let range_start = 1;
         let range_end = 4000;
+        let file_system = FileSystem::default();
 
-        let mut scan = sst.scan(range_start..=range_end)?;
+        let mut scan = sst.scan(range_start..=range_end, &file_system)?;
 
         let mut page_number = 0;
         for i in range_start..range_end {

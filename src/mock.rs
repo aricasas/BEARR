@@ -1,51 +1,63 @@
 use std::{
-    fs::{self, File},
+    cell::RefCell,
+    collections::HashMap,
+    fs::OpenOptions,
     io::Write,
-    ops::RangeInclusive,
+    os::unix::fs::FileExt,
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
-use crate::error::DbError;
+use crate::{PAGE_SIZE, error::DbError, file_system::Aligned};
 
-#[allow(clippy::upper_case_acronyms)]
-pub struct Sst {
-    filename: PathBuf,
-}
+#[derive(Default)]
+pub struct FileSystem(RefCell<HashMap<(PathBuf, usize), Rc<Aligned>>>);
+impl FileSystem {
+    pub fn new(capacity: usize, write_buffering: usize) -> Result<Self, DbError> {
+        let _ = capacity;
+        let _ = write_buffering;
 
-impl Sst {
-    pub fn create(key_values: Vec<(u64, u64)>, path: impl AsRef<Path>) -> Result<Sst, DbError> {
-        let path = path.as_ref();
-        let mut file = File::create_new(path)?;
-        write!(&mut file, "{}", serde_json::to_string(&key_values).unwrap())?;
-        Ok(Self {
-            filename: path.to_path_buf(),
-        })
+        Ok(Self(RefCell::new(HashMap::new())))
     }
+    pub fn get(&self, path: impl AsRef<Path>, page_number: usize) -> Result<Rc<Aligned>, DbError> {
+        let mut buffer_pool = self.0.borrow_mut();
 
-    pub fn open(path: impl AsRef<Path>) -> Result<Sst, DbError> {
-        let path = path.as_ref();
-        Ok(Self {
-            filename: path.to_path_buf(),
-        })
+        let key = (path.as_ref().to_owned(), page_number);
+
+        if let Some(page) = buffer_pool.get(&key) {
+            Ok(Rc::clone(page))
+        } else {
+            let mut page = Aligned::new();
+            let buffer = Rc::get_mut(&mut page).unwrap();
+
+            let file = OpenOptions::new().read(true).open(&path)?;
+
+            file.read_exact_at(&mut buffer.0, (page_number * PAGE_SIZE) as u64)?;
+            buffer_pool.insert(key.clone(), page.clone());
+            Ok(page)
+        }
     }
+    pub fn write_file(
+        &mut self,
+        path: impl AsRef<Path>,
+        mut write_next: impl FnMut(&mut Aligned) -> Result<bool, DbError>,
+    ) -> Result<usize, DbError> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .append(true)
+            .create(true)
+            .open(path)?;
 
-    pub fn get(&self, key: u64) -> Result<Option<u64>, DbError> {
-        let key_values = fs::read_to_string(&self.filename)?;
-        let key_values: Vec<(u64, u64)> = serde_json::from_str(&key_values).unwrap();
-        Ok(key_values
-            .iter()
-            .find_map(|&(k, v)| (k == key).then_some(v)))
-    }
+        let mut num_pages = 0;
 
-    pub fn scan(
-        &self,
-        range: RangeInclusive<u64>,
-    ) -> Result<impl Iterator<Item = Result<(u64, u64), DbError>>, DbError> {
-        let key_values = fs::read_to_string(&self.filename)?;
-        let mut key_values: Vec<(u64, u64)> = serde_json::from_str(&key_values).unwrap();
-        key_values.sort();
-        Ok(key_values
-            .into_iter()
-            .filter_map(move |(k, v)| range.contains(&k).then_some(Ok((k, v)))))
+        let mut page_bytes = Aligned::new();
+        let buffer = Rc::get_mut(&mut page_bytes).unwrap();
+        while write_next(buffer)? {
+            file.write_all(&buffer.0)?;
+            num_pages += 1;
+            buffer.clear();
+        }
+
+        Ok(num_pages)
     }
 }
