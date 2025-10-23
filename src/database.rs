@@ -260,7 +260,7 @@ mod tests {
         Ok(())
     }
 
-    fn get_many(db: &mut Database, keys: &[u64]) -> Result<Vec<Option<u64>>> {
+    fn get_many(db: &Database, keys: &[u64]) -> Result<Vec<Option<u64>>> {
         let mut result = Vec::new();
         for &k in keys {
             result.push(db.get(k)?);
