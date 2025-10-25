@@ -46,8 +46,9 @@ struct BufferPoolEntry {
 impl FileSystem {
     pub fn new(capacity: usize, write_buffering: usize) -> Result<Self, DbError> {
         let eviction_handler = Eviction::new(capacity)?;
+        let buffer_pool = HashTable::new(capacity)?;
         let inner = InnerFs {
-            buffer_pool: HashTable::new(capacity),
+            buffer_pool,
             eviction_handler,
         };
 
