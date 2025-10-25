@@ -5,6 +5,7 @@ mod error;
 mod eviction;
 mod file_system;
 mod hashtable;
+mod list;
 mod memtable;
 mod merge;
 mod sst;
