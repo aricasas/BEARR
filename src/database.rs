@@ -297,7 +297,7 @@ mod tests {
         )?;
 
         assert_eq!(
-            get_many(&mut db, &[3, 4, 9, 2, 5, 8, 97, 32, 84, 1, 10, 90])?,
+            get_many(&db, &[3, 4, 9, 2, 5, 8, 97, 32, 84, 1, 10, 90])?,
             &[
                 Some(1),
                 Some(1),
@@ -341,10 +341,7 @@ mod tests {
 
         {
             let mut db = Database::open(name)?;
-            assert_eq!(
-                get_many(&mut db, &[13, 14, 4])?,
-                &[Some(15), Some(1), Some(19)]
-            );
+            assert_eq!(get_many(&db, &[13, 14, 4])?, &[Some(15), Some(1), Some(19)]);
             put_many(&mut db, &[(13, 15), (14, 15), (1, 19)])?;
             db.flush()?;
             put_many(&mut db, &[(3, 1), (20, 5), (7, 15), (18, 25)])?;
@@ -355,7 +352,7 @@ mod tests {
             let mut db = Database::open(name)?;
 
             assert_eq!(
-                get_many(&mut db, &[13, 14, 4, 1, 3, 20, 7, 18])?,
+                get_many(&db, &[13, 14, 4, 1, 3, 20, 7, 18])?,
                 &[
                     Some(15),
                     Some(15),
@@ -373,7 +370,7 @@ mod tests {
             put_many(&mut db, &[(6, 21), (14, 3), (20, 15), (18, 19)])?;
 
             assert_eq!(
-                get_many(&mut db, &[13, 14, 4, 1, 3, 20, 7, 18, 5, 6])?,
+                get_many(&db, &[13, 14, 4, 1, 3, 20, 7, 18, 5, 6])?,
                 &[
                     Some(15),
                     Some(3),
