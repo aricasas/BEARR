@@ -35,7 +35,7 @@ pub struct FileSystem {
 
 struct InnerFs {
     buffer_pool: HashTable<BufferPoolEntry>,
-    eviction_handler: Eviction<(PathBuf, usize)>,
+    eviction_handler: Eviction,
 }
 
 struct BufferPoolEntry {
