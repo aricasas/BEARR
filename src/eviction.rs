@@ -61,8 +61,29 @@ impl Eviction {
 
     /// Returns a `VictimChooser` that allows you to select a victim to evict, ordered by how 2Q
     /// would have evicted them.
-    pub fn choose_victim(self) -> VictimChooser {
+    pub fn choose_victim(&'_ self) -> VictimChooser<'_> {
         VictimChooser::new(self)
+    }
+
+    pub fn evict(&mut self, victim: EvictionId) {
+        match victim {
+            EvictionId::AIn(id) => {
+                // Make space in a_out
+                if self.a_out.len() >= self.k_out {
+                    // a_out and map_out can't be empty
+                    let evicted_a_out = self.a_out.pop_front().unwrap();
+                    self.map_out.remove(evicted_a_out.0, evicted_a_out.1);
+                }
+
+                let evicted_a_in = self.a_in.delete(id);
+                let a_out_id = self.a_out.push_back(evicted_a_in.clone());
+                self.map_out
+                    .insert(evicted_a_in.0, evicted_a_in.1, a_out_id);
+            }
+            EvictionId::AM(id) => {
+                self.a_m.delete(id);
+            }
+        }
     }
 
     /// Inserts a new page into the eviction handler. Must be a page that hasn't been inserted before.
@@ -87,53 +108,23 @@ impl Eviction {
     }
 }
 
-pub struct VictimChooser {
-    eviction: Eviction,
+pub struct VictimChooser<'a> {
+    eviction: &'a Eviction,
     last_id: Option<EvictionId>,
     ended: bool,
 }
 
-impl VictimChooser {
-    fn new(eviction: Eviction) -> Self {
+impl<'a> VictimChooser<'a> {
+    fn new(eviction: &'a Eviction) -> Self {
         Self {
             eviction,
             last_id: None,
             ended: false,
         }
     }
-
-    /// Confirm choice of victim to evict. The last victim returned when calling .next() is evicted.
-    ///
-    /// If .next() was never called, or if .next() was called until it returns None, no victim is evicted.
-    pub fn confirm(self) -> Eviction {
-        let mut eviction = self.eviction;
-
-        match self.last_id {
-            None => {}
-            Some(EvictionId::AIn(id)) => {
-                // Make space in a_out
-                if eviction.a_out.len() >= eviction.k_out {
-                    // a_out and map_out can't be empty
-                    let evicted_a_out = eviction.a_out.pop_front().unwrap();
-                    eviction.map_out.remove(evicted_a_out.0, evicted_a_out.1);
-                }
-
-                let evicted_a_in = eviction.a_in.delete(id);
-                let a_out_id = eviction.a_out.push_back(evicted_a_in.clone());
-                eviction
-                    .map_out
-                    .insert(evicted_a_in.0, evicted_a_in.1, a_out_id);
-            }
-            Some(EvictionId::AM(id)) => {
-                eviction.a_m.delete(id);
-            }
-        }
-
-        eviction
-    }
 }
-impl Iterator for VictimChooser {
-    type Item = (PathBuf, usize);
+impl<'a> Iterator for VictimChooser<'a> {
+    type Item = (EvictionId, &'a (PathBuf, usize));
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.ended {
@@ -146,13 +137,15 @@ impl Iterator for VictimChooser {
                 if self.eviction.a_in.len() > self.eviction.k_in {
                     // At this point a_in can't be empty
                     let (id, front) = self.eviction.a_in.front().unwrap();
-                    self.last_id = Some(EvictionId::AIn(id));
-                    Some(front.clone())
+                    let eviction_id = EvictionId::AIn(id);
+                    self.last_id = Some(eviction_id);
+                    Some((eviction_id, front))
                 }
                 // Otherwise try evict from a_m
                 else if let Some((id, front)) = self.eviction.a_m.front() {
-                    self.last_id = Some(EvictionId::AM(id));
-                    Some(front.clone())
+                    let eviction_id = EvictionId::AM(id);
+                    self.last_id = Some(eviction_id);
+                    Some((eviction_id, front))
                 } else {
                     self.ended = true;
                     self.last_id = None;
@@ -162,8 +155,9 @@ impl Iterator for VictimChooser {
             Some(EvictionId::AIn(id)) => {
                 // They didn't want AIn(id) as the victim, choose next in a_in
                 if let Some((next_id, next_entry)) = self.eviction.a_in.get_next(id) {
-                    self.last_id = Some(EvictionId::AIn(next_id));
-                    Some(next_entry.clone())
+                    let eviction_id = EvictionId::AIn(next_id);
+                    self.last_id = Some(eviction_id);
+                    Some((eviction_id, next_entry))
                 } else {
                     self.ended = true;
                     self.last_id = None;
@@ -173,8 +167,9 @@ impl Iterator for VictimChooser {
             Some(EvictionId::AM(id)) => {
                 // They didn't want AM(id) as the victim, choose next in a_m
                 if let Some((next_id, next_entry)) = self.eviction.a_m.get_next(id) {
-                    self.last_id = Some(EvictionId::AM(next_id));
-                    Some(next_entry.clone())
+                    let eviction_id = EvictionId::AM(next_id);
+                    self.last_id = Some(eviction_id);
+                    Some((eviction_id, next_entry))
                 } else {
                     self.ended = true;
                     self.last_id = None;
@@ -191,9 +186,12 @@ mod tests {
 
     use super::*;
 
+    #[test]
     fn test_evict_a_in() -> Result<()> {
         let mut eviction = Eviction::new(20)?;
         eviction.insert_new("1".into(), 0);
+
+        // TODO
 
         Ok(())
     }
