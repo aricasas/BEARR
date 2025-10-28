@@ -27,7 +27,7 @@ impl FileSystem {
         if let Some(page) = buffer_pool.get(&key) {
             Ok(Rc::clone(page))
         } else {
-            let mut page = Aligned::new();
+            let mut page: Rc<Aligned> = bytemuck::allocation::zeroed_rc();
             let buffer = Rc::get_mut(&mut page).unwrap();
 
             let file = OpenOptions::new().read(true).open(&path)?;
@@ -50,7 +50,7 @@ impl FileSystem {
 
         let mut num_pages = 0;
 
-        let mut page_bytes = Aligned::new();
+        let mut page_bytes: Rc<Aligned> = bytemuck::allocation::zeroed_rc();
         let buffer = Rc::get_mut(&mut page_bytes).unwrap();
         while write_next(buffer)? {
             file.write_all(&buffer.0)?;

@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::DbError;
+
 struct HashTableEntry<V> {
     value: V,
     key: (PathBuf, usize),
@@ -11,16 +13,20 @@ pub struct HashTable<V> {
 }
 
 impl<V> HashTable<V> {
-    pub fn new(capacity: usize) -> Self {
+    // TODO: return OOM if Vec::try_reserve_exact fails
+    pub fn new(capacity: usize) -> Result<Self, DbError> {
         todo!()
     }
     pub fn get(&self, path: impl AsRef<Path>, page_number: usize) -> Option<&V> {
         todo!()
     }
-    pub fn insert(&mut self, path: PathBuf, page_number: usize) {
+    pub fn insert(&mut self, path: PathBuf, page_number: usize, value: V) {
         todo!()
     }
     pub fn remove(&mut self, path: impl AsRef<Path>, page_number: usize) -> V {
+        todo!()
+    }
+    pub fn len(&self) -> usize {
         todo!()
     }
 }

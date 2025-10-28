@@ -1,17 +1,19 @@
+use std::path::PathBuf;
+
 use crate::DbError;
 
 #[derive(Debug, Clone, Copy)]
 pub enum EvictionId {
     // we don't need any id/pointer in FIFO
-    MockFifo,
+    MockId(usize),
 }
 
 #[derive(Debug)]
-pub struct Eviction<T: Clone> {
-    mock_queue: Vec<T>,
+pub struct Eviction {
+    mock_queue: Vec<(PathBuf, usize)>,
 }
 
-impl<T: Clone> Eviction<T> {
+impl Eviction {
     pub fn new(capacity: usize) -> Result<Self, DbError> {
         let _ = capacity;
 
@@ -20,13 +22,21 @@ impl<T: Clone> Eviction<T> {
         })
     }
 
-    pub fn choose_victim(self) -> VictimChooser<T> {
+    pub fn choose_victim(&self) -> VictimChooser<'_> {
         VictimChooser::new(self)
     }
 
-    pub fn insert_new(&mut self, entry: T) -> EvictionId {
-        self.mock_queue.push(entry);
-        EvictionId::MockFifo
+    pub fn evict(&mut self, victim: EvictionId) {
+        let EvictionId::MockId(idx) = victim;
+        if idx < self.mock_queue.len() {
+            self.mock_queue.remove(idx);
+        }
+    }
+
+    pub fn insert_new(&mut self, path: PathBuf, page_number: usize) -> EvictionId {
+        let idx = self.mock_queue.len();
+        self.mock_queue.push((path, page_number));
+        EvictionId::MockId(idx)
     }
 
     pub fn touch(&mut self, id: EvictionId) {
@@ -34,38 +44,30 @@ impl<T: Clone> Eviction<T> {
     }
 }
 
-pub struct VictimChooser<T: Clone> {
-    eviction: Eviction<T>,
+pub struct VictimChooser<'a> {
+    eviction: &'a Eviction,
     chosen_idx: Option<usize>,
 }
 
-impl<T: Clone> VictimChooser<T> {
-    /// Confirm choice of victim to evict. The last victim returned when calling .next() is evicted.
-    ///
-    /// If .next() was never called, or if .next() was called until it returns None, no victim is evicted.
-    pub fn confirm(mut self) -> Eviction<T> {
-        if let Some(idx) = self.chosen_idx
-            && idx < self.eviction.mock_queue.len()
-        {
-            self.eviction.mock_queue.remove(idx);
-        }
-
-        self.eviction
-    }
-    fn new(eviction: Eviction<T>) -> Self {
+impl<'a> VictimChooser<'a> {
+    fn new(eviction: &'a Eviction) -> Self {
         Self {
             eviction,
             chosen_idx: None,
         }
     }
 }
-impl<T: Clone> Iterator for VictimChooser<T> {
-    type Item = T;
+
+impl<'a> Iterator for VictimChooser<'a> {
+    type Item = (EvictionId, &'a (PathBuf, usize));
 
     fn next(&mut self) -> Option<Self::Item> {
         let next = self.chosen_idx.map(|idx| idx + 1).unwrap_or(0);
         self.chosen_idx = Some(next);
 
-        self.eviction.mock_queue.get(next).cloned()
+        self.eviction
+            .mock_queue
+            .get(next)
+            .map(|e| (EvictionId::MockId(next), e))
     }
 }
