@@ -85,7 +85,7 @@ impl Sst {
             Ok(page.length > 0)
         };
 
-        let num_pages = file_system.write_file(&path, write_next_page)?;
+        let num_pages = file_system.write_file(&path, 0, write_next_page)?;
 
         Ok(Sst {
             path: path.as_ref().to_owned(),

@@ -1,7 +1,6 @@
 use std::{
     cell::RefCell,
     fs,
-    io::Write,
     ops::DerefMut,
     os::unix::fs::{FileExt, OpenOptionsExt},
     path::Path,
@@ -91,11 +90,12 @@ impl FileSystem {
     pub fn write_file(
         &mut self,
         path: impl AsRef<Path>,
+        starting_page_number: usize,
         // Closure that writes out the next page and returns whether it wrote something (false if done)
         mut next_page: impl FnMut(&mut Aligned) -> Result<bool, DbError>,
     ) -> Result<usize, DbError> {
-        let mut file = fs::OpenOptions::new()
-            .create_new(true)
+        let file = fs::OpenOptions::new()
+            .create(true)
             .write(true)
             .custom_flags(libc::O_DIRECT | libc::O_SYNC)
             .open(&path)?;
@@ -117,7 +117,8 @@ impl FileSystem {
             let buffer_data_end = end_iteration.unwrap_or(buffer.len());
             if buffer_data_end > 0 {
                 let bytes: &[u8] = bytemuck::cast_slice(&buffer[0..buffer_data_end]);
-                file.write_all(bytes)?;
+                let starting_page_offset = starting_page_number * PAGE_SIZE;
+                file.write_all_at(bytes, starting_page_offset as u64)?;
             }
             if end_iteration.is_some() {
                 return Ok(num_pages_written);
