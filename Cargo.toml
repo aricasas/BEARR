@@ -21,6 +21,8 @@ path = "src/experiments.rs"
 [features]
 default = []
 mock = []
+mock_hash = []
+delete_test_files = []
 
 [dev-dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }

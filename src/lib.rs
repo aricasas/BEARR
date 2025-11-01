@@ -1,6 +1,5 @@
 mod btree;
 mod database;
-mod db_scan;
 mod error;
 mod eviction;
 mod file_system;
@@ -8,6 +7,9 @@ mod hashtable;
 mod memtable;
 mod merge;
 mod sst;
+
+#[cfg(test)]
+mod test_path;
 
 #[cfg(feature = "mock")]
 mod mock;

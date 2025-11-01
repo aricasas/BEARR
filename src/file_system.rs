@@ -15,6 +15,7 @@ use crate::{
 
 #[repr(C, align(4096))]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
+/// An aligned 4096-byte page, suitable for various transmutations.
 pub struct Aligned(pub [u8; PAGE_SIZE]);
 impl Aligned {
     fn new() -> Rc<Self> {
@@ -23,11 +24,15 @@ impl Aligned {
     fn inner_mut(self: &mut Rc<Self>) -> Option<&mut [u8; PAGE_SIZE]> {
         Rc::get_mut(self).map(|a| &mut a.0)
     }
-    pub fn clear(&mut self) {
+    fn clear(&mut self) {
         self.0.fill(0);
     }
 }
 
+/// An abstraction over a buffer pool
+/// that exposes functions for reading and writing pages to and from the file system.
+///
+/// NOTE: currently doesn't have any support for dirty pages.
 pub struct FileSystem {
     inner: RefCell<InnerFs>,
     capacity: usize,
@@ -45,6 +50,12 @@ struct BufferPoolEntry {
 }
 
 impl FileSystem {
+    /// Creates and returns a new file system with an empty buffer pool.
+    ///
+    /// The buffer pool will have the given capacity,
+    /// and writes to the file system will be buffered until the given number of pages have been accumulated.
+    ///
+    /// Returns an error if creation of the buffer pool or eviction handler fails.
     pub fn new(capacity: usize, write_buffering: usize) -> Result<Self, DbError> {
         let buffer_pool = HashTable::new(capacity)?;
         let eviction_handler = Eviction::new(capacity)?;
@@ -76,17 +87,29 @@ impl FileSystem {
             inner.eviction_handler.touch(entry.eviction_id);
             Ok(Rc::clone(&entry.page))
         } else {
+            if cfg!(test) {
+                println!("get page {page_number} of {path:?}");
+            }
             if inner.buffer_pool.len() == self.capacity {
+                println!("evict page");
                 inner.evict_page()?;
             }
             inner.add_new_page(path, page_number)
         }
     }
 
-    /// Writes a new file into disk by calling `next_page` repeatedly until it returns Err() or Ok(false).
+    /// Writes pages to `path` starting from the byte offset `starting_page_number * PAGE_SIZE`
     ///
-    /// Returns an error if `next_page` has an error, or if there is some I/O error (such as the file already existing).
-    /// Otherwise, returns the number of pages written.
+    /// Creates the file if it doesn't already exist,
+    /// and fills the bytes before the offset with `0x00` if the file isn't long enough.
+    ///
+    /// Repeatedly calls `next_page` with an out argument.
+    /// If `next_page` returns true, the modified out argument is written to the file.
+    /// When `next_page` returns false, stops writing.
+    /// Writes are buffered for efficiency.
+    ///
+    /// Returns an error if `next_page` has an error, or if there is some I/O error.
+    /// Otherwise, returns the number of pages written by `next_page`.
     pub fn write_file(
         &mut self,
         path: impl AsRef<Path>,
@@ -101,27 +124,33 @@ impl FileSystem {
             .open(&path)?;
 
         let mut buffer: Vec<Aligned> = bytemuck::allocation::zeroed_vec(self.write_buffering);
-        let mut num_pages_written = 0;
+        let mut page_number_unwritten = starting_page_number;
+        let mut page_number_written = page_number_unwritten;
+        let mut end = false;
         loop {
-            let end_iteration = 'write: {
-                for (i, page) in buffer.iter_mut().enumerate() {
-                    page.clear();
-                    if next_page(page)? {
-                        num_pages_written += 1;
-                    } else {
-                        break 'write Some(i);
-                    }
+            for page in &mut buffer {
+                page.clear();
+                if next_page(page)? {
+                    page_number_unwritten += 1;
+                } else {
+                    end = true;
+                    break;
                 }
-                None
-            };
-            let buffer_data_end = end_iteration.unwrap_or(buffer.len());
-            if buffer_data_end > 0 {
-                let bytes: &[u8] = bytemuck::cast_slice(&buffer[0..buffer_data_end]);
-                let starting_page_offset = starting_page_number * PAGE_SIZE;
-                file.write_all_at(bytes, starting_page_offset as u64)?;
             }
-            if end_iteration.is_some() {
-                return Ok(num_pages_written);
+
+            let buffer_data_end = page_number_unwritten - page_number_written;
+            if buffer_data_end > 0 {
+                if cfg!(test) {
+                    println!("write {buffer_data_end} page(s)");
+                }
+                let bytes: &[u8] = bytemuck::cast_slice(&buffer[0..buffer_data_end]);
+                let offset = page_number_written * PAGE_SIZE;
+                file.write_all_at(bytes, offset as u64)?;
+                page_number_written = page_number_unwritten;
+            }
+
+            if end {
+                return Ok(page_number_written - starting_page_number);
             }
         }
     }
@@ -169,5 +198,114 @@ impl InnerFs {
 impl Default for FileSystem {
     fn default() -> Self {
         Self::new(1, 1).unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+
+    use crate::test_path::TestPath;
+
+    use super::*;
+
+    fn test_path(name: &str) -> TestPath {
+        TestPath::new("file_system", name)
+    }
+
+    fn write_string(
+        fs: &mut FileSystem,
+        path: &TestPath,
+        starting_page_number: usize,
+        s: &str,
+    ) -> Result<()> {
+        let mut bytes = s.bytes();
+        assert_eq!(
+            fs.write_file(path, starting_page_number, |out| {
+                Ok(bytes.next().map(|c| out.0.fill(c)).is_some())
+            })?,
+            s.len()
+        );
+        Ok(())
+    }
+
+    fn assert_page_contents(
+        fs: &FileSystem,
+        path: &TestPath,
+        starting_page_number: usize,
+        s: &str,
+    ) -> Result<()> {
+        let bytes = s.bytes();
+        for (page_number, a) in (starting_page_number..).zip(bytes) {
+            let page = fs.get(path, page_number)?;
+            for &b in &page.0 {
+                assert_eq!(a, b);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_basic() -> Result<()> {
+        let path = &test_path("monad");
+        let mut fs = FileSystem::new(8, 4)?;
+
+        write_string(
+            &mut fs,
+            path,
+            "a monad ".len(),
+            "is a ?????? in the category of ",
+        )?;
+        write_string(&mut fs, path, "".len(), "a monad ")?;
+        write_string(&mut fs, path, "a monad is a ".len(), "monoid")?;
+
+        for _ in 0..3 {
+            assert_page_contents(&fs, path, "a ".len(), "monad")?;
+        }
+        for _ in 0..3 {
+            assert_page_contents(&fs, path, "a monad is a ".len(), "monoid")?;
+        }
+
+        write_string(
+            &mut fs,
+            path,
+            "a monad is a monoid in the category of ".len(),
+            "endofunctors",
+        )?;
+
+        for _ in 0..3 {
+            assert_page_contents(
+                &fs,
+                path,
+                "a monad is a monoid in the category of endo".len(),
+                "functor",
+            )?;
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_multiple_files() -> Result<()> {
+        let mut fs = FileSystem::new(2, 1)?;
+
+        let a = &test_path("multi-a");
+        let b = &test_path("multi-b");
+        let c = &test_path("multi-c");
+
+        write_string(&mut fs, a, 0, "a")?;
+        write_string(&mut fs, b, 0, "b")?;
+        write_string(&mut fs, c, 0, "c")?;
+
+        assert_page_contents(&fs, a, 0, "a")?;
+        assert_page_contents(&fs, b, 0, "b")?;
+        assert_page_contents(&fs, c, 0, "c")?;
+        assert_page_contents(&fs, b, 0, "b")?;
+        assert_page_contents(&fs, a, 0, "a")?;
+        assert_page_contents(&fs, c, 0, "c")?;
+        assert_page_contents(&fs, a, 0, "a")?;
+        assert_page_contents(&fs, b, 0, "b")?;
+
+        Ok(())
     }
 }
