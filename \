@@ -5,7 +5,7 @@ use std::{
     rc::Rc,
 };
 
-use crate::{DbError, PAGE_SIZE, btree::BTree, file_system::Aligned};
+use crate::{DbError, PAGE_SIZE, btree::write_btree, file_system::Aligned};
 
 #[cfg(not(feature = "mock"))]
 use crate::file_system::FileSystem;
@@ -23,10 +23,9 @@ const PADDING: usize = PAGE_SIZE - 8 - PAIRS_PER_CHUNK * 16;
 pub struct Sst {
     // TODO: store paths to all levels of the Btree, possibly with their file sizes?
     // TODO add whatever metadata is needed for Btree traversal
-    pub path: PathBuf,
-    pub nodes_offset: u64,
-    pub leafs_offset: u64,
-    pub tree_depth: u64,
+    path: PathBuf,
+    nodes_offset: u64,
+    leafs_offset: u64,
 }
 
 // TODO remove this and use whatever page structs you need for the Btree in the btree.rs file
@@ -71,29 +70,28 @@ impl Sst {
 
         let key_values = key_values.into_iter();
 
-        let (nodes_offset, leafs_offset, tree_depth) =
-            BTree::write(&path, key_values, file_system)?;
+        let (nodes_offset, leafs_offset) = write_btree(&path, key_values, file_system)?;
 
         Ok(Sst {
             path: path.as_ref().to_owned(),
             nodes_offset,
             leafs_offset,
-            tree_depth,
         })
     }
 
     /* Open the file and add it to opened files
      * find the file's SST and give it back
      * */
-    pub fn open(path: impl AsRef<Path>, file_system: &FileSystem) -> Result<Sst, DbError> {
+    pub fn open(path: impl AsRef<Path>) -> Result<Sst, DbError> {
         // TODO change this since now a Sst is a directory containing Btree files
-        let (nodes_offset, leafs_offset, tree_depth) = BTree::open(&path, file_system)?;
+        let file = fs::OpenOptions::new().read(true).open(&path)?;
+        let file_size = file.metadata()?.len() as usize;
+        assert!(file_size.is_multiple_of(PAGE_SIZE));
+        let num_pages = file_size / PAGE_SIZE;
 
         Ok(Sst {
             path: path.as_ref().to_owned(),
-            nodes_offset,
-            leafs_offset,
-            tree_depth,
+            num_pages,
         })
     }
 
