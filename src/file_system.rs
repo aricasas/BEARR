@@ -77,7 +77,7 @@ impl FileSystem {
     ///
     /// Returns an error if `next_page` has an error, or if there is some I/O error (such as the file already existing).
     /// Otherwise, returns the number of pages written.
-    pub fn write_file(
+    pub fn append(
         &mut self,
         path: impl AsRef<Path>,
         // Closure that writes out the next page and returns whether it wrote something (false if done)
@@ -87,6 +87,16 @@ impl FileSystem {
         let mut buffer = vec![Aligned::default(); 50];
         next_page(&mut buffer[3])?;
         let bytes: &[u8] = bytemuck::cast_slice(&buffer[0..20]);
+        todo!()
+    }
+
+    pub fn write_file(
+        &mut self,
+        path: impl AsRef<Path>,
+        starting_page_number: usize,
+        // Closure that writes out the next page and returns whether it wrote something (false if done)
+        mut next_page: impl FnMut(&mut Aligned) -> Result<bool, DbError>,
+    ) -> Result<usize, DbError> {
         todo!()
     }
 }

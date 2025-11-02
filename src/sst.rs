@@ -85,7 +85,7 @@ impl Sst {
             Ok(page.length > 0)
         };
 
-        let num_pages = file_system.write_file(&path, write_next_page)?;
+        let num_pages = file_system.append(&path, write_next_page)?;
 
         Ok(Sst {
             path: path.as_ref().to_owned(),
@@ -172,6 +172,12 @@ impl<'a, 'b> SstIter<'a, 'b> {
 
             let buffered_page: Rc<Page> = bytemuck::cast_rc(page_bytes);
 
+            // A simple optimization to not iterate over a page with ending key smaller than start
+            // of range
+            let ending_key = (buffered_page.pairs[buffered_page.length as usize - 1])[0];
+            if &ending_key < range.start() {
+                continue;
+            }
             for i in 0..buffered_page.length as usize {
                 let [key, _] = buffered_page.pairs[i];
 
@@ -199,6 +205,70 @@ impl<'a, 'b> SstIter<'a, 'b> {
         Ok(iter)
     }
 
+    fn create_tree(
+        btree_keys: Vec<u64>,
+        leaf_pages: Vec<u64>,
+        n: usize,
+    ) -> Vec<Vec<Vec<(u64, u64)>>> {
+        // First build forward pyramid and track mappings
+        let mut forward = vec![];
+        let mut current = btree_keys.clone();
+
+        loop {
+            let chunks: Vec<Vec<u64>> = current.chunks(n).map(|chunk| chunk.to_vec()).collect();
+
+            if chunks.len() <= 1 {
+                forward.push(chunks);
+                break;
+            }
+
+            forward.push(chunks.clone());
+            current = chunks.iter().map(|chunk| *chunk.last().unwrap()).collect();
+        }
+
+        // Reverse and assign new pages
+        forward.reverse();
+
+        let mut result = vec![];
+        let mut next_id = 1;
+
+        for (level_idx, level) in forward.iter().enumerate() {
+            if level_idx == forward.len() - 1 {
+                // Bottom level: use original indices
+                let leaf_chunks: Vec<Vec<u64>> =
+                    leaf_pages.chunks(n).map(|chunk| chunk.to_vec()).collect();
+                let bottom: Vec<Vec<(u64, u64)>> = level
+                    .iter()
+                    .enumerate()
+                    .map(|(i, chunk)| {
+                        chunk
+                            .iter()
+                            .enumerate()
+                            .map(|(j, &v)| (v, leaf_chunks[i][j]))
+                            .collect()
+                    })
+                    .collect();
+                result.push(bottom);
+            } else {
+                // Other levels: assign new pages
+                let with_ids: Vec<Vec<(u64, u64)>> = level
+                    .iter()
+                    .map(|chunk| {
+                        chunk
+                            .iter()
+                            .map(|&v| {
+                                let id = next_id;
+                                next_id += 1;
+                                (v, id)
+                            })
+                            .collect()
+                    })
+                    .collect();
+                result.push(with_ids);
+            }
+        }
+        result
+    }
     /*
      * Finding the next item in a range
      *
