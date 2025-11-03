@@ -88,10 +88,10 @@ impl FileSystem {
             Ok(Rc::clone(&entry.page))
         } else {
             if cfg!(test) {
-                println!("get page {page_number} of {path:?}");
+                // println!("get page {page_number} of {path:?}");
             }
             if inner.buffer_pool.len() == self.capacity {
-                println!("evict page");
+                // println!("evict page");
                 inner.evict_page()?;
             }
             inner.add_new_page(path, page_number)
@@ -141,7 +141,7 @@ impl FileSystem {
             let buffer_data_end = page_number_unwritten - page_number_written;
             if buffer_data_end > 0 {
                 if cfg!(test) {
-                    println!("write {buffer_data_end} page(s)");
+                    // println!("write {buffer_data_end} page(s)");
                 }
                 let bytes: &[u8] = bytemuck::cast_slice(&buffer[0..buffer_data_end]);
                 let offset = page_number_written * PAGE_SIZE;
