@@ -38,7 +38,8 @@ pub struct DbConfiguration {
 
 impl DbConfiguration {
     fn validate(&self) -> Result<(), DbError> {
-        if self.memtable_capacity > 0 && self.buffer_pool_capacity > 0 && self.write_buffering > 0 {
+        if self.memtable_capacity > 0 && self.buffer_pool_capacity >= 16 && self.write_buffering > 0
+        {
             Ok(())
         } else {
             Err(DbError::InvalidConfiguration)
@@ -267,7 +268,7 @@ mod tests {
             name,
             DbConfiguration {
                 memtable_capacity: 3,
-                buffer_pool_capacity: 1,
+                buffer_pool_capacity: 16,
                 write_buffering: 1,
             },
         )?;
@@ -322,7 +323,7 @@ mod tests {
                 name,
                 DbConfiguration {
                     memtable_capacity: 10,
-                    buffer_pool_capacity: 1,
+                    buffer_pool_capacity: 16,
                     write_buffering: 1,
                 },
             )?;

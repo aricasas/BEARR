@@ -44,8 +44,8 @@ impl Eviction {
     /// Creates a new 2Q eviction handler with a given max capacity.
     /// Returns `DbError::Oom` if allocation fails
     pub fn new(capacity: usize) -> Result<Self, DbError> {
-        let k_in = capacity / 4; // ~25%
-        let k_out = capacity / 2; // ~50%
+        let k_in = capacity / 4 + 1; // ~25%
+        let k_out = capacity / 2 + 1; // ~50%
 
         let map_out = HashTable::new(k_out)?;
 

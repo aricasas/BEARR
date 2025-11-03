@@ -197,7 +197,7 @@ impl InnerFs {
 
 impl Default for FileSystem {
     fn default() -> Self {
-        Self::new(1, 1).unwrap()
+        Self::new(16, 1).unwrap()
     }
 }
 
