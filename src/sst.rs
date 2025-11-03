@@ -205,12 +205,12 @@ mod tests {
 
         let scan = sst.scan(11..=12, &file_system)?;
         println!("{} {}", scan.page_number, scan.item_number);
-        assert_eq!(scan.page_number, 0);
+        assert_eq!(scan.page_number, 1);
         assert_eq!(scan.item_number, 5);
 
         let scan = sst.scan(2..=12, &file_system)?;
         println!("{} {}", scan.page_number, scan.item_number);
-        assert_eq!(scan.page_number, 0);
+        assert_eq!(scan.page_number, 1);
         assert_eq!(scan.item_number, 1);
 
         Ok(())

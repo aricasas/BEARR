@@ -117,6 +117,18 @@ impl<'a, 'b> BTreeIter<'a, 'b> {
 
         let root_page = file_system.get(&sst.path, nodes_offset as usize)?;
         let root_node: Rc<Node> = bytemuck::cast_rc(root_page);
+        if root_node.pairs[(root_node.length - 1) as usize][0] < *range.start() {
+            let iter = Self {
+                sst,
+                file_system,
+                page_number: 0,
+                item_number: 0,
+                range,
+                ended: false,
+            };
+
+            return Ok(iter);
+        }
 
         let mut current_node = root_node;
 
@@ -311,8 +323,10 @@ impl BTree {
         path: impl AsRef<Path>,
         file_system: &FileSystem,
     ) -> Result<(u64, u64, u64), DbError> {
-        let metadata_page = file_system.get(path, METADATA_OFFSET as usize)?;
+        let metadata_page = file_system.get(&path, METADATA_OFFSET as usize)?;
         let metadata: Rc<Metadata> = bytemuck::cast_rc(metadata_page);
+
+        Self::pretty_print_pages(&path, file_system);
 
         if metadata.magic != BEAR_MAGIC {
             return Err(DbError::CorruptSst);
@@ -325,6 +339,59 @@ impl BTree {
             metadata.leafs_offset,
             metadata.tree_depth,
         ))
+    }
+
+    fn pretty_print_pages(path: impl AsRef<Path>, file_system: &FileSystem) -> Result<(), DbError> {
+        let metadata_page = file_system.get(&path, METADATA_OFFSET as usize)?;
+        let metadata: Rc<Metadata> = bytemuck::cast_rc(metadata_page);
+
+        if metadata.magic != BEAR_MAGIC {
+            return Err(DbError::CorruptSst);
+        }
+
+        // Print metadata
+        println!("\n╔════════════════════════════════════╗");
+        println!("║          METADATA                  ║");
+        println!("╠════════════════════════════════════╣");
+        println!("║ Magic:        0x{:X}             ║", metadata.magic);
+        println!(
+            "║ Leafs:        {} -> {}           ",
+            metadata.leafs_offset,
+            metadata.nodes_offset - 1
+        );
+        println!(
+            "║ Nodes:        {} -> {}           ",
+            metadata.nodes_offset,
+            metadata.size - 1
+        );
+        println!("║ Depth:        {}                  ", metadata.tree_depth);
+        println!("╚════════════════════════════════════╝\n");
+
+        // Print leafs
+        for page_num in metadata.leafs_offset..metadata.nodes_offset {
+            let page = file_system.get(&path, page_num as usize)?;
+            let leaf: Rc<Leaf> = bytemuck::cast_rc(page);
+
+            println!("🍃 Leaf[{}] ({} pairs)", page_num, leaf.length);
+            for i in 0..leaf.length as usize {
+                println!("   {} -> {}", leaf.pairs[i][0], leaf.pairs[i][1]);
+            }
+            println!();
+        }
+
+        // Print nodes
+        for page_num in metadata.nodes_offset..metadata.size {
+            let page = file_system.get(&path, page_num as usize)?;
+            let node: Rc<Node> = bytemuck::cast_rc(page);
+
+            println!("🌳 Node[{}] ({} entries)", page_num, node.length);
+            for i in 0..node.length as usize {
+                println!("   key:{} → page:{}", node.pairs[i][0], node.pairs[i][1]);
+            }
+            println!();
+        }
+
+        Ok(())
     }
 }
 
