@@ -1,9 +1,15 @@
 use std::{ops::RangeInclusive, path::Path, rc::Rc};
 
-use crate::{DbError, PAGE_SIZE, file_system::Aligned, file_system::FileSystem, sst::Sst};
+use crate::{DbError, PAGE_SIZE, file_system::Aligned, sst::Sst};
 
 const PAIRS_PER_CHUNK: usize = (PAGE_SIZE - 8) / 16;
 const PADDING: usize = PAGE_SIZE - 8 - PAIRS_PER_CHUNK * 16;
+
+#[cfg(not(feature = "mock"))]
+use crate::file_system::FileSystem;
+
+#[cfg(feature = "mock")]
+use crate::mock::FileSystem;
 
 #[repr(C, align(4096))]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
@@ -41,7 +47,8 @@ struct Metadata {
     leafs_offset: u64,
     nodes_offset: u64,
     tree_depth: u64,
-    padding: [u8; PAGE_SIZE - 4 * 8],
+    size: u64,
+    padding: [u8; PAGE_SIZE - 5 * 8],
 }
 
 impl Default for Metadata {
@@ -51,6 +58,7 @@ impl Default for Metadata {
             leafs_offset: LEAF_OFFSET,
             nodes_offset: 0x1000,
             tree_depth: 0,
+            size: 0,
             padding: [Default::default(); _],
         }
     }
@@ -76,8 +84,8 @@ type Leaf = Page;
 pub struct BTreeIter<'a, 'b> {
     sst: &'a Sst,
     file_system: &'b FileSystem,
-    page_number: usize,
-    item_number: usize,
+    pub page_number: usize,
+    pub item_number: usize,
     range: RangeInclusive<u64>,
     ended: bool,
 }
@@ -100,8 +108,6 @@ impl<'a, 'b> BTreeIter<'a, 'b> {
         let nodes_offset = sst.nodes_offset;
         let leafs_offset = sst.leafs_offset;
         let tree_depth = sst.tree_depth;
-
-        assert!(nodes_offset > leafs_offset);
 
         if range.start() > range.end() {
             return Err(DbError::InvalidScanRange);
@@ -217,6 +223,7 @@ impl BTree {
         let tree_depth: u64;
         let mut largest_keys: Vec<u64> = Vec::new();
         let mut largest_pages: Vec<u64> = Vec::new();
+        let mut file_size: u64 = 0;
 
         let mut leaf_count: u64 = 0;
 
@@ -248,19 +255,13 @@ impl BTree {
         let btree = create_tree(largest_keys, largest_pages, KEYS_PER_NODE);
         tree_depth = btree.len() as u64;
 
-        let write_metadata = |page_bytes: &mut Aligned| {
-            let metadata: &mut Metadata = bytemuck::cast_mut(page_bytes);
-            metadata.leafs_offset = LEAF_OFFSET;
-            metadata.nodes_offset = nodes_offset;
-            metadata.tree_depth = tree_depth;
-            Ok(false)
-        };
         /*
          *
          * iterator([3:1 6:2 8:3] [1:1 2:2 3:8] [4:3 5:6 6:9] [7:10 8:11])
          * */
 
         let mut btree_itter = btree.into_iter().flatten();
+        let mut node_count: u64 = 0;
 
         // btree write closure trait
         let write_next_btree_page = |page_bytes: &mut Aligned| {
@@ -273,6 +274,7 @@ impl BTree {
                 *pair = k_v.into();
                 node.length += 1;
             }
+            node_count = node_count + 1;
 
             Ok(node.length > 0)
         };
@@ -283,6 +285,22 @@ impl BTree {
         let _nodes_written =
             file_system.write_file(&path, nodes_offset as usize, write_next_btree_page)? as u64;
 
+        file_size = 1 + nodes_offset - LEAF_OFFSET + node_count;
+        let mut write_metadata = 0;
+        let write_metadata = |page_bytes: &mut Aligned| {
+            write_metadata += 1;
+            let metadata: &mut Metadata = bytemuck::cast_mut(page_bytes);
+            metadata.leafs_offset = LEAF_OFFSET;
+            metadata.nodes_offset = nodes_offset;
+            metadata.tree_depth = tree_depth;
+            metadata.magic = BEAR_MAGIC;
+            metadata.size = file_size;
+            println!(
+                "-----> {} {} {} {}",
+                metadata.leafs_offset, metadata.nodes_offset, metadata.tree_depth, metadata.magic
+            );
+            Ok(write_metadata == 1)
+        };
         let _metadata_pages =
             file_system.write_file(&path, METADATA_OFFSET as usize, write_metadata)? as u64;
 
@@ -299,7 +317,9 @@ impl BTree {
         if metadata.magic != BEAR_MAGIC {
             return Err(DbError::CorruptSst);
         }
-
+        if metadata.nodes_offset <= metadata.leafs_offset {
+            return Err(DbError::CorruptSst);
+        }
         Ok((
             metadata.nodes_offset,
             metadata.leafs_offset,

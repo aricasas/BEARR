@@ -115,7 +115,7 @@ impl Database {
 
         let mut ssts = Vec::with_capacity(metadata.num_ssts);
         for i in 0..metadata.num_ssts {
-            let sst = Sst::open(name.join(i.to_string()))?;
+            let sst = Sst::open(name.join(i.to_string()), &Default::default())?;
             ssts.push(sst);
         }
 
@@ -211,7 +211,7 @@ impl Database {
 
         for sst in self.ssts.iter().rev() {
             let sst_scan = sst.scan(range.clone(), &self.file_system)?;
-            scans.push(merge::Sources::Sst(sst_scan));
+            scans.push(merge::Sources::BTree(sst_scan));
         }
 
         MergedIterator::new(scans)

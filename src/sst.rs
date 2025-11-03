@@ -119,6 +119,7 @@ impl Sst {
 /* Tests for SSTs */
 #[cfg(test)]
 mod tests {
+    use BTreeIter;
     use std::path::PathBuf;
 
     use anyhow::Result;
@@ -143,11 +144,11 @@ mod tests {
         }
     }
 
-    impl Drop for TestPath {
-        fn drop(&mut self) {
-            _ = fs::remove_file(&self.path);
-        }
-    }
+    // impl Drop for TestPath {
+    //     fn drop(&mut self) {
+    //         _ = fs::remove_file(&self.path);
+    //     }
+    // }
 
     #[test]
     fn test_problematic_ssts() {
@@ -164,10 +165,14 @@ mod tests {
     fn test_create_open_sst() -> Result<()> {
         let file_name = "./db/SST_Test_Create_Open";
         let path = &TestPath::new(file_name);
+        let mut file_system = FileSystem::new(1, 1)?;
 
-        Sst::create(vec![], path, &mut Default::default())?;
+        Sst::create(vec![], path, &mut file_system)?;
 
-        Sst::open(path)?;
+        assert!(matches!(
+            Sst::open(path, &file_system),
+            Err(DbError::CorruptSst)
+        ));
 
         Ok(())
     }
@@ -195,9 +200,8 @@ mod tests {
             &mut Default::default(),
         )?;
 
-        let sst = Sst::open(path)?;
-
         let file_system = FileSystem::default();
+        let sst = Sst::open(path, &file_system)?;
 
         let scan = sst.scan(11..=12, &file_system)?;
         println!("{} {}", scan.page_number, scan.item_number);
@@ -234,8 +238,8 @@ mod tests {
             &mut Default::default(),
         )?;
 
-        let sst = Sst::open(path)?;
         let file_system = FileSystem::default();
+        let sst = Sst::open(path, &file_system)?;
 
         let mut scan = sst.scan(2..=12, &file_system)?;
         assert_eq!(scan.next().unwrap()?, (3, 4));
@@ -261,12 +265,14 @@ mod tests {
         for i in 1..400_000 {
             test_vec.push((i, i));
         }
-        Sst::create(test_vec.into_iter().map(Ok), path, &mut Default::default())?;
 
-        let sst = Sst::open(path)?;
+        let mut file_system = FileSystem::default();
+        Sst::create(test_vec.into_iter().map(Ok), path, &mut file_system)?;
 
-        let file_size = sst.num_pages * PAGE_SIZE;
-        println!("Current File Size : {}", file_size);
+        let sst = Sst::open(path, &file_system)?;
+
+        // let file_size = sst.num_pages * PAGE_SIZE;
+        // println!("Current File Size : {}", file_size);
 
         let range_start = 1;
         let range_end = 4000;

@@ -40,24 +40,24 @@ impl FileSystem {
     pub fn write_file(
         &mut self,
         path: impl AsRef<Path>,
+        starting_page_number: usize,
         mut write_next: impl FnMut(&mut Aligned) -> Result<bool, DbError>,
     ) -> Result<usize, DbError> {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .append(true)
-            .create(true)
-            .open(path)?;
-
-        let mut num_pages = 0;
-
-        let mut page_bytes = Aligned::new();
-        let buffer = Rc::get_mut(&mut page_bytes).unwrap();
-        while write_next(buffer)? {
-            file.write_all(&buffer.0)?;
-            num_pages += 1;
-            buffer.clear();
+        let file = OpenOptions::new().create(true).write(true).open(path)?;
+        if starting_page_number * PAGE_SIZE > file.metadata().unwrap().len() as usize {
+            file.set_len((starting_page_number * PAGE_SIZE) as u64);
         }
 
-        Ok(num_pages)
+        let mut page_number = starting_page_number;
+
+        let mut page_bytes: Rc<Aligned> = bytemuck::allocation::zeroed_rc();
+        let buffer = Rc::get_mut(&mut page_bytes).unwrap();
+        while write_next(buffer)? {
+            file.write_all_at(&buffer.0, (page_number * PAGE_SIZE) as u64)?;
+            page_number += 1;
+            buffer.0.fill(0);
+        }
+
+        Ok(page_number - starting_page_number)
     }
 }

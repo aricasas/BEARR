@@ -7,7 +7,7 @@ edition = "2024"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145" }
 libc = "0.2.176"
-bytemuck = { version = "1.24.0", features = ["derive", "min_const_generics", "extern_crate_alloc"] }
+bytemuck = { version = "1.24.0", features = ["alloc_uninit", "derive", "extern_crate_alloc", "min_const_generics", "zeroable_maybe_uninit"] }
 fastrand = "2.3.0"
 
 [[bin]]
@@ -21,7 +21,10 @@ path = "src/experiments.rs"
 [features]
 default = []
 mock = []
+mock_hash = []
+delete_test_files = []
 
 [dev-dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }
 proptest = "1.8.0"
+rstest = "0.26.1"
