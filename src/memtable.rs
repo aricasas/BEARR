@@ -409,6 +409,8 @@ impl<'a, K: Ord + Clone + Default, V: Clone + Default> MemTableIter<'a, K, V> {
 mod tests {
     use anyhow::Result;
 
+    use crate::test_util::assert_panics;
+
     use super::*;
 
     #[test]
@@ -567,9 +569,8 @@ mod tests {
     fn test_full_capacity_zero() -> Result<()> {
         let mut memtable = MemTable::new(0)?;
 
-        let result = std::panic::catch_unwind(move || memtable.put(0, 0));
+        assert_panics(|| memtable.put(0, 0));
 
-        assert!(result.is_err());
         Ok(())
     }
 
@@ -590,8 +591,8 @@ mod tests {
         validate_red_black(&memtable, memtable.root).unwrap();
 
         // Try to insert new node when full produces error
-        let result = std::panic::catch_unwind(move || memtable.put(150, 200));
-        assert!(result.is_err());
+        assert_panics(|| memtable.put(150, 200));
+
         Ok(())
     }
 

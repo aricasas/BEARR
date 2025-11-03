@@ -189,6 +189,8 @@ impl<T: Clone> List<T> {
 mod tests {
     use anyhow::Result;
 
+    use crate::test_util::assert_panics;
+
     use super::*;
 
     #[test]
@@ -289,13 +291,11 @@ mod tests {
         list.push_back(2);
         list.push_back(3);
 
-        let result = std::panic::catch_unwind(move || list.push_back(4));
-        assert!(result.is_err());
+        assert_panics(|| _ = list.push_back(4));
 
         list = List::new(0)?;
 
-        let result = std::panic::catch_unwind(move || list.push_back(1));
-        assert!(result.is_err());
+        assert_panics(|| _ = list.push_back(1));
 
         Ok(())
     }
@@ -348,20 +348,9 @@ mod tests {
         assert_eq!(list.front(), None);
         assert_eq!(list.get(a), None);
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            list.delete(a);
-        }));
-        assert!(result.is_err());
-
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            list.move_to_back(a);
-        }));
-        assert!(result.is_err());
-
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            list.get_next(a);
-        }));
-        assert!(result.is_err());
+        assert_panics(|| _ = list.delete(a));
+        assert_panics(|| list.move_to_back(a));
+        assert_panics(|| _ = list.get_next(a));
 
         Ok(())
     }

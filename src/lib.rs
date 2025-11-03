@@ -10,7 +10,7 @@ mod merge;
 mod sst;
 
 #[cfg(test)]
-mod test_path;
+mod test_util;
 
 #[cfg(feature = "mock")]
 mod mock;

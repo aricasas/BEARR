@@ -40,3 +40,12 @@ impl Drop for TestPath {
         }
     }
 }
+
+pub fn assert_panics(mut f: impl FnMut()) {
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            f();
+        }))
+        .is_err()
+    );
+}

@@ -205,7 +205,7 @@ impl Default for FileSystem {
 mod tests {
     use anyhow::Result;
 
-    use crate::test_path::TestPath;
+    use crate::test_util::TestPath;
 
     use super::*;
 

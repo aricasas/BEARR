@@ -239,7 +239,7 @@ impl Drop for Database {
 mod tests {
     use anyhow::Result;
 
-    use crate::test_path::TestPath;
+    use crate::test_util::TestPath;
 
     use super::*;
 

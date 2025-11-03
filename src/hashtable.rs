@@ -213,6 +213,8 @@ mod tests {
 
     use anyhow::Result;
 
+    use crate::test_util::assert_panics;
+
     use super::*;
 
     fn insert_many(table: &mut HashTable<u64>, pairs: &[(&str, usize, u64)]) {
@@ -408,16 +410,9 @@ mod tests {
         assert_remove("3", d, 3, 7);
         assert_remove("1", e, 5, 6);
 
-        let mut assert_remove_absent = |path, page_number| {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                table.remove(path, page_number)
-            }));
-            assert!(result.is_err());
-        };
-
-        assert_remove_absent("4", d);
-        assert_remove_absent("0", f);
-        assert_remove_absent("2", a);
+        assert_panics(|| _ = table.remove("4", d));
+        assert_panics(|| _ = table.remove("0", f));
+        assert_panics(|| _ = table.remove("2", a));
 
         Ok(())
     }
@@ -442,8 +437,7 @@ mod tests {
             table.insert("/".into(), i, i);
         }
 
-        let result = std::panic::catch_unwind(move || table.insert("*".into(), 31, 4));
-        assert!(result.is_err());
+        assert_panics(|| table.insert("*".into(), 31, 4));
 
         Ok(())
     }
