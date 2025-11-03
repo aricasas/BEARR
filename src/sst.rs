@@ -5,7 +5,7 @@ use std::{
     rc::Rc,
 };
 
-use crate::{DbError, PAGE_SIZE, btree::BTree, file_system::Aligned};
+use crate::{DbError, PAGE_SIZE, btree::BTree, btree::BTreeIter, file_system::Aligned};
 
 #[cfg(not(feature = "mock"))]
 use crate::file_system::FileSystem;
@@ -108,134 +108,11 @@ impl Sst {
     }
 
     pub fn scan<'a, 'b>(
-        &'b self,
+        &'a self,
         range: RangeInclusive<u64>,
-        file_system: &'a FileSystem,
-    ) -> Result<SstIter<'a, 'b>, DbError> {
-        // TODO use BTreeIter
-        SstIter::new(self, range, file_system)
-    }
-}
-
-// TODO remove this and use BTreeIter
-/* SST iterator
- * Contains a 4KB buffer that keeps the wanted SST page in memory
- *
- *
- * */
-pub struct SstIter<'a, 'b> {
-    file_system: &'a FileSystem,
-    sst: &'b Sst,
-    page_number: usize,
-    item_number: usize,
-    range: RangeInclusive<u64>,
-    ended: bool,
-}
-
-impl<'a, 'b> Iterator for SstIter<'a, 'b> {
-    type Item = Result<(u64, u64), DbError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.go_to_next()
-    }
-}
-
-impl<'a, 'b> SstIter<'a, 'b> {
-    fn new(
-        sst: &'b Sst,
-        range: RangeInclusive<u64>,
-        file_system: &'a FileSystem,
-    ) -> Result<Self, DbError> {
-        if range.start() > range.end() {
-            return Err(DbError::InvalidScanRange);
-        }
-
-        let mut match_page_number = 0;
-        let mut match_item_number = 0;
-        let mut found = false;
-
-        // Linear search
-        'outer: for page_num in 0..sst.num_pages {
-            let page_bytes = file_system.get(&sst.path, page_num)?;
-
-            let buffered_page: Rc<Page> = bytemuck::cast_rc(page_bytes);
-
-            // A simple optimization to not iterate over a page with ending key smaller than start
-            // of range
-            let ending_key = (buffered_page.pairs[buffered_page.length as usize - 1])[0];
-            if &ending_key < range.start() {
-                continue;
-            }
-            for i in 0..buffered_page.length as usize {
-                let [key, _] = buffered_page.pairs[i];
-
-                if &key >= range.start() {
-                    // Found starting key
-                    match_page_number = page_num;
-                    match_item_number = i;
-                    found = true;
-                    break 'outer;
-                }
-            }
-        }
-
-        let ended = !found;
-
-        let iter = Self {
-            sst,
-            file_system,
-            page_number: match_page_number,
-            item_number: match_item_number,
-            range,
-            ended,
-        };
-
-        Ok(iter)
-    }
-
-    /*
-     * Finding the next item in a range
-     *
-     * While we have not reached the end of the range, go to the next item in the buffer,
-     * If we reach the end of the buffer, bring in the next page
-     * */
-    fn go_to_next(&mut self) -> Option<Result<(u64, u64), DbError>> {
-        if self.ended {
-            return None;
-        }
-
-        let page_bytes = self.file_system.get(&self.sst.path, self.page_number);
-
-        let buffered_page: Rc<Page> = match page_bytes {
-            Ok(bytes) => bytemuck::cast_rc(bytes),
-            Err(e) => return Some(Err(e)),
-        };
-
-        let [key, value] = buffered_page.pairs[self.item_number];
-        let item = (key, value);
-
-        if &key > self.range.end() {
-            self.ended = true;
-            return None;
-        }
-
-        self.item_number += 1;
-
-        if self.item_number < buffered_page.length as usize {
-            return Some(Ok(item));
-        }
-
-        // Have to buffer a new page
-        self.page_number += 1;
-        self.item_number = 0;
-
-        if self.page_number >= self.sst.num_pages {
-            // EOF
-            self.ended = true;
-            return Some(Ok(item));
-        }
-
-        Some(Ok(item))
+        file_system: &'b FileSystem,
+    ) -> Result<BTreeIter<'a, 'b>, DbError> {
+        BTreeIter::new(self, range, file_system)
     }
 }
 

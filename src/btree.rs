@@ -1,13 +1,4 @@
-/********************** REMOVE LATER ********************************************************/
-#![allow(dead_code)]
-#![allow(unused_variables)]
-/********************************************************************************************/
-
-use std::{
-    ops::RangeInclusive,
-    path::{Path, PathBuf},
-    rc::Rc,
-};
+use std::{ops::RangeInclusive, path::Path, rc::Rc};
 
 use crate::{DbError, PAGE_SIZE, file_system::Aligned, file_system::FileSystem, sst::Sst};
 
@@ -84,7 +75,7 @@ type Leaf = Page;
 
 pub struct BTreeIter<'a, 'b> {
     sst: &'a Sst,
-    file_system: &'b mut FileSystem,
+    file_system: &'b FileSystem,
     page_number: usize,
     item_number: usize,
     range: RangeInclusive<u64>,
@@ -95,16 +86,16 @@ impl<'a, 'b> Iterator for BTreeIter<'a, 'b> {
     type Item = Result<(u64, u64), DbError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        self.go_to_next()
     }
 }
 
-// TODO: Write the Btree iterator
+// BTree iterator
 impl<'a, 'b> BTreeIter<'a, 'b> {
     pub fn new(
         sst: &'a Sst,
         range: RangeInclusive<u64>,
-        file_system: &'b mut FileSystem,
+        file_system: &'b FileSystem,
     ) -> Result<Self, DbError> {
         let nodes_offset = sst.nodes_offset;
         let leafs_offset = sst.leafs_offset;
@@ -116,27 +107,55 @@ impl<'a, 'b> BTreeIter<'a, 'b> {
             return Err(DbError::InvalidScanRange);
         }
 
-        let mut match_page_number = 0;
-        let mut match_item_number = 0;
         let mut found = false;
 
         let root_page = file_system.get(&sst.path, nodes_offset as usize)?;
         let root_node: Rc<Node> = bytemuck::cast_rc(root_page);
 
+        let mut current_node = root_node;
+
+        let mut node_number: u64 = 0;
+        let mut page_number: u64;
+        let mut idx: usize;
         for level in 0..tree_depth {
-            let idx = match nums.binary_search(&range.start()) {
+            let sub_vec: &[[u64; 2]] =
+                &current_node.as_ref().pairs[0..current_node.length as usize];
+
+            idx = match sub_vec.binary_search_by_key(range.start(), |x| x[0]) {
                 Ok(i) => i,
                 Err(i) => i,
             };
+            node_number = current_node.pairs[idx][1];
+
+            if level == tree_depth - 1 {
+                break;
+            }
+
+            page_number = node_number + nodes_offset;
+            let current_page = file_system.get(&sst.path, page_number as usize)?;
+            current_node = bytemuck::cast_rc(current_page);
         }
+
+        page_number = leafs_offset + node_number;
+        let leaf_page = file_system.get(&sst.path, page_number as usize)?;
+        let leaf: Rc<Leaf> = bytemuck::cast_rc(leaf_page);
+        let sub_vec: &[[u64; 2]] = &leaf.as_ref().pairs[0..leaf.length as usize];
+
+        idx = match sub_vec.binary_search_by_key(range.start(), |x| x[0]) {
+            Ok(i) => {
+                found = true;
+                i
+            }
+            Err(i) => i,
+        };
 
         let ended = !found;
 
         let iter = Self {
             sst,
             file_system,
-            page_number: match_page_number,
-            item_number: match_item_number,
+            page_number: page_number as usize,
+            item_number: idx,
             range,
             ended,
         };
@@ -260,10 +279,11 @@ impl BTree {
 
         /* leafs --> nodes --> metadata */
 
-        let nodes_written =
+        /* TODO: Check on the number of written pages to be equal to what we want*/
+        let _nodes_written =
             file_system.write_file(&path, nodes_offset as usize, write_next_btree_page)? as u64;
 
-        let metadata_pages =
+        let _metadata_pages =
             file_system.write_file(&path, METADATA_OFFSET as usize, write_metadata)? as u64;
 
         Ok((nodes_offset, LEAF_OFFSET, tree_depth))
