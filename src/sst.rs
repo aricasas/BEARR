@@ -1,21 +1,15 @@
 use std::{
-    fs,
     ops::RangeInclusive,
     path::{Path, PathBuf},
-    rc::Rc,
 };
 
-use crate::{DbError, PAGE_SIZE, btree::BTree, btree::BTreeIter, file_system::Aligned};
+use crate::{DbError, btree::BTree, btree::BTreeIter};
 
 #[cfg(not(feature = "mock"))]
 use crate::file_system::FileSystem;
 
 #[cfg(feature = "mock")]
 use crate::mock::FileSystem;
-
-// TODO remove this constants, define any page stuff in btree.rs
-const PAIRS_PER_CHUNK: usize = (PAGE_SIZE - 8) / 16;
-const PADDING: usize = PAGE_SIZE - 8 - PAIRS_PER_CHUNK * 16;
 
 /// A handle to an SST of a database
 #[allow(clippy::upper_case_acronyms)]
@@ -28,34 +22,6 @@ pub struct Sst {
     pub leafs_offset: u64,
     pub tree_depth: u64,
 }
-
-// TODO remove this and use whatever page structs you need for the Btree in the btree.rs file
-#[repr(C, align(4096))]
-#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
-struct Page {
-    /// Number of pairs stored in this page
-    length: u64,
-    pairs: [[u64; 2]; PAIRS_PER_CHUNK],
-    padding: [u8; PADDING],
-}
-
-impl Default for Page {
-    fn default() -> Self {
-        Self {
-            length: 0,
-            pairs: [Default::default(); _],
-            padding: [Default::default(); _],
-        }
-    }
-}
-
-impl Page {
-    fn new() -> Box<Self> {
-        Box::new(Self::default())
-    }
-}
-
-const _: () = assert!(size_of::<Page>() == PAGE_SIZE);
 
 impl Sst {
     /*
@@ -98,13 +64,7 @@ impl Sst {
     }
 
     pub fn get(&self, key: u64, file_system: &FileSystem) -> Result<Option<u64>, DbError> {
-        let mut scanner = self.scan(key..=key, file_system)?;
-
-        match scanner.next() {
-            None => Ok(None),
-            Some(Err(e)) => Err(e),
-            Some(Ok((_, v))) => Ok(Some(v)),
-        }
+        BTree::get(self, key, file_system)
     }
 
     pub fn scan<'a, 'b>(
@@ -119,8 +79,7 @@ impl Sst {
 /* Tests for SSTs */
 #[cfg(test)]
 mod tests {
-    use BTreeIter;
-    use std::path::PathBuf;
+    use std::{fs, path::PathBuf};
 
     use anyhow::Result;
 
@@ -144,11 +103,11 @@ mod tests {
         }
     }
 
-    // impl Drop for TestPath {
-    //     fn drop(&mut self) {
-    //         _ = fs::remove_file(&self.path);
-    //     }
-    // }
+    impl Drop for TestPath {
+        fn drop(&mut self) {
+            _ = fs::remove_file(&self.path);
+        }
+    }
 
     #[test]
     fn test_problematic_ssts() {
