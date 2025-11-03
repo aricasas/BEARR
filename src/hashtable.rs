@@ -8,6 +8,8 @@ use crate::DbError;
 struct HashTableEntry<V> {
     key: (PathBuf, usize),
     value: V,
+    /// The bucket that the key hashed to.
+    /// Not necessarily the bucket that the entry actually resides in, thanks to probing.
     hash: usize,
 }
 
@@ -18,6 +20,7 @@ pub struct HashTable<V> {
     inner: Vec<Option<HashTableEntry<V>>>,
     capacity: usize,
     len: usize,
+    seed: u32,
 }
 
 impl<V> HashTable<V> {
@@ -25,9 +28,13 @@ impl<V> HashTable<V> {
     ///
     /// Returns `DbError::Oom` if allocation fails.
     pub fn new(capacity: usize) -> Result<Self, DbError> {
-        // Largely arbitrary multiplier; satisfies need for between 10% and 20% extra capacity
-        // + 1 to ensure the table will always contain at least one empty bucket
-        let num_buckets = capacity * 9 / 8 + 1;
+        // Use a load factor of 75% -- simply going off what Java does.
+        // Not entirely sure how differences in design affect things,
+        // but it's more than the 10%-20% extra capacity in the lecture slides.
+        // We decided that the extra space used is worth it
+        // in exchange for having more wiggle room.
+        // + 1 to ensure the table will always contain at least one empty bucket,
+        let num_buckets = capacity * 4 / 3 + 1;
 
         let mut inner = Vec::new();
         inner.try_reserve_exact(num_buckets)?;
@@ -35,18 +42,25 @@ impl<V> HashTable<V> {
             inner.push(None);
         }
 
+        let seed = fastrand::u32(..);
+
         Ok(Self {
             inner,
             capacity,
             len: 0,
+            seed,
         })
+    }
+
+    fn hash_to_bucket(&self, path: impl AsRef<Path>, page_number: usize) -> usize {
+        hash_to_index(path, page_number, self.num_buckets(), self.seed)
     }
 
     /// Returns the index in the table where the given key is found,
     /// or an error with the index of an empty bucket.
     fn find(&self, path: impl AsRef<Path>, page_number: usize) -> Result<usize, usize> {
         let path = path.as_ref();
-        let hash = hash_to_index(path, page_number, self.num_buckets());
+        let hash = self.hash_to_bucket(path, page_number);
 
         let mut i = hash;
         loop {
@@ -90,7 +104,7 @@ impl<V> HashTable<V> {
             }
         };
 
-        let hash = hash_to_index(&path, page_number, self.num_buckets());
+        let hash = self.hash_to_bucket(&path, page_number);
         let entry = HashTableEntry {
             key: (path, page_number),
             value,
@@ -172,12 +186,12 @@ fn murmur_hash_to_index(
     path: impl AsRef<Path>,
     page_number: usize,
     container_length: usize,
+    seed: u32,
 ) -> usize {
     let mut path = path.as_ref().to_path_buf();
     path.push(page_number.to_string());
 
-    // Seed was taken directly and arbitrarily from Wikipedia test cases
-    murmur_hash::murmur3_32(path.as_os_str().as_bytes(), 0x9747b28c) as usize % container_length
+    murmur_hash::murmur3_32(path.as_os_str().as_bytes(), seed) as usize % container_length
 }
 
 #[cfg(not(feature = "mock_hash"))]
@@ -188,6 +202,7 @@ pub fn hash_to_index(
     _path: impl AsRef<Path>,
     page_number: usize,
     container_length: usize,
+    _seed: u32,
 ) -> usize {
     page_number % container_length
 }
@@ -435,16 +450,21 @@ mod tests {
 
     #[test]
     fn test_murmur_hash_to_index() {
-        assert!((0..16).contains(&murmur_hash_to_index("monad", 2, 16)));
+        assert!((0..16).contains(&murmur_hash_to_index("monad", 2, 16, 314)));
 
         assert_ne!(
-            murmur_hash_to_index("monad", 3, 32),
-            murmur_hash_to_index("monad", 5, 32),
+            murmur_hash_to_index("monad", 2, 32, 159),
+            murmur_hash_to_index("monoid", 2, 32, 159),
         );
 
         assert_ne!(
-            murmur_hash_to_index("monad", 7, 64),
-            murmur_hash_to_index("monoid", 7, 64),
+            murmur_hash_to_index("monad", 3, 48, 265),
+            murmur_hash_to_index("monad", 5, 48, 265),
+        );
+
+        assert_ne!(
+            murmur_hash_to_index("monad", 7, 64, 358),
+            murmur_hash_to_index("monad", 7, 64, 979),
         );
     }
 }
