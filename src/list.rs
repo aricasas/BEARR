@@ -299,4 +299,70 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_chaotic() -> Result<()> {
+        let mut list = List::new(10)?;
+
+        let a = list.push_back('a');
+        list.push_back('b');
+        list.push_back('c');
+        let d = list.push_back('d');
+        let e = list.push_back('e');
+        list.push_back('f');
+        let g = list.push_back('g');
+        list.push_back('h');
+
+        list.move_to_back(a);
+        let new_b = list.push_back('b');
+        list.move_to_back(d);
+        assert_eq!(list.pop_front(), Some('b'));
+        let new_a = list.push_back('a');
+        assert_eq!(list.pop_front(), Some('c'));
+        list.push_back('i');
+        list.push_back('c');
+        list.move_to_back(e);
+        assert_eq!(list.delete(new_b), 'b');
+        list.pop_front();
+        assert_eq!(list.delete(d), 'd');
+
+        assert_eq!(list.len(), 7);
+        assert!(!list.is_empty());
+
+        assert_eq!(list.front(), Some((g, &'g')));
+        assert_eq!(list.get(a), Some(&'a'));
+        assert_eq!(list.get_next(a), Some((new_a, &'a')));
+        assert_eq!(list.get_next(e), None);
+
+        assert_eq!(list.pop_front(), Some('g'));
+        assert_eq!(list.pop_front(), Some('h'));
+        assert_eq!(list.pop_front(), Some('a'));
+        assert_eq!(list.pop_front(), Some('a'));
+        assert_eq!(list.pop_front(), Some('i'));
+        assert_eq!(list.pop_front(), Some('c'));
+        assert_eq!(list.pop_front(), Some('e'));
+
+        assert_eq!(list.len(), 0);
+        assert!(list.is_empty());
+
+        assert_eq!(list.front(), None);
+        assert_eq!(list.get(a), None);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            list.delete(a);
+        }));
+        assert!(result.is_err());
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            list.move_to_back(a);
+        }));
+        assert!(result.is_err());
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            list.get_next(a);
+        }));
+        assert!(result.is_err());
+
+        Ok(())
+    }
 }
