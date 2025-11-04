@@ -18,8 +18,10 @@ pub struct Sst {
     pub path: PathBuf,
     pub nodes_offset: u64,
     pub leafs_offset: u64,
-    // Unused if the `binary_search` feature is active
-    #[allow(dead_code)]
+    #[cfg(not(feature = "binary_search"))]
+    pub tree_depth: u64,
+    #[cfg(feature = "binary_search")]
+    #[expect(dead_code)]
     pub tree_depth: u64,
 }
 
