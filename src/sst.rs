@@ -15,8 +15,6 @@ use crate::mock::FileSystem;
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug)]
 pub struct Sst {
-    // TODO: store paths to all levels of the Btree, possibly with their file sizes?
-    // TODO add whatever metadata is needed for Btree traversal
     pub path: PathBuf,
     pub nodes_offset: u64,
     pub leafs_offset: u64,
@@ -32,9 +30,6 @@ impl Sst {
         path: impl AsRef<Path>,
         file_system: &mut FileSystem,
     ) -> Result<Sst, DbError> {
-        // TODO make a directory at path, and
-        // TODO call write_btree_to_files to write the Btree inside it
-
         let key_values = key_values.into_iter();
 
         let (nodes_offset, leafs_offset, tree_depth) =
@@ -52,7 +47,6 @@ impl Sst {
      * find the file's SST and give it back
      * */
     pub fn open(path: impl AsRef<Path>, file_system: &FileSystem) -> Result<Sst, DbError> {
-        // TODO change this since now a Sst is a directory containing Btree files
         let (nodes_offset, leafs_offset, tree_depth) = BTree::open(&path, file_system)?;
 
         Ok(Sst {

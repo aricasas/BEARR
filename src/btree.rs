@@ -243,7 +243,6 @@ impl BTree {
 
         /* leafs --> nodes --> metadata */
 
-        /* TODO: Check on the number of written pages to be equal to what we want*/
         let _nodes_written =
             file_system.write_file(&path, nodes_offset as usize, write_next_btree_page)? as u64;
 
