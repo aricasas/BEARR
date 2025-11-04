@@ -217,18 +217,11 @@ impl Database {
 
         MergedIterator::new(scans)
     }
-
-    /// Closes the database.
-    ///
-    /// If flushing fails, returns an error along with `self` to allow retrying the close.
-    pub fn close(mut self) -> Result<(), (Self, DbError)> {
-        self.flush().map_err(|e| (self, e))
-    }
 }
 
 /// The database is flushed upon dropping.
 ///
-/// Errors are ignored. To handle them, call `Database::flush` or `Database::close` manually.
+/// Errors are ignored. To handle them, call `Database::flush` manually.
 impl Drop for Database {
     fn drop(&mut self) {
         _ = self.flush();
@@ -336,7 +329,7 @@ mod tests {
             put_many(&mut db, &[(13, 15), (14, 15), (1, 19)])?;
             db.flush()?;
             put_many(&mut db, &[(3, 1), (20, 5), (7, 15), (18, 25)])?;
-            db.close().map_err(|(_, e)| e)?;
+            db.flush()?;
         }
 
         {
