@@ -105,31 +105,24 @@ impl<'a, 'b> BTreeIter<'a, 'b> {
 
         let res = BTree::search(sst, *range.start(), file_system)?;
 
-        match res {
-            Some(Ok((page_number, item_number))) => Ok(Self {
+        if let Some(Ok((page_number, item_number)) | Err((page_number, item_number))) = res {
+            Ok(Self {
                 sst,
                 file_system,
                 page_number,
                 item_number,
                 range,
                 ended: false,
-            }),
-            Some(Err((page_number, item_number))) => Ok(Self {
-                sst,
-                file_system,
-                page_number,
-                item_number,
-                range,
-                ended: false,
-            }),
-            None => Ok(Self {
+            })
+        } else {
+            Ok(Self {
                 sst,
                 file_system,
                 page_number: 0,
                 item_number: 0,
                 range,
                 ended: true,
-            }),
+            })
         }
     }
 
@@ -172,6 +165,8 @@ impl<'a, 'b> BTreeIter<'a, 'b> {
         Some(Ok(item))
     }
 }
+
+type SearchResult = Result<(usize, usize), (usize, usize)>;
 
 pub struct BTree {}
 
@@ -304,7 +299,7 @@ impl BTree {
         sst: &Sst,
         key: u64,
         file_system: &FileSystem,
-    ) -> Result<Option<Result<(usize, usize), (usize, usize)>>, DbError> {
+    ) -> Result<Option<SearchResult>, DbError> {
         let nodes_offset = sst.nodes_offset;
         let leafs_offset = sst.leafs_offset;
         let tree_depth = sst.tree_depth;
@@ -324,10 +319,8 @@ impl BTree {
             let sub_vec: &[[u64; 2]] =
                 &current_node.as_ref().pairs[0..current_node.length as usize];
 
-            idx = match sub_vec.binary_search_by_key(&key, |x| x[0]) {
-                Ok(i) => i,
-                Err(i) => i,
-            };
+            let (Ok(i) | Err(i)) = sub_vec.binary_search_by_key(&key, |x| x[0]);
+            idx = i;
             node_number = current_node.pairs[idx][1];
 
             if level == tree_depth - 1 {
@@ -371,7 +364,7 @@ impl BTree {
         sst: &Sst,
         key: u64,
         file_system: &FileSystem,
-    ) -> Result<Option<Result<(usize, usize), (usize, usize)>>, DbError> {
+    ) -> Result<Option<SearchResult>, DbError> {
         let nodes_offset = sst.nodes_offset;
         let leafs_offset = sst.leafs_offset;
 
@@ -390,7 +383,7 @@ impl BTree {
             if page_number == start_page_num as usize {
                 break;
             }
-            let middle_page = file_system.get(&sst.path, page_number as usize)?;
+            let middle_page = file_system.get(&sst.path, page_number)?;
             let leaf: Rc<Leaf> = bytemuck::cast_rc(middle_page);
 
             if key < leaf.pairs[0][0] {
@@ -402,7 +395,7 @@ impl BTree {
             }
         }
 
-        let leaf_page = file_system.get(&sst.path, page_number as usize)?;
+        let leaf_page = file_system.get(&sst.path, page_number)?;
         let leaf: Rc<Leaf> = bytemuck::cast_rc(leaf_page);
         let found_exact;
 
@@ -418,8 +411,6 @@ impl BTree {
             }
         };
 
-        let page_number = page_number as usize;
-
         if found_exact {
             Ok(Some(Ok((page_number, idx))))
         } else {
@@ -427,6 +418,7 @@ impl BTree {
         }
     }
 
+    #[allow(dead_code)]
     fn pretty_print_pages(path: impl AsRef<Path>, file_system: &FileSystem) -> Result<(), DbError> {
         let metadata_page = file_system.get(&path, METADATA_OFFSET as usize)?;
         let metadata: Rc<Metadata> = bytemuck::cast_rc(metadata_page);

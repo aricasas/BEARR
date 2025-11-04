@@ -2,7 +2,6 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     fs::OpenOptions,
-    io::Write,
     os::unix::fs::FileExt,
     path::{Path, PathBuf},
     rc::Rc,
@@ -46,7 +45,7 @@ impl FileSystem {
         let file = OpenOptions::new().create(true).write(true).open(path)?;
 
         if starting_page_number * PAGE_SIZE > file.metadata().unwrap().len() as usize {
-            file.set_len((starting_page_number * PAGE_SIZE) as u64);
+            _ = file.set_len((starting_page_number * PAGE_SIZE) as u64);
         }
 
         let mut page_number = starting_page_number;
