@@ -91,6 +91,8 @@ impl Eviction {
     pub fn insert_new(&mut self, path: PathBuf, page_number: usize) -> EvictionId {
         if let Some(&idx_out) = self.map_out.get(&path, page_number) {
             let page = self.a_out.delete(idx_out);
+            debug_assert_eq!((&page.0, page.1), (&path, page_number));
+            self.map_out.remove(path, page_number);
             let id = self.a_m.push_back(page);
             EvictionId::AM(id)
         } else {

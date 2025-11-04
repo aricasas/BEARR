@@ -5,6 +5,8 @@ use bearr::Database;
 const M: usize = 1024 * 1024;
 
 fn main() {
+    _ = std::fs::remove_dir_all("poop_db");
+
     let config = bearr::DbConfiguration {
         memtable_capacity: 2 * M,
         buffer_pool_capacity: 16 * 1024,
@@ -28,7 +30,7 @@ fn main() {
     let elapsed = now.elapsed();
 
     eprintln!("{num_puts} puts completed, took {}ms", elapsed.as_millis());
-    eprintln!("Avg get took {}s", elapsed.as_secs_f64() / num_puts as f64);
+    eprintln!("Avg put took {}s", elapsed.as_secs_f64() / num_puts as f64);
 
     drop(db);
 
