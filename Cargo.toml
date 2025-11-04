@@ -22,6 +22,7 @@ path = "src/experiments.rs"
 default = []
 mock = []
 mock_hash = []
+binary_search = []
 delete_test_files = []
 
 [dev-dependencies]

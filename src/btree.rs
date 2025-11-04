@@ -300,6 +300,7 @@ impl BTree {
         Ok(Some(leaf_node.pairs[item_number][1]))
     }
 
+    #[cfg(not(feature = "binary_search"))]
     fn search(
         sst: &Sst,
         key: u64,
@@ -347,6 +348,67 @@ impl BTree {
         let found_exact;
 
         idx = match sub_vec.binary_search_by_key(&key, |x| x[0]) {
+            Ok(i) => {
+                found_exact = true;
+                i
+            }
+            Err(i) => {
+                found_exact = false;
+                i
+            }
+        };
+
+        let page_number = page_number as usize;
+
+        if found_exact {
+            Ok(Some(Ok((page_number, idx))))
+        } else {
+            Ok(Some(Err((page_number, idx))))
+        }
+    }
+
+    #[cfg(feature = "binary_search")]
+    fn search(
+        sst: &Sst,
+        key: u64,
+        file_system: &FileSystem,
+    ) -> Result<Option<Result<(usize, usize), (usize, usize)>>, DbError> {
+        let nodes_offset = sst.nodes_offset;
+        let leafs_offset = sst.leafs_offset;
+
+        let root_page = file_system.get(&sst.path, nodes_offset as usize)?;
+        let root_node: Rc<Node> = bytemuck::cast_rc(root_page);
+        if root_node.pairs[(root_node.length - 1) as usize][0] < key {
+            return Ok(None);
+        }
+
+        let mut start_page_num = leafs_offset;
+        let mut end_page_num = nodes_offset - 1;
+        let mut page_number: usize;
+
+        loop {
+            page_number = (start_page_num + end_page_num) as usize / 2;
+            if page_number == start_page_num as usize {
+                break;
+            }
+            let middle_page = file_system.get(&sst.path, page_number as usize)?;
+            let leaf: Rc<Leaf> = bytemuck::cast_rc(middle_page);
+
+            if key < leaf.pairs[0][0] {
+                end_page_num = page_number as u64;
+            } else if key > leaf.pairs[(leaf.length - 1) as usize][0] {
+                start_page_num = page_number as u64;
+            } else {
+                break;
+            }
+        }
+
+        let leaf_page = file_system.get(&sst.path, page_number as usize)?;
+        let leaf: Rc<Leaf> = bytemuck::cast_rc(leaf_page);
+        let found_exact;
+
+        let sub_vec: &[[u64; 2]] = &leaf.as_ref().pairs[0..leaf.length as usize];
+        let idx = match sub_vec.binary_search_by_key(&key, |x| x[0]) {
             Ok(i) => {
                 found_exact = true;
                 i
