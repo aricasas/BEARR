@@ -193,6 +193,16 @@ impl InnerFs {
 
         Ok(page)
     }
+
+    pub fn write_file(
+        &mut self,
+        path: impl AsRef<Path>,
+        starting_page_number: usize,
+        // Closure that writes out the next page and returns whether it wrote something (false if done)
+        mut next_page: impl FnMut(&mut Aligned) -> Result<bool, DbError>,
+    ) -> Result<usize, DbError> {
+        todo!()
+    }
 }
 
 impl Default for FileSystem {
