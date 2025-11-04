@@ -18,6 +18,8 @@ pub struct Sst {
     pub path: PathBuf,
     pub nodes_offset: u64,
     pub leafs_offset: u64,
+    // Unused if the `binary_search` feature is active
+    #[allow(dead_code)]
     pub tree_depth: u64,
 }
 
@@ -30,13 +32,18 @@ impl Sst {
         path: impl AsRef<Path>,
         file_system: &mut FileSystem,
     ) -> Result<Sst, DbError> {
+        let path = path.as_ref();
+
+        if path.try_exists()? {
+            return Err(DbError::IoError("Path already exists".into()));
+        }
+
         let key_values = key_values.into_iter();
 
-        let (nodes_offset, leafs_offset, tree_depth) =
-            BTree::write(&path, key_values, file_system)?;
+        let (nodes_offset, leafs_offset, tree_depth) = BTree::write(path, key_values, file_system)?;
 
         Ok(Sst {
-            path: path.as_ref().to_owned(),
+            path: path.to_owned(),
             nodes_offset,
             leafs_offset,
             tree_depth,
