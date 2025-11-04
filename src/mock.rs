@@ -27,7 +27,7 @@ impl FileSystem {
         if let Some(page) = buffer_pool.get(&key) {
             Ok(Rc::clone(page))
         } else {
-            let mut page = Aligned::new();
+            let mut page: Rc<Aligned> = bytemuck::allocation::zeroed_rc();
             let buffer = Rc::get_mut(&mut page).unwrap();
 
             let file = OpenOptions::new().read(true).open(&path)?;
@@ -44,6 +44,7 @@ impl FileSystem {
         mut write_next: impl FnMut(&mut Aligned) -> Result<bool, DbError>,
     ) -> Result<usize, DbError> {
         let file = OpenOptions::new().create(true).write(true).open(path)?;
+
         if starting_page_number * PAGE_SIZE > file.metadata().unwrap().len() as usize {
             file.set_len((starting_page_number * PAGE_SIZE) as u64);
         }

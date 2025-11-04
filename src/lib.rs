@@ -1,13 +1,16 @@
 mod btree;
 mod database;
-mod db_scan;
 mod error;
 mod eviction;
 mod file_system;
 mod hashtable;
+mod list;
 mod memtable;
 mod merge;
 mod sst;
+
+#[cfg(test)]
+mod test_util;
 
 #[cfg(feature = "mock")]
 mod mock;

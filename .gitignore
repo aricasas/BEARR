@@ -20,9 +20,9 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-database_test_files/**
+test_files/*/**
 db/**
 src/tests.rs
-!database_test_files/.gitkeep
+!test_files/*/.gitkeep
 !db/.gitkeep
 proptest-regressions
