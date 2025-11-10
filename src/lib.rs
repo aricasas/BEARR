@@ -3,6 +3,7 @@ mod database;
 mod error;
 mod eviction;
 mod file_system;
+mod hash;
 mod hashtable;
 mod list;
 mod memtable;

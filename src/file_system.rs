@@ -29,6 +29,20 @@ impl Aligned {
     }
 }
 
+#[repr(C)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
+pub struct FileId {
+    pub lsm_level: usize,
+    pub sst_number: usize,
+}
+
+#[repr(C)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
+pub struct PageId {
+    pub file_id: FileId,
+    pub page_number: usize,
+}
+
 /// An abstraction over a buffer pool
 /// that exposes functions for reading and writing pages to and from the file system.
 ///
