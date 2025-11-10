@@ -1,4 +1,4 @@
-use std::{ops::RangeInclusive, path::Path, rc::Rc};
+use std::{ops::RangeInclusive, path::Path, sync::Arc};
 
 use crate::{DbError, PAGE_SIZE, file_system::Aligned, sst::Sst};
 
@@ -78,6 +78,7 @@ type Leaf = Page;
 pub struct BTreeIter<'a, 'b> {
     sst: &'a Sst,
     file_system: &'b FileSystem,
+    buffered_page: Option<Arc<Page>>,
     pub page_number: usize,
     pub item_number: usize,
     range: RangeInclusive<u64>,
@@ -109,6 +110,7 @@ impl<'a, 'b> BTreeIter<'a, 'b> {
             Ok(Self {
                 sst,
                 file_system,
+                buffered_page: None,
                 page_number,
                 item_number,
                 range,
@@ -118,6 +120,7 @@ impl<'a, 'b> BTreeIter<'a, 'b> {
             Ok(Self {
                 sst,
                 file_system,
+                buffered_page: None,
                 page_number: 0,
                 item_number: 0,
                 range,
@@ -131,12 +134,17 @@ impl<'a, 'b> BTreeIter<'a, 'b> {
             return None;
         }
 
-        let page_bytes = self.file_system.get(&self.sst.path, self.page_number);
+        if self.buffered_page.is_none() {
+            let page_bytes = self.file_system.get(&self.sst.path, self.page_number);
 
-        let buffered_page: Rc<Page> = match page_bytes {
-            Ok(bytes) => bytemuck::cast_rc(bytes),
-            Err(e) => return Some(Err(e)),
-        };
+            let buffered_page: Arc<Page> = match page_bytes {
+                Ok(bytes) => bytemuck::cast_arc(bytes),
+                Err(e) => return Some(Err(e)),
+            };
+            self.buffered_page = Some(buffered_page)
+        }
+
+        let buffered_page = self.buffered_page.as_ref().unwrap();
 
         let [key, value] = buffered_page.pairs[self.item_number];
         let item = (key, value);
@@ -155,11 +163,11 @@ impl<'a, 'b> BTreeIter<'a, 'b> {
         // Have to buffer a new page
         self.page_number += 1;
         self.item_number = 0;
+        self.buffered_page = None;
 
         if self.page_number >= self.sst.nodes_offset as usize {
             // EOF
             self.ended = true;
-            return Some(Ok(item));
         }
 
         Some(Ok(item))
@@ -265,7 +273,7 @@ impl BTree {
         file_system: &FileSystem,
     ) -> Result<(u64, u64, u64), DbError> {
         let metadata_page = file_system.get(&path, METADATA_OFFSET as usize)?;
-        let metadata: Rc<Metadata> = bytemuck::cast_rc(metadata_page);
+        let metadata: Arc<Metadata> = bytemuck::cast_arc(metadata_page);
 
         if metadata.magic != BEAR_MAGIC {
             return Err(DbError::CorruptSst);
@@ -289,7 +297,7 @@ impl BTree {
         };
 
         let leaf_page = file_system.get(&sst.path, page_number)?;
-        let leaf_node: Rc<Leaf> = bytemuck::cast_rc(leaf_page);
+        let leaf_node: Arc<Leaf> = bytemuck::cast_arc(leaf_page);
 
         Ok(Some(leaf_node.pairs[item_number][1]))
     }
@@ -305,7 +313,7 @@ impl BTree {
         let tree_depth = sst.tree_depth;
 
         let root_page = file_system.get(&sst.path, nodes_offset as usize)?;
-        let root_node: Rc<Node> = bytemuck::cast_rc(root_page);
+        let root_node: Arc<Node> = bytemuck::cast_arc(root_page);
         if root_node.pairs[(root_node.length - 1) as usize][0] < key {
             return Ok(None);
         }
@@ -329,12 +337,12 @@ impl BTree {
 
             page_number = node_number + nodes_offset;
             let current_page = file_system.get(&sst.path, page_number as usize)?;
-            current_node = bytemuck::cast_rc(current_page);
+            current_node = bytemuck::cast_arc(current_page);
         }
 
         page_number = leafs_offset + node_number;
         let leaf_page = file_system.get(&sst.path, page_number as usize)?;
-        let leaf: Rc<Leaf> = bytemuck::cast_rc(leaf_page);
+        let leaf: Arc<Leaf> = bytemuck::cast_arc(leaf_page);
         let sub_vec: &[[u64; 2]] = &leaf.as_ref().pairs[0..leaf.length as usize];
 
         let found_exact;
@@ -369,7 +377,7 @@ impl BTree {
         let leafs_offset = sst.leafs_offset;
 
         let root_page = file_system.get(&sst.path, nodes_offset as usize)?;
-        let root_node: Rc<Node> = bytemuck::cast_rc(root_page);
+        let root_node: Arc<Node> = bytemuck::cast_arc(root_page);
         if root_node.pairs[(root_node.length - 1) as usize][0] < key {
             return Ok(None);
         }
@@ -384,7 +392,7 @@ impl BTree {
                 break;
             }
             let middle_page = file_system.get(&sst.path, page_number)?;
-            let leaf: Rc<Leaf> = bytemuck::cast_rc(middle_page);
+            let leaf: Arc<Leaf> = bytemuck::cast_arc(middle_page);
 
             if key < leaf.pairs[0][0] {
                 end_page_num = page_number as u64;
@@ -396,7 +404,7 @@ impl BTree {
         }
 
         let leaf_page = file_system.get(&sst.path, page_number)?;
-        let leaf: Rc<Leaf> = bytemuck::cast_rc(leaf_page);
+        let leaf: Arc<Leaf> = bytemuck::cast_arc(leaf_page);
         let found_exact;
 
         let sub_vec: &[[u64; 2]] = &leaf.as_ref().pairs[0..leaf.length as usize];
@@ -421,7 +429,7 @@ impl BTree {
     #[allow(dead_code)]
     fn pretty_print_pages(path: impl AsRef<Path>, file_system: &FileSystem) -> Result<(), DbError> {
         let metadata_page = file_system.get(&path, METADATA_OFFSET as usize)?;
-        let metadata: Rc<Metadata> = bytemuck::cast_rc(metadata_page);
+        let metadata: Arc<Metadata> = bytemuck::cast_arc(metadata_page);
 
         if metadata.magic != BEAR_MAGIC {
             return Err(DbError::CorruptSst);
@@ -448,7 +456,7 @@ impl BTree {
         // Print leafs
         for page_num in metadata.leafs_offset..metadata.nodes_offset {
             let page = file_system.get(&path, page_num as usize)?;
-            let leaf: Rc<Leaf> = bytemuck::cast_rc(page);
+            let leaf: Arc<Leaf> = bytemuck::cast_arc(page);
 
             println!("🍃 Leaf[{}] ({} pairs)", page_num, leaf.length);
             for i in 0..leaf.length as usize {
@@ -460,7 +468,7 @@ impl BTree {
         // Print nodes
         for page_num in metadata.nodes_offset..metadata.size {
             let page = file_system.get(&path, page_num as usize)?;
-            let node: Rc<Node> = bytemuck::cast_rc(page);
+            let node: Arc<Node> = bytemuck::cast_arc(page);
 
             println!("🌳 Node[{}] ({} entries)", page_num, node.length);
             for i in 0..node.length as usize {

@@ -1,10 +1,10 @@
 use std::{
-    cell::RefCell,
     fs,
     ops::DerefMut,
     os::unix::fs::{FileExt, OpenOptionsExt},
     path::Path,
-    rc::Rc,
+    sync::Arc,
+    sync::Mutex,
 };
 
 use crate::{
@@ -18,11 +18,11 @@ use crate::{
 /// An aligned 4096-byte page, suitable for various transmutations.
 pub struct Aligned(pub [u8; PAGE_SIZE]);
 impl Aligned {
-    fn new() -> Rc<Self> {
-        bytemuck::allocation::zeroed_rc()
+    fn new() -> Arc<Self> {
+        bytemuck::allocation::zeroed_arc()
     }
-    fn inner_mut(self: &mut Rc<Self>) -> Option<&mut [u8; PAGE_SIZE]> {
-        Rc::get_mut(self).map(|a| &mut a.0)
+    fn inner_mut(self: &mut Arc<Self>) -> Option<&mut [u8; PAGE_SIZE]> {
+        Arc::get_mut(self).map(|a| &mut a.0)
     }
     fn clear(&mut self) {
         self.0.fill(0);
@@ -34,7 +34,7 @@ impl Aligned {
 ///
 /// NOTE: currently doesn't have any support for dirty pages.
 pub struct FileSystem {
-    inner: RefCell<InnerFs>,
+    inner: Mutex<InnerFs>,
     capacity: usize,
     write_buffering: usize,
 }
@@ -46,7 +46,7 @@ struct InnerFs {
 
 struct BufferPoolEntry {
     eviction_id: EvictionId,
-    page: Rc<Aligned>,
+    page: Arc<Aligned>,
 }
 
 impl FileSystem {
@@ -65,7 +65,7 @@ impl FileSystem {
         };
 
         Ok(Self {
-            inner: RefCell::new(inner),
+            inner: Mutex::new(inner),
             capacity,
             write_buffering,
         })
@@ -77,15 +77,15 @@ impl FileSystem {
     /// and might evict another page from the buffer pool to make space.
     ///
     /// Returns a reference to the bytes of the page, or an error.
-    pub fn get(&self, path: impl AsRef<Path>, page_number: usize) -> Result<Rc<Aligned>, DbError> {
+    pub fn get(&self, path: impl AsRef<Path>, page_number: usize) -> Result<Arc<Aligned>, DbError> {
         let path = path.as_ref();
 
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.inner.lock().unwrap(); // If lock is poisoned, this is unrecoverable
         let inner = inner.deref_mut();
 
         if let Some(entry) = inner.buffer_pool.get(path, page_number) {
             inner.eviction_handler.touch(entry.eviction_id);
-            Ok(Rc::clone(&entry.page))
+            Ok(Arc::clone(&entry.page))
         } else {
             if cfg!(test) {
                 eprintln!("get page {page_number} of {path:?}");
@@ -164,7 +164,7 @@ impl InnerFs {
         for (victim, (path, page_number)) in chooser {
             let page_number = *page_number;
             let page = &self.buffer_pool.get(path, page_number).unwrap().page;
-            if Rc::strong_count(page) == 1 {
+            if Arc::strong_count(page) == 1 {
                 self.buffer_pool.remove(path, page_number);
                 self.eviction_handler.evict(victim);
                 return Ok(());
@@ -173,7 +173,7 @@ impl InnerFs {
         Err(DbError::Oom)
     }
 
-    fn add_new_page(&mut self, path: &Path, page_number: usize) -> Result<Rc<Aligned>, DbError> {
+    fn add_new_page(&mut self, path: &Path, page_number: usize) -> Result<Arc<Aligned>, DbError> {
         let file = fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_DIRECT | libc::O_SYNC)
@@ -188,7 +188,7 @@ impl InnerFs {
 
         let entry = BufferPoolEntry {
             eviction_id,
-            page: Rc::clone(&page),
+            page: Arc::clone(&page),
         };
         self.buffer_pool
             .insert(path.to_path_buf(), page_number, entry);
