@@ -6,7 +6,7 @@ use crate::{
     list::{EntryId, List},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvictionId {
     AIn(EntryId),
     AM(EntryId),
@@ -135,8 +135,11 @@ impl<'a> Iterator for VictimChooser<'a> {
 
         match self.last_id {
             None => {
-                // If |a_in| over k_in, evict from a_in
-                if self.eviction.a_in.len() > self.eviction.k_in {
+                // If |a_in| > k_in, evict from a_in
+                // or if a_m is empty and a_in is our only option
+                if self.eviction.a_in.len() > self.eviction.k_in
+                    || (!self.eviction.a_in.is_empty() && self.eviction.a_m.is_empty())
+                {
                     // At this point a_in can't be empty
                     let (id, front) = self.eviction.a_in.front().unwrap();
                     let eviction_id = EvictionId::AIn(id);
@@ -160,6 +163,12 @@ impl<'a> Iterator for VictimChooser<'a> {
                     let eviction_id = EvictionId::AIn(next_id);
                     self.last_id = Some(eviction_id);
                     Some((eviction_id, next_entry))
+                }
+                // If done with a_in, switch to a_m
+                else if let Some((id, front)) = self.eviction.a_m.front() {
+                    let eviction_id = EvictionId::AM(id);
+                    self.last_id = Some(eviction_id);
+                    Some((eviction_id, front))
                 } else {
                     self.ended = true;
                     self.last_id = None;
@@ -188,12 +197,188 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn test_evict_a_in() -> Result<()> {
-        let mut eviction = Eviction::new(20)?;
-        eviction.insert_new("1".into(), 0);
+    fn make_page(id: usize) -> (PathBuf, usize) {
+        (PathBuf::from(format!("p{}", id)), id)
+    }
 
-        // TODO
+    #[test]
+    fn test_a_in_fifo() -> Result<()> {
+        let mut ev = Eviction::new(8)?;
+
+        // Insert several new pages to A_in
+        let (path, num) = make_page(1);
+        let p1 = ev.insert_new(path, num);
+        let (path, num) = make_page(2);
+        let p2 = ev.insert_new(path, num);
+        let (path, num) = make_page(3);
+        let p3 = ev.insert_new(path, num);
+
+        assert!(matches!(p1, EvictionId::AIn(_)));
+        assert!(matches!(p2, EvictionId::AIn(_)));
+        assert!(matches!(p3, EvictionId::AIn(_)));
+
+        assert!(ev.a_in.len() == 3);
+        assert!(ev.a_out.is_empty());
+        assert!(ev.a_m.is_empty());
+
+        ev.touch(p2);
+
+        // Evict from A_in is FIFO, even though we touched page 2
+        let victim = ev.choose_victim().next().unwrap().0;
+        assert_eq!(victim, p1);
+        ev.evict(victim);
+        let victim = ev.choose_victim().next().unwrap().0;
+        assert_eq!(victim, p2);
+        ev.evict(victim);
+        let victim = ev.choose_victim().next().unwrap().0;
+        assert_eq!(victim, p3);
+        ev.evict(victim);
+
+        assert!(ev.a_in.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_evict_to_a_out() -> Result<()> {
+        let mut ev = Eviction::new(4)?;
+
+        for i in 0..4 {
+            let (path, num) = make_page(i);
+            ev.insert_new(path, num);
+        }
+
+        // Eviction from A_in
+        let first_victim = ev.choose_victim().next().unwrap();
+        assert!(first_victim.1.1 == 0);
+        ev.evict(first_victim.0);
+
+        // Should now appear in A_out
+        assert!(ev.a_out.len() == 1);
+        assert!(ev.a_out.front().unwrap().1 == &make_page(0));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_reaccess_moves_to_am() -> Result<()> {
+        let mut ev = Eviction::new(6)?;
+
+        // Insert to A_in
+        let (path, num) = make_page(0);
+        ev.insert_new(path.clone(), num);
+
+        // Evict to A_out
+        let victim = ev.choose_victim().next().unwrap();
+
+        assert_eq!(&(path.clone(), num), victim.1);
+        ev.evict(victim.0);
+
+        // Now that page should be in A_out
+        assert!(ev.map_out.get(path.clone(), num).is_some());
+
+        // Re-accessing should move it to A_m
+        let new_id = ev.insert_new(path.clone(), num);
+        assert!(matches!(new_id, EvictionId::AM(_)));
+        assert!(ev.a_m.len() == 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_am_lru() -> Result<()> {
+        let mut ev = Eviction::new(8)?;
+
+        let mut ids = Vec::new();
+        for i in 0..3 {
+            // Insert to A_in
+            let (path, num) = make_page(i);
+            let id = ev.insert_new(path.clone(), num);
+
+            // Evict to A_out
+            ev.evict(id);
+
+            // Re insert to A_m
+            let id = ev.insert_new(path, num);
+            ids.push(id);
+        }
+
+        assert!(ev.a_m.len() == 3);
+
+        // Simulate re-access
+        ev.touch(ids[0]);
+
+        // After touching, should move to back (most recently used)
+        let last_item = ev.a_m.back().unwrap();
+        assert_eq!(last_item.1, &make_page(0));
+
+        ev.touch(ids[1]);
+
+        let last_item = ev.a_m.back().unwrap();
+        assert_eq!(last_item.1, &make_page(1));
+
+        ev.touch(ids[2]);
+
+        let last_item = ev.a_m.back().unwrap();
+        assert_eq!(last_item.1, &make_page(2));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_choose_victim_order() -> Result<()> {
+        let mut ev = Eviction::new(10)?;
+
+        // Insert 10 pages
+        for i in 0..10 {
+            let (path, num) = make_page(i);
+            ev.insert_new(path, num);
+        }
+
+        // Move 5 pages to A_m
+        for i in 0..5 {
+            let victim = ev.choose_victim().next().unwrap();
+            let (path, num) = victim.1.clone();
+            assert_eq!(num, i);
+
+            ev.evict(victim.0);
+            ev.insert_new(path, num);
+        }
+
+        // Check eviction order matches FIFO/LRU expectations
+        let mut chooser = ev.choose_victim();
+
+        assert!(matches!(chooser.next(), Some((EvictionId::AIn(_), p_n)) if p_n == &make_page(5)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AIn(_), p_n)) if p_n == &make_page(6)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AIn(_), p_n)) if p_n == &make_page(7)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AIn(_), p_n)) if p_n == &make_page(8)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AIn(_), p_n)) if p_n == &make_page(9)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AM(_), p_n)) if p_n == &make_page(0)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AM(_), p_n)) if p_n == &make_page(1)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AM(_), p_n)) if p_n == &make_page(2)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AM(_), p_n)) if p_n == &make_page(3)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AM(_), p_n)) if p_n == &make_page(4)));
+        assert!(chooser.next().is_none());
+        assert!(chooser.next().is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_a_out_capacity() -> Result<()> {
+        let mut ev = Eviction::new(8)?;
+        let k_out = ev.k_out;
+
+        // Fill beyond A_out capacity
+        for i in 0..(k_out + 3) {
+            let (path, num) = make_page(i);
+            ev.insert_new(path, num);
+            let victim = ev.choose_victim().next().unwrap();
+            ev.evict(victim.0);
+        }
+
+        // A_out should not exceed k_out
+        assert!(ev.a_out.len() == k_out);
 
         Ok(())
     }
