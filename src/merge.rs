@@ -3,12 +3,11 @@ use std::{
     collections::BinaryHeap,
 };
 
-use crate::{DbError, btree::BTreeIter, memtable::MemTableIter, sst::SstIter};
+use crate::{DbError, btree::BTreeIter, memtable::MemTableIter};
 
 pub enum Sources<'a> {
     MemTable(MemTableIter<'a, u64, u64>),
-    Sst(SstIter<'a, 'a>), // TODO remove once we use BtreeIter in Ssts
-    Btree(BTreeIter<'a, 'a>),
+    BTree(BTreeIter<'a, 'a>),
 }
 
 impl<'a> Iterator for Sources<'a> {
@@ -20,8 +19,7 @@ impl<'a> Iterator for Sources<'a> {
                 let kv = mem_table_iter.next()?;
                 Some(Ok(kv))
             }
-            Self::Sst(sst_iter) => sst_iter.next(),
-            Self::Btree(btree_iter) => btree_iter.next(),
+            Self::BTree(btree_iter) => btree_iter.next(),
         }
     }
 }

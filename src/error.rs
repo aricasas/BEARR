@@ -6,6 +6,7 @@ pub enum DbError {
     InvalidScanRange,
     IoError(String),
     InvalidConfiguration,
+    CorruptSst,
 }
 
 impl Display for DbError {
@@ -15,6 +16,7 @@ impl Display for DbError {
             DbError::InvalidScanRange => write!(f, "invalid scan range"),
             DbError::IoError(s) => write!(f, "(I/O) {s}"),
             DbError::InvalidConfiguration => write!(f, "invalid database configuration"),
+            DbError::CorruptSst => write!(f, "Corrupt SST file"),
         }
     }
 }

@@ -38,7 +38,8 @@ pub struct DbConfiguration {
 
 impl DbConfiguration {
     fn validate(&self) -> Result<(), DbError> {
-        if self.memtable_capacity > 0 && self.buffer_pool_capacity > 0 && self.write_buffering > 0 {
+        if self.memtable_capacity > 0 && self.buffer_pool_capacity >= 16 && self.write_buffering > 0
+        {
             Ok(())
         } else {
             Err(DbError::InvalidConfiguration)
@@ -115,7 +116,7 @@ impl Database {
 
         let mut ssts = Vec::with_capacity(metadata.num_ssts);
         for i in 0..metadata.num_ssts {
-            let sst = Sst::open(name.join(i.to_string()))?;
+            let sst = Sst::open(name.join(i.to_string()), &file_system)?;
             ssts.push(sst);
         }
 
@@ -211,23 +212,16 @@ impl Database {
 
         for sst in self.ssts.iter().rev() {
             let sst_scan = sst.scan(range.clone(), &self.file_system)?;
-            scans.push(merge::Sources::Sst(sst_scan));
+            scans.push(merge::Sources::BTree(sst_scan));
         }
 
         MergedIterator::new(scans)
-    }
-
-    /// Closes the database.
-    ///
-    /// If flushing fails, returns an error along with `self` to allow retrying the close.
-    pub fn close(mut self) -> Result<(), (Self, DbError)> {
-        self.flush().map_err(|e| (self, e))
     }
 }
 
 /// The database is flushed upon dropping.
 ///
-/// Errors are ignored. To handle them, call `Database::flush` or `Database::close` manually.
+/// Errors are ignored. To handle them, call `Database::flush` manually.
 impl Drop for Database {
     fn drop(&mut self) {
         _ = self.flush();
@@ -236,21 +230,14 @@ impl Drop for Database {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        path::{Path, PathBuf},
-    };
-
     use anyhow::Result;
+
+    use crate::test_util::TestPath;
 
     use super::*;
 
-    fn path(name: &str) -> PathBuf {
-        Path::new("database_test_files").join(name)
-    }
-
-    fn clear(path: impl AsRef<Path>) {
-        _ = fs::remove_dir_all(path);
+    fn test_path(name: &str) -> TestPath {
+        TestPath::new("database", name)
     }
 
     fn put_many(db: &mut Database, pairs: &[(u64, u64)]) -> Result<()> {
@@ -260,23 +247,21 @@ mod tests {
         Ok(())
     }
 
-    fn get_many(db: &Database, keys: &[u64]) -> Result<Vec<Option<u64>>> {
-        let mut result = Vec::new();
-        for &k in keys {
-            result.push(db.get(k)?);
+    fn assert_pairs(db: &Database, pairs: &[(u64, Option<u64>)]) -> Result<()> {
+        for &(k, v) in pairs {
+            assert_eq!(db.get(k)?, v);
         }
-        Ok(result)
+        Ok(())
     }
 
     #[test]
     fn test_basic() -> Result<()> {
-        let name = &path("basic");
-        clear(name);
+        let name = &test_path("basic");
         let mut db = Database::create(
             name,
             DbConfiguration {
                 memtable_capacity: 3,
-                buffer_pool_capacity: 1,
+                buffer_pool_capacity: 16,
                 write_buffering: 1,
             },
         )?;
@@ -296,23 +281,23 @@ mod tests {
             ],
         )?;
 
-        assert_eq!(
-            get_many(&db, &[3, 4, 9, 2, 5, 8, 97, 32, 84, 1, 10, 90])?,
+        assert_pairs(
+            &db,
             &[
-                Some(1),
-                Some(1),
-                Some(5),
-                Some(6),
-                Some(3),
-                Some(5),
-                Some(9),
-                Some(3),
-                Some(6),
-                None,
-                None,
-                None,
-            ]
-        );
+                (3, Some(1)),
+                (4, Some(1)),
+                (9, Some(5)),
+                (2, Some(6)),
+                (5, Some(3)),
+                (8, Some(5)),
+                (97, Some(9)),
+                (32, Some(3)),
+                (84, Some(6)),
+                (1, None),
+                (10, None),
+                (90, None),
+            ],
+        )?;
 
         assert_eq!(
             db.scan(4..=84)?.collect::<Result<Vec<_>, _>>()?,
@@ -324,15 +309,14 @@ mod tests {
 
     #[test]
     fn test_persistence() -> Result<()> {
-        let name = &path("persistence");
-        clear(name);
+        let name = &test_path("persistence");
 
         {
             let mut db = Database::create(
                 name,
                 DbConfiguration {
                     memtable_capacity: 10,
-                    buffer_pool_capacity: 1,
+                    buffer_pool_capacity: 16,
                     write_buffering: 1,
                 },
             )?;
@@ -341,49 +325,49 @@ mod tests {
 
         {
             let mut db = Database::open(name)?;
-            assert_eq!(get_many(&db, &[13, 14, 4])?, &[Some(15), Some(1), Some(19)]);
+            assert_pairs(&db, &[(13, Some(15)), (14, Some(1)), (4, Some(19))])?;
             put_many(&mut db, &[(13, 15), (14, 15), (1, 19)])?;
             db.flush()?;
             put_many(&mut db, &[(3, 1), (20, 5), (7, 15), (18, 25)])?;
-            db.close().map_err(|(_, e)| e)?;
+            db.flush()?;
         }
 
         {
             let mut db = Database::open(name)?;
 
-            assert_eq!(
-                get_many(&db, &[13, 14, 4, 1, 3, 20, 7, 18])?,
+            assert_pairs(
+                &db,
                 &[
-                    Some(15),
-                    Some(15),
-                    Some(19),
-                    Some(19),
-                    Some(1),
-                    Some(5),
-                    Some(15),
-                    Some(25),
-                ]
-            );
+                    (13, Some(15)),
+                    (14, Some(15)),
+                    (4, Some(19)),
+                    (1, Some(19)),
+                    (3, Some(1)),
+                    (20, Some(5)),
+                    (7, Some(15)),
+                    (18, Some(25)),
+                ],
+            )?;
 
             put_many(&mut db, &[(5, 14), (4, 15)])?;
             db.flush()?;
             put_many(&mut db, &[(6, 21), (14, 3), (20, 15), (18, 19)])?;
 
-            assert_eq!(
-                get_many(&db, &[13, 14, 4, 1, 3, 20, 7, 18, 5, 6])?,
+            assert_pairs(
+                &db,
                 &[
-                    Some(15),
-                    Some(3),
-                    Some(15),
-                    Some(19),
-                    Some(1),
-                    Some(15),
-                    Some(15),
-                    Some(19),
-                    Some(14),
-                    Some(21),
-                ]
-            );
+                    (13, Some(15)),
+                    (14, Some(3)),
+                    (4, Some(15)),
+                    (1, Some(19)),
+                    (3, Some(1)),
+                    (20, Some(15)),
+                    (7, Some(15)),
+                    (18, Some(19)),
+                    (5, Some(14)),
+                    (6, Some(21)),
+                ],
+            )?;
 
             assert_eq!(
                 db.scan(5..=15)?.collect::<Result<Vec<_>, _>>()?,
