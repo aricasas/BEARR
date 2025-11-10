@@ -87,7 +87,7 @@ impl<T: Clone> List<T> {
         self.get(front_id).map(|entry| (front_id, entry))
     }
 
-    #[allow(unused)] // used in tests
+    #[cfg(test)]
     /// Gets the id and the entry of the back of the list, if the list is not empty.
     /// O(1) worst case.
     pub fn back(&self) -> Option<(EntryId, &T)> {

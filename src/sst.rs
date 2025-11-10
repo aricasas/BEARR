@@ -18,10 +18,7 @@ pub struct Sst {
     pub path: PathBuf,
     pub nodes_offset: u64,
     pub leafs_offset: u64,
-    #[cfg(not(feature = "binary_search"))]
-    pub tree_depth: u64,
-    #[cfg(feature = "binary_search")]
-    #[expect(dead_code)]
+    #[cfg_attr(feature = "binary_search", expect(dead_code))]
     pub tree_depth: u64,
 }
 
