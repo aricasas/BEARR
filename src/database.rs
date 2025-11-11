@@ -8,9 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     DbError,
-    memtable::MemTable,
-    merge::{self, MergedIterator},
-    sst::Sst,
+    lsm::{LsmConfiguration, LsmMetadata, LsmTree},
 };
 
 #[cfg(not(feature = "mock"))]
@@ -21,25 +19,23 @@ use crate::mock::FileSystem;
 
 /// An open connection to a database
 pub struct Database {
-    configuration: DbConfiguration,
     name: PathBuf,
-    memtable: MemTable<u64, u64>,
-    ssts: Vec<Sst>,
+    lsm: LsmTree,
     file_system: FileSystem,
 }
 
 /// Configuration options for a database
 #[derive(Serialize, Deserialize)]
 pub struct DbConfiguration {
-    pub memtable_capacity: usize,
+    pub lsm_configuration: LsmConfiguration,
     pub buffer_pool_capacity: usize,
     pub write_buffering: usize,
 }
 
 impl DbConfiguration {
     fn validate(&self) -> Result<(), DbError> {
-        if self.memtable_capacity > 0 && self.buffer_pool_capacity >= 16 && self.write_buffering > 0
-        {
+        self.lsm_configuration.validate()?;
+        if self.buffer_pool_capacity >= 16 && self.write_buffering > 0 {
             Ok(())
         } else {
             Err(DbError::InvalidConfiguration)
@@ -50,7 +46,7 @@ impl DbConfiguration {
 /// Metadata for a database
 #[derive(Serialize, Deserialize)]
 struct DbMetadata {
-    num_ssts: usize,
+    lsm_metadata: LsmMetadata,
 }
 
 const CONFIG_FILENAME: &str = "config.json";
@@ -72,7 +68,9 @@ impl Database {
         let config_file = File::create_new(name.join(CONFIG_FILENAME))?;
         serde_json::to_writer_pretty(config_file, &configuration)?;
 
-        let metadata = DbMetadata { num_ssts: 0 };
+        let metadata = DbMetadata {
+            lsm_metadata: LsmMetadata::empty(),
+        };
         let metadata_file = File::create_new(name.join(METADATA_FILENAME))?;
         serde_json::to_writer_pretty(metadata_file, &metadata)?;
 
@@ -108,25 +106,30 @@ impl Database {
     ) -> Result<Self, DbError> {
         configuration.validate()?;
 
-        let memtable = MemTable::new(configuration.memtable_capacity)?;
         let file_system = FileSystem::new(
+            name,
             configuration.buffer_pool_capacity,
             configuration.write_buffering,
         )?;
 
-        let mut ssts = Vec::with_capacity(metadata.num_ssts);
-        for i in 0..metadata.num_ssts {
-            let sst = Sst::open(name.join(i.to_string()), &file_system)?;
-            ssts.push(sst);
-        }
+        let lsm = LsmTree::open(
+            metadata.lsm_metadata,
+            configuration.lsm_configuration,
+            &file_system,
+        )?;
 
         Ok(Self {
-            configuration,
             name: name.to_path_buf(),
-            memtable,
-            ssts,
+            lsm,
             file_system,
         })
+    }
+
+    /// Returns the value associated with the given key, if it exists.
+    ///
+    /// Returns an error if searching fails in an SST.
+    pub fn get(&self, key: u64) -> Result<Option<u64>, DbError> {
+        self.lsm.get(key, &self.file_system)
     }
 
     /// Inserts the given key-value pair into the database,
@@ -134,18 +137,22 @@ impl Database {
     ///
     /// Returns an error if flushing fails. See `Database::flush` for more info.
     pub fn put(&mut self, key: u64, value: u64) -> Result<(), DbError> {
-        self.memtable.put(key, value);
-
-        // Ensure memtable remains below capacity for the next put
-        if self.memtable.size() == self.configuration.memtable_capacity {
-            self.flush()?;
-        }
-
-        Ok(())
+        self.lsm.put(key, value, &mut self.file_system)
     }
 
-    fn num_ssts(&self) -> usize {
-        self.ssts.len()
+    /// TODO: Documentation
+    pub fn delete(&mut self, key: u64) -> Result<(), DbError> {
+        self.lsm.delete(key, &mut self.file_system)
+    }
+
+    /// Returns a sorted list of all key-value pairs where the key is in the given range.
+    ///
+    /// Returns an error if scanning fails in the memtable or SSTs.
+    pub fn scan(
+        &self,
+        range: RangeInclusive<u64>,
+    ) -> Result<impl Iterator<Item = Result<(u64, u64), DbError>>, DbError> {
+        self.lsm.scan(range, &self.file_system)
     }
 
     /// Transforms the current memtable into an SST, if the current memtable is nonempty.
@@ -157,65 +164,13 @@ impl Database {
     /// - Creation of the new SST fails.
     /// - Creation of the new memtable fails.
     pub fn flush(&mut self) -> Result<(), DbError> {
-        if self.memtable.size() == 0 {
-            return Ok(());
-        }
-
-        let key_values = self.memtable.scan(u64::MIN..=u64::MAX)?;
-
-        let path = self.name.join(self.num_ssts().to_string());
-        let sst = Sst::create(key_values.map(Ok), &path, &mut self.file_system)?;
-
-        let metadata = DbMetadata {
-            num_ssts: self.num_ssts() + 1,
-        };
+        self.lsm.flush_memtable(&mut self.file_system)?;
+        let lsm_metadata = self.lsm.metadata();
+        let metadata = DbMetadata { lsm_metadata };
         let metadata_file = File::create(self.name.join(METADATA_FILENAME))?;
         serde_json::to_writer_pretty(metadata_file, &metadata)?;
 
-        self.ssts.push(sst);
-        self.memtable.clear();
-
         Ok(())
-    }
-
-    /// Returns the value associated with the given key, if it exists.
-    ///
-    /// Returns an error if searching fails in an SST.
-    pub fn get(&self, key: u64) -> Result<Option<u64>, DbError> {
-        let val = self.memtable.get(key);
-        if val.is_some() {
-            return Ok(val);
-        }
-
-        // Further-back (higher-numbered) SSTs are newer, so search them first.
-        for sst in self.ssts.iter().rev() {
-            let val = sst.get(key, &self.file_system)?;
-            if val.is_some() {
-                return Ok(val);
-            }
-        }
-
-        Ok(None)
-    }
-
-    /// Returns a sorted list of all key-value pairs where the key is in the given range.
-    ///
-    /// Returns an error if scanning fails in the memtable or SSTs.
-    pub fn scan(
-        &self,
-        range: RangeInclusive<u64>,
-    ) -> Result<impl Iterator<Item = Result<(u64, u64), DbError>>, DbError> {
-        let mut scans = Vec::new();
-
-        let memtable_scan = self.memtable.scan(range.clone())?;
-        scans.push(merge::Sources::MemTable(memtable_scan));
-
-        for sst in self.ssts.iter().rev() {
-            let sst_scan = sst.scan(range.clone(), &self.file_system)?;
-            scans.push(merge::Sources::BTree(sst_scan));
-        }
-
-        MergedIterator::new(scans)
     }
 }
 
@@ -260,9 +215,12 @@ mod tests {
         let mut db = Database::create(
             name,
             DbConfiguration {
-                memtable_capacity: 3,
                 buffer_pool_capacity: 16,
                 write_buffering: 1,
+                lsm_configuration: LsmConfiguration {
+                    size_ratio: 2,
+                    memtable_capacity: 3,
+                },
             },
         )?;
 
@@ -315,9 +273,12 @@ mod tests {
             let mut db = Database::create(
                 name,
                 DbConfiguration {
-                    memtable_capacity: 10,
                     buffer_pool_capacity: 16,
                     write_buffering: 1,
+                    lsm_configuration: LsmConfiguration {
+                        size_ratio: 2,
+                        memtable_capacity: 10,
+                    },
                 },
             )?;
             put_many(&mut db, &[(13, 15), (14, 1), (4, 19)])?;

@@ -4,17 +4,20 @@ use std::{
     time::Instant,
 };
 
-use bearr::Database;
+use bearr::{Database, DbConfiguration, LsmConfiguration};
 
 const M: usize = 1024 * 1024;
 
 fn main() {
     _ = std::fs::remove_dir_all("poop_db");
 
-    let config = bearr::DbConfiguration {
-        memtable_capacity: 2 * M,
+    let config = DbConfiguration {
         buffer_pool_capacity: 16 * 1024,
         write_buffering: 32,
+        lsm_configuration: LsmConfiguration {
+            size_ratio: 2,
+            memtable_capacity: 2 * M,
+        },
     };
     let mut db = Database::create("poop_db", config).unwrap();
     let mut rng = fastrand::Rng::new();

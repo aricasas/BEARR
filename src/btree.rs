@@ -1,6 +1,10 @@
-use std::{ops::RangeInclusive, path::Path, sync::Arc};
+use std::{ops::RangeInclusive, sync::Arc};
 
-use crate::{DbError, PAGE_SIZE, file_system::Aligned, sst::Sst};
+use crate::{
+    DbError, PAGE_SIZE,
+    file_system::{Aligned, FileId},
+    sst::Sst,
+};
 
 const PAIRS_PER_CHUNK: usize = (PAGE_SIZE - 8) / 16;
 const PADDING: usize = PAGE_SIZE - 8 - PAIRS_PER_CHUNK * 16;
@@ -135,7 +139,9 @@ impl<'a, 'b> BTreeIter<'a, 'b> {
         }
 
         if self.buffered_page.is_none() {
-            let page_bytes = self.file_system.get(&self.sst.path, self.page_number);
+            let page_bytes = self
+                .file_system
+                .get(self.sst.file_id.page(self.page_number));
 
             let buffered_page: Arc<Page> = match page_bytes {
                 Ok(bytes) => bytemuck::cast_arc(bytes),
@@ -182,7 +188,7 @@ impl BTree {
     /// Creates a static B tree in a
     /// Returns a Vec containing the paths to all the levels
     pub fn write(
-        path: impl AsRef<Path>,
+        file_id: FileId,
         mut pairs: impl Iterator<Item = Result<(u64, u64), DbError>>,
         file_system: &mut FileSystem,
     ) -> Result<(u64, u64, u64), DbError> {
@@ -213,7 +219,8 @@ impl BTree {
             Ok(leaf.length > 0)
         };
 
-        nodes_offset = file_system.write_file(&path, LEAF_OFFSET as usize, write_next_leaf)? as u64;
+        nodes_offset =
+            file_system.write_file(file_id.page(LEAF_OFFSET as usize), write_next_leaf)? as u64;
         nodes_offset += LEAF_OFFSET;
 
         // Construct the Btree in Memory
@@ -246,8 +253,9 @@ impl BTree {
 
         /* leafs --> nodes --> metadata */
 
-        let _nodes_written =
-            file_system.write_file(&path, nodes_offset as usize, write_next_btree_page)? as u64;
+        let _nodes_written = file_system
+            .write_file(file_id.page(nodes_offset as usize), write_next_btree_page)?
+            as u64;
 
         let file_size = 1 + nodes_offset - LEAF_OFFSET + node_count;
         let mut write_metadata = 0;
@@ -263,16 +271,13 @@ impl BTree {
             Ok(write_metadata == 1)
         };
         let _metadata_pages =
-            file_system.write_file(&path, METADATA_OFFSET as usize, write_metadata)? as u64;
+            file_system.write_file(file_id.page(METADATA_OFFSET as usize), write_metadata)? as u64;
 
         Ok((nodes_offset, LEAF_OFFSET, tree_depth))
     }
 
-    pub fn open(
-        path: impl AsRef<Path>,
-        file_system: &FileSystem,
-    ) -> Result<(u64, u64, u64), DbError> {
-        let metadata_page = file_system.get(&path, METADATA_OFFSET as usize)?;
+    pub fn open(file_id: FileId, file_system: &FileSystem) -> Result<(u64, u64, u64), DbError> {
+        let metadata_page = file_system.get(file_id.page(METADATA_OFFSET as usize))?;
         let metadata: Arc<Metadata> = bytemuck::cast_arc(metadata_page);
 
         if metadata.magic != BEAR_MAGIC {
@@ -296,7 +301,7 @@ impl BTree {
             return Ok(None);
         };
 
-        let leaf_page = file_system.get(&sst.path, page_number)?;
+        let leaf_page = file_system.get(sst.file_id.page(page_number))?;
         let leaf_node: Arc<Leaf> = bytemuck::cast_arc(leaf_page);
 
         Ok(Some(leaf_node.pairs[item_number][1]))
@@ -312,7 +317,7 @@ impl BTree {
         let leafs_offset = sst.leafs_offset;
         let tree_depth = sst.tree_depth;
 
-        let root_page = file_system.get(&sst.path, nodes_offset as usize)?;
+        let root_page = file_system.get(sst.file_id.page(nodes_offset as usize))?;
         let root_node: Arc<Node> = bytemuck::cast_arc(root_page);
         if root_node.pairs[(root_node.length - 1) as usize][0] < key {
             return Ok(None);
@@ -336,12 +341,12 @@ impl BTree {
             }
 
             page_number = node_number + nodes_offset;
-            let current_page = file_system.get(&sst.path, page_number as usize)?;
+            let current_page = file_system.get(sst.file_id.page(page_number as usize))?;
             current_node = bytemuck::cast_arc(current_page);
         }
 
         page_number = leafs_offset + node_number;
-        let leaf_page = file_system.get(&sst.path, page_number as usize)?;
+        let leaf_page = file_system.get(sst.file_id.page(page_number as usize))?;
         let leaf: Arc<Leaf> = bytemuck::cast_arc(leaf_page);
         let sub_vec: &[[u64; 2]] = &leaf.as_ref().pairs[0..leaf.length as usize];
 
@@ -376,7 +381,7 @@ impl BTree {
         let nodes_offset = sst.nodes_offset;
         let leafs_offset = sst.leafs_offset;
 
-        let root_page = file_system.get(&sst.path, nodes_offset as usize)?;
+        let root_page = file_system.get(sst.file_id.page(nodes_offset as usize))?;
         let root_node: Arc<Node> = bytemuck::cast_arc(root_page);
         if root_node.pairs[(root_node.length - 1) as usize][0] < key {
             return Ok(None);
@@ -391,7 +396,7 @@ impl BTree {
             if page_number == start_page_num as usize {
                 break;
             }
-            let middle_page = file_system.get(&sst.path, page_number)?;
+            let middle_page = file_system.get(sst.file_id.page(page_number))?;
             let leaf: Arc<Leaf> = bytemuck::cast_arc(middle_page);
 
             if key < leaf.pairs[0][0] {
@@ -403,7 +408,7 @@ impl BTree {
             }
         }
 
-        let leaf_page = file_system.get(&sst.path, page_number)?;
+        let leaf_page = file_system.get(sst.file_id.page(page_number))?;
         let leaf: Arc<Leaf> = bytemuck::cast_arc(leaf_page);
         let found_exact;
 
@@ -427,8 +432,8 @@ impl BTree {
     }
 
     #[allow(dead_code)]
-    fn pretty_print_pages(path: impl AsRef<Path>, file_system: &FileSystem) -> Result<(), DbError> {
-        let metadata_page = file_system.get(&path, METADATA_OFFSET as usize)?;
+    fn pretty_print_pages(file_id: FileId, file_system: &FileSystem) -> Result<(), DbError> {
+        let metadata_page = file_system.get(file_id.page(METADATA_OFFSET as usize))?;
         let metadata: Arc<Metadata> = bytemuck::cast_arc(metadata_page);
 
         if metadata.magic != BEAR_MAGIC {
@@ -455,7 +460,7 @@ impl BTree {
 
         // Print leafs
         for page_num in metadata.leafs_offset..metadata.nodes_offset {
-            let page = file_system.get(&path, page_num as usize)?;
+            let page = file_system.get(file_id.page(page_num as usize))?;
             let leaf: Arc<Leaf> = bytemuck::cast_arc(page);
 
             println!("🍃 Leaf[{}] ({} pairs)", page_num, leaf.length);
@@ -467,7 +472,7 @@ impl BTree {
 
         // Print nodes
         for page_num in metadata.nodes_offset..metadata.size {
-            let page = file_system.get(&path, page_num as usize)?;
+            let page = file_system.get(file_id.page(page_num as usize))?;
             let node: Arc<Node> = bytemuck::cast_arc(page);
 
             println!("🌳 Node[{}] ({} entries)", page_num, node.length);
