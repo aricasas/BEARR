@@ -1,6 +1,8 @@
 use std::{array, num::Wrapping as W};
 
 /// A hash function with a specific seed to influence the output.
+#[repr(C)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HashFunction {
     seed: u32,
 }
