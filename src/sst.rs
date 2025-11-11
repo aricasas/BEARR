@@ -2,6 +2,7 @@ use std::ops::RangeInclusive;
 
 use crate::{
     DbError,
+    bloom_filter::BloomFilter,
     btree::{BTree, BTreeIter},
     file_system::FileId,
 };
@@ -21,20 +22,25 @@ pub struct Sst {
     pub leafs_offset: u64,
     #[cfg_attr(feature = "binary_search", expect(dead_code))]
     pub tree_depth: u64,
+    pub filter: BloomFilter,
 }
 
 impl Sst {
     /*
      * Create an SST table to store contents on disk
+     *
+     * `n_entries_hint` is an upper bound
      * */
     pub fn create(
         key_values: impl IntoIterator<Item = Result<(u64, u64), DbError>>,
+        n_entries_hint: usize,
+        bits_per_entry: usize,
         file_id: FileId,
         file_system: &mut FileSystem,
     ) -> Result<Sst, DbError> {
         let key_values = key_values.into_iter();
 
-        let (nodes_offset, leafs_offset, tree_depth) =
+        let (nodes_offset, leafs_offset, tree_depth, filter) =
             BTree::write(file_id, key_values, file_system)?;
 
         Ok(Sst {
@@ -42,6 +48,7 @@ impl Sst {
             nodes_offset,
             leafs_offset,
             tree_depth,
+            filter,
         })
     }
 
@@ -49,17 +56,22 @@ impl Sst {
      * find the file's SST and give it back
      * */
     pub fn open(file_id: FileId, file_system: &FileSystem) -> Result<Sst, DbError> {
-        let (nodes_offset, leafs_offset, tree_depth) = BTree::open(file_id, file_system)?;
+        let (nodes_offset, leafs_offset, tree_depth, filter) = BTree::open(file_id, file_system)?;
 
         Ok(Sst {
             file_id,
             nodes_offset,
             leafs_offset,
             tree_depth,
+            filter,
         })
     }
 
     pub fn get(&self, key: u64, file_system: &FileSystem) -> Result<Option<u64>, DbError> {
+        if !self.filter.query(key) {
+            return Ok(None);
+        }
+
         BTree::get(self, key, file_system)
     }
 

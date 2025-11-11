@@ -1,3 +1,4 @@
+mod bloom_filter;
 mod btree;
 mod database;
 mod error;

@@ -2,6 +2,7 @@ use std::{ops::RangeInclusive, sync::Arc};
 
 use crate::{
     DbError, PAGE_SIZE,
+    bloom_filter::BloomFilter,
     file_system::{Aligned, FileId},
     sst::Sst,
 };
@@ -190,8 +191,10 @@ impl BTree {
     pub fn write(
         file_id: FileId,
         mut pairs: impl Iterator<Item = Result<(u64, u64), DbError>>,
+        n_entries_hint: usize,
+        bits_per_entry: usize,
         file_system: &mut FileSystem,
-    ) -> Result<(u64, u64, u64), DbError> {
+    ) -> Result<(u64, u64, u64, BloomFilter), DbError> {
         let mut nodes_offset: u64;
         let mut largest_keys: Vec<u64> = Vec::new();
         let mut largest_pages: Vec<u64> = Vec::new();
@@ -273,10 +276,14 @@ impl BTree {
         let _metadata_pages =
             file_system.write_file(file_id.page(METADATA_OFFSET as usize), write_metadata)? as u64;
 
-        Ok((nodes_offset, LEAF_OFFSET, tree_depth))
+        // Ok((nodes_offset, LEAF_OFFSET, tree_depth))
+        todo!() // need bloom filter
     }
 
-    pub fn open(file_id: FileId, file_system: &FileSystem) -> Result<(u64, u64, u64), DbError> {
+    pub fn open(
+        file_id: FileId,
+        file_system: &FileSystem,
+    ) -> Result<(u64, u64, u64, BloomFilter), DbError> {
         let metadata_page = file_system.get(file_id.page(METADATA_OFFSET as usize))?;
         let metadata: Arc<Metadata> = bytemuck::cast_arc(metadata_page);
 
@@ -286,11 +293,13 @@ impl BTree {
         if metadata.nodes_offset <= metadata.leafs_offset {
             return Err(DbError::CorruptSst);
         }
-        Ok((
-            metadata.nodes_offset,
-            metadata.leafs_offset,
-            metadata.tree_depth,
-        ))
+        // Ok((
+        //     metadata.nodes_offset,
+        //     metadata.leafs_offset,
+        //     metadata.tree_depth,
+        // ))
+
+        todo!() // need bloom filter
     }
 
     pub fn get(sst: &Sst, key: u64, file_system: &FileSystem) -> Result<Option<u64>, DbError> {
