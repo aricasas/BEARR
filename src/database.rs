@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     DbError,
-    lsm::{LsmConfiguration, LsmMetadata, LsmTree},
+    lsm::{LsmConfiguration, LsmMetadata, LsmTree, TOMBSTONE},
 };
 
 #[cfg(not(feature = "mock"))]
@@ -137,6 +137,10 @@ impl Database {
     ///
     /// Returns an error if flushing fails. See `Database::flush` for more info.
     pub fn put(&mut self, key: u64, value: u64) -> Result<(), DbError> {
+        if value == TOMBSTONE {
+            return Err(DbError::InvalidValue);
+        }
+
         self.lsm.put(key, value, &mut self.file_system)
     }
 

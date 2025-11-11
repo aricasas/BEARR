@@ -85,16 +85,22 @@ impl LsmTree {
 
     pub fn get(&self, key: u64, file_system: &FileSystem) -> Result<Option<u64>, DbError> {
         let val = self.memtable.get(key);
-        if val.is_some() {
-            return Ok(val);
+        if let Some(value) = val {
+            if value == TOMBSTONE {
+                return Ok(None);
+            }
+            return Ok(Some(value));
         }
 
         // Search in order of level, then latest sst in level
         for level in &self.levels {
             for sst in level.iter().rev() {
                 let val = sst.get(key, file_system)?;
-                if val.is_some() {
-                    return Ok(val);
+                if let Some(value) = val {
+                    if value == TOMBSTONE {
+                        return Ok(None);
+                    }
+                    return Ok(Some(value));
                 }
             }
         }
@@ -137,7 +143,7 @@ impl LsmTree {
             }
         }
 
-        MergedIterator::new(scans)
+        MergedIterator::new(scans, true)
     }
 
     pub fn flush_memtable(&mut self, file_system: &mut FileSystem) -> Result<(), DbError> {
