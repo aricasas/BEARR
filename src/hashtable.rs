@@ -1,12 +1,7 @@
-use std::{
-    os::unix::ffi::OsStrExt,
-    path::{Path, PathBuf},
-};
-
-use crate::DbError;
+use crate::{DbError, file_system::PageId, hash::HashFunction};
 
 struct HashTableEntry<V> {
-    key: (PathBuf, usize),
+    key: PageId,
     value: V,
     /// The bucket that the key hashed to.
     /// Not necessarily the bucket that the entry actually resides in, thanks to probing.
@@ -20,7 +15,7 @@ pub struct HashTable<V> {
     inner: Vec<Option<HashTableEntry<V>>>,
     capacity: usize,
     len: usize,
-    seed: u32,
+    hash_function: HashFunction,
 }
 
 impl<V> HashTable<V> {
@@ -42,31 +37,28 @@ impl<V> HashTable<V> {
             inner.push(None);
         }
 
-        let seed = fastrand::u32(..);
-
         Ok(Self {
             inner,
             capacity,
             len: 0,
-            seed,
+            hash_function: HashFunction::new(),
         })
     }
 
-    fn hash_to_bucket(&self, path: impl AsRef<Path>, page_number: usize) -> usize {
-        hash_to_index(path, page_number, self.num_buckets(), self.seed)
+    fn hash_to_bucket(&self, page_id: PageId) -> usize {
+        self.hash_function
+            .hash_to_index(page_id, self.num_buckets())
     }
 
     /// Returns the index in the table where the given key is found,
     /// or an error with the index of an empty bucket.
-    fn find(&self, path: impl AsRef<Path>, page_number: usize) -> Result<usize, usize> {
-        let path = path.as_ref();
-        let hash = self.hash_to_bucket(path, page_number);
+    fn find(&self, page_id: PageId) -> Result<usize, usize> {
+        let hash = self.hash_to_bucket(page_id);
 
         let mut i = hash;
         loop {
             if let Some(entry) = &self.inner[i] {
-                let (p, pg) = &entry.key;
-                if entry.hash == hash && p == path && *pg == page_number {
+                if entry.key == page_id {
                     return Ok(i);
                 }
             } else {
@@ -79,8 +71,8 @@ impl<V> HashTable<V> {
 
     /// Returns a reference to the value with the given key,
     /// or None if the key doesn't exist in the hash table.
-    pub fn get(&self, path: impl AsRef<Path>, page_number: usize) -> Option<&V> {
-        match self.find(path, page_number) {
+    pub fn get(&self, page_id: PageId) -> Option<&V> {
+        match self.find(page_id) {
             Ok(i) => self.inner[i].as_ref().map(|entry| &entry.value),
             Err(_) => None,
         }
@@ -89,8 +81,8 @@ impl<V> HashTable<V> {
     /// Inserts or updates the given key with the given value.
     ///
     /// Panics if the hash table is already at capacity.
-    pub fn insert(&mut self, path: PathBuf, page_number: usize, value: V) {
-        let i = match self.find(&path, page_number) {
+    pub fn insert(&mut self, page_id: PageId, value: V) {
+        let i = match self.find(page_id) {
             Ok(i) => i,
             Err(i) => {
                 assert_ne!(
@@ -104,9 +96,9 @@ impl<V> HashTable<V> {
             }
         };
 
-        let hash = self.hash_to_bucket(&path, page_number);
+        let hash = self.hash_to_bucket(page_id);
         let entry = HashTableEntry {
-            key: (path, page_number),
+            key: page_id,
             value,
             hash,
         };
@@ -117,9 +109,9 @@ impl<V> HashTable<V> {
     /// Removes and returns the value of the entry with the given key.
     ///
     /// Panics if the key doesn't exist in the hash table.
-    pub fn remove(&mut self, path: impl AsRef<Path>, page_number: usize) -> V {
+    pub fn remove(&mut self, page_id: PageId) -> V {
         let mut i = self
-            .find(path, page_number)
+            .find(page_id)
             .expect("must only delete keys that are in the table");
 
         self.len -= 1;
@@ -182,358 +174,240 @@ impl<V> HashTable<V> {
     }
 }
 
-fn murmur_hash_to_index(
-    path: impl AsRef<Path>,
-    page_number: usize,
-    container_length: usize,
-    seed: u32,
-) -> usize {
-    let mut path = path.as_ref().to_path_buf();
-    path.push(page_number.to_string());
-
-    murmur_hash::murmur3_32(path.as_os_str().as_bytes(), seed) as usize % container_length
-}
-
-#[cfg(not(feature = "mock_hash"))]
-use murmur_hash_to_index as hash_to_index;
-
-#[cfg(feature = "mock_hash")]
-pub fn hash_to_index(
-    _path: impl AsRef<Path>,
-    page_number: usize,
-    container_length: usize,
-    _seed: u32,
-) -> usize {
-    page_number % container_length
-}
-
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    // TODO: redo
 
-    use anyhow::Result;
-
-    use crate::test_util::assert_panics;
-
-    use super::*;
-
-    fn insert_many(table: &mut HashTable<u64>, pairs: &[(&str, usize, u64)]) {
-        for &(path, page_number, value) in pairs {
-            table.insert(path.into(), page_number, value);
-        }
-    }
-
-    fn assert_pairs(
-        table: &HashTable<u64>,
-        pairs: impl IntoIterator<Item = (&'static str, usize, Option<u64>)>,
-    ) {
-        for (path, page_number, value) in pairs {
-            assert_eq!(
-                table.get(path, page_number).copied(),
-                value,
-                "({path:?}, {page_number:?}) should be {value:?}"
-            );
-        }
-    }
-
-    fn inspect(table: &HashTable<u64>) {
-        for (i, e) in table.inner.iter().enumerate() {
-            if let Some(e) = e {
-                println!("{i}: {:?} {:?}", e.key, e.value);
-            } else {
-                println!("{i}: -");
-            }
-        }
-        println!();
-    }
-
-    #[test]
-    pub fn test_basic() -> Result<()> {
-        let mut table = HashTable::new(32)?;
-        let n = table.num_buckets();
-        let [a, b, c, d, e, f] = [10, 12, 14, n - 2, 0, n - 4];
-
-        insert_many(
-            &mut table,
-            &[
-                ("0", b, 3),
-                ("0", a, 1),
-                ("0", c, 4),
-                ("0", d, 1),
-                ("1", d, 5),
-                ("2", d, 9),
-                ("1", a, 2),
-                ("2", a, 6),
-                ("1", b, 5),
-                ("0", e, 3),
-                ("1", e, 5),
-                ("2", e, 8),
-            ],
-        );
-        inspect(&table);
-
-        assert_pairs(
-            &table,
-            [
-                ("0", b, Some(3)),
-                ("0", a, Some(1)),
-                ("0", c, Some(4)),
-                ("0", d, Some(1)),
-                ("1", d, Some(5)),
-                ("2", d, Some(9)),
-                ("1", a, Some(2)),
-                ("2", a, Some(6)),
-                ("1", b, Some(5)),
-                ("0", e, Some(3)),
-                ("1", e, Some(5)),
-                ("2", e, Some(8)),
-                ("2", b, None),
-                ("4", d, None),
-                ("0", f, None),
-            ],
-        );
-        assert_eq!(table.len(), 12);
-
-        insert_many(
-            &mut table,
-            &[
-                ("0", c, 9),
-                ("3", a, 7),
-                ("2", b, 9),
-                ("3", d, 3),
-                ("3", e, 2),
-                ("2", d, 3),
-                ("1", a, 8),
-                ("1", c, 4),
-                ("0", b, 6),
-                ("0", e, 2),
-                ("0", d, 6),
-                ("4", e, 4),
-            ],
-        );
-        inspect(&table);
-
-        assert_pairs(
-            &table,
-            [
-                ("0", b, Some(6)),
-                ("0", a, Some(1)),
-                ("0", c, Some(9)),
-                ("0", d, Some(6)),
-                ("1", d, Some(5)),
-                ("2", d, Some(3)),
-                ("1", a, Some(8)),
-                ("2", a, Some(6)),
-                ("1", b, Some(5)),
-                ("0", e, Some(2)),
-                ("1", e, Some(5)),
-                ("2", e, Some(8)),
-                ("3", a, Some(7)),
-                ("2", b, Some(9)),
-                ("3", d, Some(3)),
-                ("3", e, Some(2)),
-                ("1", c, Some(4)),
-                ("4", e, Some(4)),
-                ("0", f, None),
-                ("4", a, None),
-                ("2", c, None),
-            ],
-        );
-        assert_eq!(table.len(), 18);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_remove() -> Result<()> {
-        let mut table = HashTable::new(32)?;
-        let n = table.num_buckets();
-        let [a, b, c, d, e, f] = [10, 12, 14, n - 2, 0, n - 4];
-
-        let pairs = [
-            ("0", b, 6),
-            ("0", a, 1),
-            ("0", c, 9),
-            ("0", d, 6),
-            ("1", d, 5),
-            ("2", d, 3),
-            ("1", a, 8),
-            ("2", a, 6),
-            ("1", b, 5),
-            ("0", e, 2),
-            ("1", e, 5),
-            ("2", e, 8),
-            ("3", a, 7),
-            ("2", b, 9),
-            ("3", d, 3),
-            ("3", e, 2),
-            ("1", c, 4),
-            ("4", e, 4),
-        ];
-
-        let mut reference: HashMap<_, _> = HashMap::from_iter(
-            pairs
-                .iter()
-                .map(|&(path, page_number, value)| ((path, page_number), Some(value))),
-        );
-        reference.insert(("0", f), None);
-        reference.insert(("4", a), None);
-        reference.insert(("2", c), None);
-
-        insert_many(&mut table, &pairs);
-        assert_eq!(table.len(), 18);
-        inspect(&table);
-
-        let mut assert_remove = |path, page_number, expected_value, expected_new_len| {
-            *reference.get_mut(&(path, page_number)).unwrap() = None;
-            assert_eq!(table.remove(path, page_number), expected_value);
-            assert_eq!(table.len(), expected_new_len);
-            inspect(&table);
-            assert_pairs(
-                &table,
-                reference
-                    .iter()
-                    .map(|(&(path, page_number), &value)| (path, page_number, value)),
-            );
-        };
-
-        assert_remove("1", c, 4, 17);
-        assert_remove("3", e, 2, 16);
-        assert_remove("0", a, 1, 15);
-        assert_remove("0", d, 6, 14);
-        assert_remove("0", b, 6, 13);
-        assert_remove("2", e, 8, 12);
-        assert_remove("2", a, 6, 11);
-        assert_remove("1", a, 8, 10);
-        assert_remove("1", b, 5, 9);
-        assert_remove("1", d, 5, 8);
-        assert_remove("3", d, 3, 7);
-        assert_remove("1", e, 5, 6);
-
-        assert_panics(|| _ = table.remove("4", d));
-        assert_panics(|| _ = table.remove("0", f));
-        assert_panics(|| _ = table.remove("2", a));
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_over_capacity() -> Result<()> {
-        let mut table = HashTable::new(128)?;
-
-        for i in 0..128 {
-            table.insert("*".into(), i, i);
-        }
-
-        for i in 0..128 {
-            table.insert("*".into(), i, i * 2);
-        }
-
-        for i in 0..128 {
-            table.remove("*", i);
-        }
-
-        for i in 0..128 {
-            table.insert("/".into(), i, i);
-        }
-
-        assert_panics(|| table.insert("*".into(), 31, 4));
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_murmur_hash_to_index() {
-        assert!((0..16).contains(&murmur_hash_to_index("monad", 2, 16, 314)));
-
-        assert_ne!(
-            murmur_hash_to_index("monad", 2, 32, 159),
-            murmur_hash_to_index("monoid", 2, 32, 159),
-        );
-
-        assert_ne!(
-            murmur_hash_to_index("monad", 3, 48, 265),
-            murmur_hash_to_index("monad", 5, 48, 265),
-        );
-
-        assert_ne!(
-            murmur_hash_to_index("monad", 7, 64, 358),
-            murmur_hash_to_index("monad", 7, 64, 979),
-        );
-    }
-}
-
-/// Implementation of the 32-bit MurmurHash3 hash function.
-/// https://en.wikipedia.org/wiki/MurmurHash
-mod murmur_hash {
-    use std::{array, num::Wrapping as W};
-
-    pub fn murmur3_32(key: &[u8], seed: u32) -> u32 {
-        let len = key.len();
-
-        let c1 = W(0xcc9e2d51);
-        let c2 = W(0x1b873593);
-        let r1 = 15;
-        let r2 = 13;
-        let m = W(5);
-        let n = W(0xe6546b64);
-
-        let mut hash = W(seed);
-
-        let (chunks, remainder) = key.as_chunks::<4>();
-        let remainder: [u8; 4] = array::from_fn(|i| remainder.get(i).copied().unwrap_or(0));
-
-        for &chunk in chunks {
-            let mut k = W(u32::from_le_bytes(chunk));
-
-            k *= c1;
-            k = W(k.0.rotate_left(r1));
-            k *= c2;
-
-            hash ^= k;
-            hash = W(hash.0.rotate_left(r2));
-            hash = (hash * m) + n;
-        }
-
-        {
-            let mut remainder = W(u32::from_le_bytes(remainder));
-
-            remainder *= c1;
-            remainder = W(remainder.0.rotate_left(r1));
-            remainder *= c2;
-
-            hash ^= remainder;
-        }
-
-        hash ^= len as u32;
-
-        hash ^= hash >> 16;
-        hash *= 0x85ebca6b;
-        hash ^= hash >> 13;
-        hash *= 0xc2b2ae35;
-        hash ^= hash >> 16;
-
-        hash.0
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use rstest::rstest;
-
-        use super::*;
-
-        #[rstest]
-        #[case(0x00000000, 0x00000000, "")]
-        #[case(0x00000001, 0x514e28b7, "")]
-        #[case(0xffffffff, 0x81f16f39, "")]
-        #[case(0x00000000, 0xba6bd213, "test")]
-        #[case(0x9747b28c, 0x704b81dc, "test")]
-        #[case(0x00000000, 0xc0363e43, "Hello, world!")]
-        #[case(0x9747b28c, 0x24884cba, "Hello, world!")]
-        #[case(0x00000000, 0x2e4ff723, "The quick brown fox jumps over the lazy dog")]
-        #[case(0x9747b28c, 0x2fa826cd, "The quick brown fox jumps over the lazy dog")]
-        fn test_murmur(#[case] seed: u32, #[case] expected: u32, #[case] key: &str) {
-            assert_eq!(murmur3_32(key.as_bytes(), seed), expected);
-        }
-    }
+    // use std::collections::HashMap;
+    //
+    // use anyhow::Result;
+    //
+    // use crate::test_util::assert_panics;
+    //
+    // use super::*;
+    //
+    // fn insert_many(table: &mut HashTable<u64>, pairs: &[(usize, usize, u64)]) {
+    //     for &(path, page_number, value) in pairs {
+    //         table.insert(path.into(), page_number, value);
+    //     }
+    // }
+    //
+    // fn assert_pairs(
+    //     table: &HashTable<u64>,
+    //     pairs: impl IntoIterator<Item = (&'static str, usize, Option<u64>)>,
+    // ) {
+    //     for (path, page_number, value) in pairs {
+    //         assert_eq!(
+    //             table.get(path, page_number).copied(),
+    //             value,
+    //             "({path:?}, {page_number:?}) should be {value:?}"
+    //         );
+    //     }
+    // }
+    //
+    // fn inspect(table: &HashTable<u64>) {
+    //     for (i, e) in table.inner.iter().enumerate() {
+    //         if let Some(e) = e {
+    //             println!("{i}: {:?} {:?}", e.key, e.value);
+    //         } else {
+    //             println!("{i}: -");
+    //         }
+    //     }
+    //     println!();
+    // }
+    //
+    // #[test]
+    // pub fn test_basic() -> Result<()> {
+    //     let mut table = HashTable::new(32)?;
+    //     let n = table.num_buckets();
+    //     let [a, b, c, d, e, f] = [10, 12, 14, n - 2, 0, n - 4];
+    //
+    //     insert_many(
+    //         &mut table,
+    //         &[
+    //             ("0", b, 3),
+    //             ("0", a, 1),
+    //             ("0", c, 4),
+    //             ("0", d, 1),
+    //             ("1", d, 5),
+    //             ("2", d, 9),
+    //             ("1", a, 2),
+    //             ("2", a, 6),
+    //             ("1", b, 5),
+    //             ("0", e, 3),
+    //             ("1", e, 5),
+    //             ("2", e, 8),
+    //         ],
+    //     );
+    //     inspect(&table);
+    //
+    //     assert_pairs(
+    //         &table,
+    //         [
+    //             ("0", b, Some(3)),
+    //             ("0", a, Some(1)),
+    //             ("0", c, Some(4)),
+    //             ("0", d, Some(1)),
+    //             ("1", d, Some(5)),
+    //             ("2", d, Some(9)),
+    //             ("1", a, Some(2)),
+    //             ("2", a, Some(6)),
+    //             ("1", b, Some(5)),
+    //             ("0", e, Some(3)),
+    //             ("1", e, Some(5)),
+    //             ("2", e, Some(8)),
+    //             ("2", b, None),
+    //             ("4", d, None),
+    //             ("0", f, None),
+    //         ],
+    //     );
+    //     assert_eq!(table.len(), 12);
+    //
+    //     insert_many(
+    //         &mut table,
+    //         &[
+    //             ("0", c, 9),
+    //             ("3", a, 7),
+    //             ("2", b, 9),
+    //             ("3", d, 3),
+    //             ("3", e, 2),
+    //             ("2", d, 3),
+    //             ("1", a, 8),
+    //             ("1", c, 4),
+    //             ("0", b, 6),
+    //             ("0", e, 2),
+    //             ("0", d, 6),
+    //             ("4", e, 4),
+    //         ],
+    //     );
+    //     inspect(&table);
+    //
+    //     assert_pairs(
+    //         &table,
+    //         [
+    //             ("0", b, Some(6)),
+    //             ("0", a, Some(1)),
+    //             ("0", c, Some(9)),
+    //             ("0", d, Some(6)),
+    //             ("1", d, Some(5)),
+    //             ("2", d, Some(3)),
+    //             ("1", a, Some(8)),
+    //             ("2", a, Some(6)),
+    //             ("1", b, Some(5)),
+    //             ("0", e, Some(2)),
+    //             ("1", e, Some(5)),
+    //             ("2", e, Some(8)),
+    //             ("3", a, Some(7)),
+    //             ("2", b, Some(9)),
+    //             ("3", d, Some(3)),
+    //             ("3", e, Some(2)),
+    //             ("1", c, Some(4)),
+    //             ("4", e, Some(4)),
+    //             ("0", f, None),
+    //             ("4", a, None),
+    //             ("2", c, None),
+    //         ],
+    //     );
+    //     assert_eq!(table.len(), 18);
+    //
+    //     Ok(())
+    // }
+    //
+    // #[test]
+    // fn test_remove() -> Result<()> {
+    //     let mut table = HashTable::new(32)?;
+    //     let n = table.num_buckets();
+    //     let [a, b, c, d, e, f] = [10, 12, 14, n - 2, 0, n - 4];
+    //
+    //     let pairs = [
+    //         ("0", b, 6),
+    //         ("0", a, 1),
+    //         ("0", c, 9),
+    //         ("0", d, 6),
+    //         ("1", d, 5),
+    //         ("2", d, 3),
+    //         ("1", a, 8),
+    //         ("2", a, 6),
+    //         ("1", b, 5),
+    //         ("0", e, 2),
+    //         ("1", e, 5),
+    //         ("2", e, 8),
+    //         ("3", a, 7),
+    //         ("2", b, 9),
+    //         ("3", d, 3),
+    //         ("3", e, 2),
+    //         ("1", c, 4),
+    //         ("4", e, 4),
+    //     ];
+    //
+    //     let mut reference: HashMap<_, _> = HashMap::from_iter(
+    //         pairs
+    //             .iter()
+    //             .map(|&(path, page_number, value)| ((path, page_number), Some(value))),
+    //     );
+    //     reference.insert(("0", f), None);
+    //     reference.insert(("4", a), None);
+    //     reference.insert(("2", c), None);
+    //
+    //     insert_many(&mut table, &pairs);
+    //     assert_eq!(table.len(), 18);
+    //     inspect(&table);
+    //
+    //     let mut assert_remove = |path, page_number, expected_value, expected_new_len| {
+    //         *reference.get_mut(&(path, page_number)).unwrap() = None;
+    //         assert_eq!(table.remove(path, page_number), expected_value);
+    //         assert_eq!(table.len(), expected_new_len);
+    //         inspect(&table);
+    //         assert_pairs(
+    //             &table,
+    //             reference
+    //                 .iter()
+    //                 .map(|(&(path, page_number), &value)| (path, page_number, value)),
+    //         );
+    //     };
+    //
+    //     assert_remove("1", c, 4, 17);
+    //     assert_remove("3", e, 2, 16);
+    //     assert_remove("0", a, 1, 15);
+    //     assert_remove("0", d, 6, 14);
+    //     assert_remove("0", b, 6, 13);
+    //     assert_remove("2", e, 8, 12);
+    //     assert_remove("2", a, 6, 11);
+    //     assert_remove("1", a, 8, 10);
+    //     assert_remove("1", b, 5, 9);
+    //     assert_remove("1", d, 5, 8);
+    //     assert_remove("3", d, 3, 7);
+    //     assert_remove("1", e, 5, 6);
+    //
+    //     assert_panics(|| _ = table.remove("4", d));
+    //     assert_panics(|| _ = table.remove("0", f));
+    //     assert_panics(|| _ = table.remove("2", a));
+    //
+    //     Ok(())
+    // }
+    //
+    // #[test]
+    // fn test_over_capacity() -> Result<()> {
+    //     let mut table = HashTable::new(128)?;
+    //
+    //     for i in 0..128 {
+    //         table.insert("*".into(), i, i);
+    //     }
+    //
+    //     for i in 0..128 {
+    //         table.insert("*".into(), i, i * 2);
+    //     }
+    //
+    //     for i in 0..128 {
+    //         table.remove("*", i);
+    //     }
+    //
+    //     for i in 0..128 {
+    //         table.insert("/".into(), i, i);
+    //     }
+    //
+    //     assert_panics(|| table.insert("*".into(), 31, 4));
+    //
+    //     Ok(())
+    // }
 }

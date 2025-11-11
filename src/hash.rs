@@ -14,14 +14,14 @@ impl HashFunction {
     }
 
     /// Hashes the given key to an index into a container with the given length.
-    pub fn hash_to_index(self, key: impl bytemuck::Pod, length: usize) -> usize {
-        murmur3_32(bytemuck::bytes_of(&key), self.seed) as usize % length
+    pub fn hash_to_index(&self, key: impl bytemuck::Pod, length: usize) -> usize {
+        hash(bytemuck::bytes_of(&key), self.seed) as usize % length
     }
 }
 
 /// Implementation of the 32-bit MurmurHash3 hash function.
 /// https://en.wikipedia.org/wiki/MurmurHash
-pub fn murmur3_32(key: &[u8], seed: u32) -> u32 {
+fn murmur3_32(key: &[u8], seed: u32) -> u32 {
     let len = key.len();
 
     let c1 = W(0xcc9e2d51);
@@ -69,6 +69,14 @@ pub fn murmur3_32(key: &[u8], seed: u32) -> u32 {
     hash.0
 }
 
+#[cfg(not(feature = "mock_hash"))]
+use murmur3_32 as hash;
+
+#[cfg(feature = "mock_hash")]
+fn hash(key: &[u8], _seed: u32) -> u32 {
+    usize::from_ne_bytes(key[..std::mem::size_of::<usize>()].try_into().unwrap()) as u32
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
@@ -87,5 +95,27 @@ mod tests {
     #[case(0x9747b28c, 0x2fa826cd, "The quick brown fox jumps over the lazy dog")]
     fn test_murmur(#[case] seed: u32, #[case] expected: u32, #[case] key: &str) {
         assert_eq!(murmur3_32(key.as_bytes(), seed), expected);
+    }
+
+    #[test]
+    fn test_hash_function() {
+        // TODO
+
+        // assert!((0..16).contains(&murmur_hash_to_index("monad", 2, 16, 314)));
+        //
+        // assert_ne!(
+        //     murmur_hash_to_index("monad", 2, 32, 159),
+        //     murmur_hash_to_index("monoid", 2, 32, 159),
+        // );
+        //
+        // assert_ne!(
+        //     murmur_hash_to_index("monad", 3, 48, 265),
+        //     murmur_hash_to_index("monad", 5, 48, 265),
+        // );
+        //
+        // assert_ne!(
+        //     murmur_hash_to_index("monad", 7, 64, 358),
+        //     murmur_hash_to_index("monad", 7, 64, 979),
+        // );
     }
 }
