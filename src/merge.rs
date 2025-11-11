@@ -133,6 +133,8 @@ impl<I: Iterator<Item = Result<(u64, u64), DbError>>> Iterator for MergedIterato
             };
 
             // Skip entries with keys we've seen at a higher level already
+
+            // TODO: check for tombstones when needed
             if self.last_key.is_none_or(|last_key| min.key > last_key) {
                 break;
             }
@@ -143,6 +145,7 @@ impl<I: Iterator<Item = Result<(u64, u64), DbError>>> Iterator for MergedIterato
     }
 }
 
+// TODO: add more tests
 #[cfg(test)]
 mod tests {
     use super::*;

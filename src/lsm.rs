@@ -116,14 +116,15 @@ impl LsmTree {
     ) -> Result<(), DbError> {
         self.memtable.put(key, value);
 
-        if self.memtable.size() >= self.configuration.memtable_capacity {}
+        if self.memtable.size() >= self.configuration.memtable_capacity {
+            self.flush_memtable(file_system)?;
+        }
 
-        todo!()
+        Ok(())
     }
 
     pub fn delete(&mut self, key: u64, file_system: &mut FileSystem) -> Result<(), DbError> {
-        self.put(key, TOMBSTONE, file_system)?;
-        todo!()
+        self.put(key, TOMBSTONE, file_system)
     }
 
     pub fn scan<'a, 'b: 'a>(
@@ -151,19 +152,32 @@ impl LsmTree {
             return Ok(());
         }
 
+        if self.levels.is_empty() {
+            self.levels.push(Vec::new());
+        }
+
+        let mem_table_size = self.memtable.size();
         let key_values = self.memtable.scan(u64::MIN..=u64::MAX)?;
         let file_id = FileId {
             lsm_level: 0,
-            sst_number: self.levels.first().map(|l| l.len()).unwrap_or(0),
+            sst_number: self.levels[0].len(),
         };
 
-        let sst = Sst::create(key_values.map(Ok), file_id, file_system)?;
+        let sst = Sst::create(
+            key_values.map(Ok),
+            mem_table_size,
+            8, // TODO: implement Monkey
+            file_id,
+            file_system,
+        )?;
+
+        self.levels[0].push(sst);
 
         self.memtable.clear();
 
         // TODO stuff with self.levels
         // and compaction
-        todo!();
+        Ok(())
     }
 
     pub fn metadata(&self) -> LsmMetadata {

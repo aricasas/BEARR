@@ -59,6 +59,7 @@ pub struct TestFs {
 }
 impl TestFs {
     pub fn new(prefix: impl AsRef<Path>) -> Self {
+        let _ = fs::create_dir_all(&prefix);
         Self {
             prefix: prefix.as_ref().to_owned(),
             fs: FileSystem::new(prefix, 16, 1).unwrap(),

@@ -2,10 +2,10 @@ use bit_vec::BitVec;
 
 use crate::hash::HashFunction;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BloomFilter {
     hash_functions: Vec<HashFunction>,
-    bits: BitVec,
+    bits: BitVec, // this is from a crate, or implement your own if you want
 }
 
 impl BloomFilter {
@@ -13,8 +13,10 @@ impl BloomFilter {
         // Calculate how many hash functions it needs to be optimal: bits_per_entry * ln(2)
         // Careful because slides have error https://piazza.com/class/mf0gdjv1iov3n/post/77
 
-        let bits = BitVec::with_capacity(n_entries * bits_per_entry);
-        let num_hashes = (bits_per_entry as f32 * f32::ln(2.0)) as usize;
+        // TODO:Might want to round capacity up to multiple of PAGE_SIZE
+
+        let bits = BitVec::from_elem(n_entries * bits_per_entry, false);
+        let num_hashes = (bits_per_entry as f32 * f32::ln(2.0)).ceil() as usize;
 
         let hash_functions = (0..num_hashes).map(|_| HashFunction::new()).collect();
 
@@ -24,8 +26,8 @@ impl BloomFilter {
         }
     }
 
-    pub fn from_hashes_and_bits(hash_functions: Vec<HashFunction>, bits: &[u8]) -> Self {
-        let bits = BitVec::from_bytes(bits);
+    pub fn from_hashes_and_bits(hash_functions: Vec<HashFunction>, bits: Vec<u8>) -> Self {
+        let bits = BitVec::from_bytes(&bits);
 
         Self {
             hash_functions,
@@ -33,19 +35,18 @@ impl BloomFilter {
         }
     }
 
-    pub fn hashes(&self) -> &[HashFunction] {
-        &self.hash_functions
-    }
-
-    pub fn bits(self) -> Vec<u8> {
-        self.bits.to_bytes()
+    // TODO change this interface to return whatever you need to store in the file
+    // This was just a guess to how it could work
+    pub fn into_hashes_and_bits(self) -> (Vec<HashFunction>, Vec<u8>) {
+        (self.hash_functions, self.bits.to_bytes())
     }
 
     pub fn insert(&mut self, key: u64) {
-        todo!()
+        // TODO
     }
 
     pub fn query(&self, key: u64) -> bool {
-        todo!()
+        // TODO
+        true
     }
 }

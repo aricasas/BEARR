@@ -20,7 +20,7 @@ name = "experiments"
 path = "src/experiments.rs"
 
 [features]
-default = ["mock_hash"]
+default = []
 mock = []
 mock_hash = []
 binary_search = []

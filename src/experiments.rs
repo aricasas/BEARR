@@ -38,6 +38,7 @@ fn main() {
 
     println!("{num_puts} puts completed, took {}ms", elapsed.as_millis());
     println!("Avg put took {}s", elapsed.as_secs_f64() / num_puts as f64);
+    println!();
 
     drop(db);
 
@@ -65,6 +66,7 @@ fn main() {
         "Single thread Avg per entry took {}s",
         elapsed.as_secs_f64() / n_entries as f64
     );
+    println!();
 
     drop(db);
 
@@ -86,6 +88,7 @@ fn main() {
 
     println!("{num_gets} gets completed, took {}ms", elapsed.as_millis());
     println!("Avg get took {}s", elapsed.as_secs_f64() / num_gets as f64);
+    println!();
 
     drop(db);
 
@@ -153,4 +156,8 @@ fn main() {
 
     thread_1.join().unwrap();
     thread_2.join().unwrap();
+
+    println!();
+
+    drop(db);
 }

@@ -191,8 +191,6 @@ impl<'a> Iterator for VictimChooser<'a> {
 
 #[cfg(test)]
 mod tests {
-    // TODO
-
     use anyhow::Result;
 
     use crate::file_system::FileId;
@@ -344,7 +342,7 @@ mod tests {
         // Move 5 pages to A_m
         for i in 0..5 {
             let victim = ev.choose_victim().next().unwrap();
-            let page_id = victim.1.clone();
+            let page_id = victim.1;
             assert_eq!(page_id.page_number, i);
 
             ev.evict(victim.0);

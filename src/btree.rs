@@ -39,31 +39,42 @@ const _: () = assert!(size_of::<Page>() == PAGE_SIZE);
 
 pub const BEAR_MAGIC: u64 = 0xBEA22;
 
-#[repr(C, align(4096))]
-#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
-struct Metadata {
-    magic: u64, // This is used to check the validity of the metadata
-    leafs_offset: u64,
-    nodes_offset: u64,
-    tree_depth: u64,
-    size: u64,
-    padding: [u8; PAGE_SIZE - 5 * 8],
+#[repr(C)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug)]
+pub struct BTreeMetadata {
+    pub magic: u64, // This is used to check the validity of the metadata
+    pub leafs_offset: u64,
+    pub nodes_offset: u64,
+    pub tree_depth: u64,
+    pub size: u64,
+    pub n_entries: u64,
+    // TODO bloom filter offset, bloom filter hashes (HashFunction struct) or whetver is needed
 }
 
-impl Default for Metadata {
+#[repr(C, align(4096))]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug)]
+struct MetadataPage {
+    metadata: BTreeMetadata,
+    padding: [u8; PAGE_SIZE - size_of::<BTreeMetadata>()],
+}
+
+impl Default for MetadataPage {
     fn default() -> Self {
         Self {
-            magic: BEAR_MAGIC, // Tribute to BEARR
-            leafs_offset: LEAF_OFFSET,
-            nodes_offset: 0x1000,
-            tree_depth: 0,
-            size: 0,
+            metadata: BTreeMetadata {
+                magic: BEAR_MAGIC,
+                leafs_offset: LEAF_OFFSET,
+                nodes_offset: 0x1000,
+                tree_depth: 0,
+                size: 0,
+                n_entries: 0,
+            },
             padding: [Default::default(); _],
         }
     }
 }
 
-const _: () = assert!(size_of::<Metadata>() == PAGE_SIZE);
+const _: () = assert!(size_of::<MetadataPage>() == PAGE_SIZE);
 
 const LEAF_OFFSET: u64 = 1;
 pub const METADATA_OFFSET: u64 = 0;
@@ -172,7 +183,7 @@ impl<'a, 'b> BTreeIter<'a, 'b> {
         self.item_number = 0;
         self.buffered_page = None;
 
-        if self.page_number >= self.sst.nodes_offset as usize {
+        if self.page_number >= self.sst.btree_metadata.nodes_offset as usize {
             // EOF
             self.ended = true;
         }
@@ -194,12 +205,15 @@ impl BTree {
         n_entries_hint: usize,
         bits_per_entry: usize,
         file_system: &mut FileSystem,
-    ) -> Result<(u64, u64, u64, BloomFilter), DbError> {
+    ) -> Result<(BTreeMetadata, BloomFilter), DbError> {
         let mut nodes_offset: u64;
         let mut largest_keys: Vec<u64> = Vec::new();
         let mut largest_pages: Vec<u64> = Vec::new();
 
         let mut leaf_count: u64 = 0;
+
+        let mut filter = BloomFilter::empty(n_entries_hint, bits_per_entry);
+        let mut n_entries = 0;
 
         // leaf write closure trait
         let write_next_leaf = |page_bytes: &mut Aligned| {
@@ -207,7 +221,12 @@ impl BTree {
             leaf.length = 0;
             for (pair, k_v) in leaf.pairs.iter_mut().zip(&mut pairs) {
                 match k_v {
-                    Ok((k, v)) => *pair = [k, v],
+                    Ok((k, v)) => {
+                        filter.insert(k);
+                        n_entries += 1;
+
+                        *pair = [k, v];
+                    }
                     Err(e) => return Err(e),
                 }
                 leaf.length += 1;
@@ -249,43 +268,52 @@ impl BTree {
                 *pair = k_v.into();
                 node.length += 1;
             }
-            node_count += 1;
+            node_count += 1; // TODO: should this add 1 unconditionally or only when node.length > 0?
 
             Ok(node.length > 0)
         };
 
-        /* leafs --> nodes --> metadata */
+        /* leafs --> nodes --> filter --> metadata */
 
         let _nodes_written = file_system
             .write_file(file_id.page(nodes_offset as usize), write_next_btree_page)?
             as u64;
 
-        let file_size = 1 + nodes_offset - LEAF_OFFSET + node_count;
+        // TODO: write bloom filter to file
+        let (hashes, bits) = filter.clone().into_hashes_and_bits();
+
+        let file_size = 1 + nodes_offset - LEAF_OFFSET + node_count; //TODO: change this to include bloom filter
+
+        let btree_metadata = BTreeMetadata {
+            magic: BEAR_MAGIC,
+            leafs_offset: LEAF_OFFSET,
+            nodes_offset,
+            tree_depth,
+            size: file_size,
+            n_entries,
+        };
+
         let mut write_metadata = 0;
         let write_metadata = |page_bytes: &mut Aligned| {
             write_metadata += 1;
-            let metadata: &mut Metadata = bytemuck::cast_mut(page_bytes);
-            metadata.leafs_offset = LEAF_OFFSET;
-            metadata.nodes_offset = nodes_offset;
-            metadata.tree_depth = tree_depth;
-            metadata.magic = BEAR_MAGIC;
-            metadata.size = file_size;
+            let metadata_page: &mut MetadataPage = bytemuck::cast_mut(page_bytes);
+            metadata_page.metadata = btree_metadata;
 
             Ok(write_metadata == 1)
         };
         let _metadata_pages =
             file_system.write_file(file_id.page(METADATA_OFFSET as usize), write_metadata)? as u64;
 
-        // Ok((nodes_offset, LEAF_OFFSET, tree_depth))
-        todo!() // need bloom filter
+        Ok((btree_metadata, filter))
     }
 
     pub fn open(
         file_id: FileId,
         file_system: &FileSystem,
-    ) -> Result<(u64, u64, u64, BloomFilter), DbError> {
+    ) -> Result<(BTreeMetadata, BloomFilter), DbError> {
         let metadata_page = file_system.get(file_id.page(METADATA_OFFSET as usize))?;
-        let metadata: Arc<Metadata> = bytemuck::cast_arc(metadata_page);
+        let metadata_page: Arc<MetadataPage> = bytemuck::cast_arc(metadata_page);
+        let metadata = metadata_page.metadata;
 
         if metadata.magic != BEAR_MAGIC {
             return Err(DbError::CorruptSst);
@@ -293,13 +321,14 @@ impl BTree {
         if metadata.nodes_offset <= metadata.leafs_offset {
             return Err(DbError::CorruptSst);
         }
-        // Ok((
-        //     metadata.nodes_offset,
-        //     metadata.leafs_offset,
-        //     metadata.tree_depth,
-        // ))
 
-        todo!() // need bloom filter
+        // TODO read bloom filter from file and use
+        // let filter = BloomFilter::from_hashes_and_bits(todo!(), todo!());
+
+        // TODO: replace
+        let filter = BloomFilter::empty(1, 1);
+
+        Ok((metadata, filter))
     }
 
     pub fn get(sst: &Sst, key: u64, file_system: &FileSystem) -> Result<Option<u64>, DbError> {
@@ -322,9 +351,9 @@ impl BTree {
         key: u64,
         file_system: &FileSystem,
     ) -> Result<Option<SearchResult>, DbError> {
-        let nodes_offset = sst.nodes_offset;
-        let leafs_offset = sst.leafs_offset;
-        let tree_depth = sst.tree_depth;
+        let nodes_offset = sst.btree_metadata.nodes_offset;
+        let leafs_offset = sst.btree_metadata.leafs_offset;
+        let tree_depth = sst.btree_metadata.tree_depth;
 
         let root_page = file_system.get(sst.file_id.page(nodes_offset as usize))?;
         let root_node: Arc<Node> = bytemuck::cast_arc(root_page);
@@ -387,8 +416,8 @@ impl BTree {
         key: u64,
         file_system: &FileSystem,
     ) -> Result<Option<SearchResult>, DbError> {
-        let nodes_offset = sst.nodes_offset;
-        let leafs_offset = sst.leafs_offset;
+        let nodes_offset = sst.btree_metadata.nodes_offset;
+        let leafs_offset = sst.btree_metadata.leafs_offset;
 
         let root_page = file_system.get(sst.file_id.page(nodes_offset as usize))?;
         let root_node: Arc<Node> = bytemuck::cast_arc(root_page);
@@ -443,7 +472,8 @@ impl BTree {
     #[allow(dead_code)]
     fn pretty_print_pages(file_id: FileId, file_system: &FileSystem) -> Result<(), DbError> {
         let metadata_page = file_system.get(file_id.page(METADATA_OFFSET as usize))?;
-        let metadata: Arc<Metadata> = bytemuck::cast_arc(metadata_page);
+        let metadata: Arc<MetadataPage> = bytemuck::cast_arc(metadata_page);
+        let metadata = metadata.metadata;
 
         if metadata.magic != BEAR_MAGIC {
             return Err(DbError::CorruptSst);

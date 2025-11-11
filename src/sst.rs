@@ -3,7 +3,7 @@ use std::ops::RangeInclusive;
 use crate::{
     DbError,
     bloom_filter::BloomFilter,
-    btree::{BTree, BTreeIter},
+    btree::{BTree, BTreeIter, BTreeMetadata},
     file_system::FileId,
 };
 
@@ -17,11 +17,8 @@ use crate::mock::FileSystem;
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug)]
 pub struct Sst {
+    pub btree_metadata: BTreeMetadata,
     pub file_id: FileId,
-    pub nodes_offset: u64,
-    pub leafs_offset: u64,
-    #[cfg_attr(feature = "binary_search", expect(dead_code))]
-    pub tree_depth: u64,
     pub filter: BloomFilter,
 }
 
@@ -40,14 +37,17 @@ impl Sst {
     ) -> Result<Sst, DbError> {
         let key_values = key_values.into_iter();
 
-        let (nodes_offset, leafs_offset, tree_depth, filter) =
-            BTree::write(file_id, key_values, file_system)?;
+        let (btree_metadata, filter) = BTree::write(
+            file_id,
+            key_values,
+            n_entries_hint,
+            bits_per_entry,
+            file_system,
+        )?;
 
         Ok(Sst {
             file_id,
-            nodes_offset,
-            leafs_offset,
-            tree_depth,
+            btree_metadata,
             filter,
         })
     }
@@ -56,13 +56,11 @@ impl Sst {
      * find the file's SST and give it back
      * */
     pub fn open(file_id: FileId, file_system: &FileSystem) -> Result<Sst, DbError> {
-        let (nodes_offset, leafs_offset, tree_depth, filter) = BTree::open(file_id, file_system)?;
+        let (btree_metadata, filter) = BTree::open(file_id, file_system)?;
 
         Ok(Sst {
             file_id,
-            nodes_offset,
-            leafs_offset,
-            tree_depth,
+            btree_metadata,
             filter,
         })
     }
@@ -87,54 +85,40 @@ impl Sst {
 /* Tests for SSTs */
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
-
     use anyhow::Result;
 
     use crate::test_util::TestFs;
 
     use super::*;
 
-    struct TestPath {
-        path: PathBuf,
-    }
-
-    impl TestPath {
-        fn new(num: usize) -> FileId {
-            FileId {
-                lsm_level: 0,
-                sst_number: num,
-            }
-        }
-    }
-
-    impl Drop for TestPath {
-        fn drop(&mut self) {
-            _ = fs::remove_file(&self.path);
+    fn test_file_id(num: usize) -> FileId {
+        FileId {
+            lsm_level: 0,
+            sst_number: num,
         }
     }
 
     #[test]
     fn test_problematic_ssts() {
-        let mut fs = TestFs::new("/xyz/abc/file");
+        let mut fs = TestFs::new("/xyz/abc/");
 
-        let path = TestPath::new(0);
-        Sst::create(vec![], path, &mut fs).unwrap_err();
+        let path = test_file_id(0);
+        Sst::create(vec![], 1, 1, path, &mut fs).unwrap_err();
 
-        let mut fs = TestFs::new("./db/");
-        let path = TestPath::new(1);
-        _ = Sst::create(vec![], path, &mut fs);
-        Sst::create(vec![], path, &mut fs).unwrap_err();
+        let mut fs = TestFs::new("./db/1/");
+        let path = test_file_id(1);
+        _ = Sst::create(vec![], 1, 1, path, &mut fs);
+        Sst::create(vec![], 1, 1, path, &mut fs).unwrap_err();
     }
 
     /* Create an SST and then open it up to see if sane */
     #[test]
     fn test_create_open_sst() -> Result<()> {
-        let mut fs = TestFs::new("./db/");
+        let mut fs = TestFs::new("./db/2/");
 
-        let path = TestPath::new(2);
+        let path = test_file_id(2);
 
-        Sst::create(vec![], path, &mut fs)?;
+        Sst::create(vec![], 1, 1, path, &mut fs)?;
 
         assert!(matches!(Sst::open(path, &fs), Err(DbError::CorruptSst)));
 
@@ -144,9 +128,9 @@ mod tests {
     /* Write contents to SST and read them afterwards */
     #[test]
     fn test_read_write_to_sst() -> Result<()> {
-        let mut fs = TestFs::new("./db/");
+        let mut fs = TestFs::new("./db/3/");
 
-        let path = TestPath::new(3);
+        let path = test_file_id(3);
 
         Sst::create(
             [
@@ -161,6 +145,8 @@ mod tests {
             ]
             .into_iter()
             .map(Ok),
+            8,
+            8,
             path,
             &mut fs,
         )?;
@@ -182,9 +168,9 @@ mod tests {
 
     #[test]
     fn test_scan_sst() -> Result<()> {
-        let mut fs = TestFs::new("./db/");
+        let mut fs = TestFs::new("./db/4/");
 
-        let path = TestPath::new(4);
+        let path = test_file_id(4);
 
         Sst::create(
             [
@@ -199,6 +185,8 @@ mod tests {
             ]
             .into_iter()
             .map(Ok),
+            8,
+            8,
             path,
             &mut fs,
         )?;
@@ -222,16 +210,16 @@ mod tests {
      * */
     #[test]
     fn test_huge_test() -> Result<()> {
-        let mut fs = TestFs::new("./db/");
+        let mut fs = TestFs::new("./db/5/");
 
-        let path = TestPath::new(5);
+        let path = test_file_id(5);
 
         let mut test_vec = Vec::<(u64, u64)>::new();
         for i in 1..400_000 {
             test_vec.push((i, i));
         }
 
-        Sst::create(test_vec.into_iter().map(Ok), path, &mut fs)?;
+        Sst::create(test_vec.into_iter().map(Ok), 400_000, 8, path, &mut fs)?;
 
         let sst = Sst::open(path, &fs)?;
 
