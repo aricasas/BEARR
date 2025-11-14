@@ -10,6 +10,7 @@ libc = "0.2.176"
 bytemuck = { version = "1.24.0", features = ["alloc_uninit", "derive", "extern_crate_alloc", "min_const_generics", "zeroable_maybe_uninit"] }
 fastrand = "2.3.0"
 bit-vec = "0.8.0"
+csv = "1.4.0"
 
 [[bin]]
 name = "tests"

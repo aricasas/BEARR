@@ -10,7 +10,7 @@ use crate::{
     sst::Sst,
 };
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct LsmConfiguration {
     pub size_ratio: usize,
     pub memtable_capacity: usize,

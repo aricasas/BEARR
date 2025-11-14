@@ -119,40 +119,49 @@ impl FileSystem {
     ///
     /// Returns a reference to the bytes of the page, or an error.
     pub fn get(&self, page_id: PageId) -> Result<Arc<Aligned>, DbError> {
-        let mut inner = self.inner.lock().unwrap(); // If lock is poisoned, this is unrecoverable
-        let inner = inner.deref_mut();
+        let mut inner_lock = self.inner.lock().unwrap(); // If lock is poisoned, this is unrecoverable
+        let inner = inner_lock.deref_mut();
 
         if let Some(entry) = inner.buffer_pool.get(page_id) {
             inner.eviction_handler.touch(entry.eviction_id);
-            Ok(Arc::clone(&entry.page))
-        } else {
-            if cfg!(test) {
-                eprintln!("get {page_id:?}");
-            }
-            if inner.buffer_pool.len() == self.capacity {
-                if cfg!(test) {
-                    eprintln!("evict page");
-                }
-                inner.evict_page()?;
-            }
-
-            let PageId {
-                file_id,
-                page_number,
-            } = page_id;
-            let path = self.prefix.join(file_id.name());
-            let file = fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_DIRECT | libc::O_SYNC)
-                .open(path)?;
-            let mut page = Aligned::new();
-            let page_offset = page_number * PAGE_SIZE;
-            file.read_exact_at(page.inner_mut().unwrap(), page_offset as u64)?;
-
-            inner.add_new_page(Arc::clone(&page), page_id);
-
-            Ok(page)
+            return Ok(Arc::clone(&entry.page));
         }
+        drop(inner_lock);
+
+        if cfg!(test) {
+            eprintln!("get {page_id:?}");
+        }
+
+        let PageId {
+            file_id,
+            page_number,
+        } = page_id;
+        let path = self.prefix.join(file_id.name());
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECT | libc::O_SYNC)
+            .open(path)?;
+        let mut page = Aligned::new();
+        let page_offset = page_number * PAGE_SIZE;
+        file.read_exact_at(page.inner_mut().unwrap(), page_offset as u64)?;
+
+        let mut inner_lock = self.inner.lock().unwrap();
+        let inner = inner_lock.deref_mut();
+
+        if let Some(entry) = inner.buffer_pool.get(page_id) {
+            inner.eviction_handler.touch(entry.eviction_id);
+            return Ok(Arc::clone(&entry.page));
+        }
+
+        if inner.buffer_pool.len() == self.capacity {
+            if cfg!(test) {
+                eprintln!("evict page");
+            }
+            inner.evict_page()?;
+        }
+        inner.add_new_page(Arc::clone(&page), page_id);
+
+        Ok(page)
     }
 
     /// Writes pages to a file starting at an offset, indicated by the page ID.

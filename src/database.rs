@@ -25,7 +25,7 @@ pub struct Database {
 }
 
 /// Configuration options for a database
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct DbConfiguration {
     pub lsm_configuration: LsmConfiguration,
     pub buffer_pool_capacity: usize,
