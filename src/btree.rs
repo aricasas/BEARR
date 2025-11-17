@@ -282,6 +282,22 @@ impl BTree {
         // TODO: write bloom filter to file
         let (hashes, bits) = filter.clone().into_hashes_and_bits();
 
+        // Bloom filter write closure trait
+        let write_next_bloom_page = |page_bytes: &mut Aligned| {
+            let node: &mut Node = bytemuck::cast_mut(page_bytes);
+            node.length = 0;
+            let Some(page_iter) = btree_itter.next() else {
+                return Ok(false);
+            };
+            for (pair, k_v) in node.pairs.iter_mut().zip(page_iter.into_iter()) {
+                *pair = k_v.into();
+                node.length += 1;
+            }
+            node_count += 1; // TODO: should this add 1 unconditionally or only when node.length > 0?
+
+            Ok(node.length > 0)
+        };
+
         let file_size = 1 + nodes_offset - LEAF_OFFSET + node_count; //TODO: change this to include bloom filter
 
         let btree_metadata = BTreeMetadata {
