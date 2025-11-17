@@ -4,7 +4,7 @@ use crate::hash::HashFunction;
 
 #[derive(Debug, Clone)]
 pub struct BloomFilter {
-    hash_functions: Vec<HashFunction>,
+    pub hash_functions: Vec<HashFunction>,
     bits: BitVec, // this is from a crate, or implement your own if you want
 }
 
@@ -24,6 +24,24 @@ impl BloomFilter {
             hash_functions,
             bits,
         }
+    }
+
+    pub fn from_bytes(filter_bytes: &[u8], num_hashes: usize) -> Self {
+        let bits_offset = num_hashes * size_of::<HashFunction>();
+        let hash_functions: &[HashFunction] = bytemuck::cast_slice(&filter_bytes[0..bits_offset]);
+        let hash_functions = hash_functions.to_vec();
+        let bits = BitVec::from_bytes(&filter_bytes[bits_offset..]);
+        Self {
+            hash_functions,
+            bits,
+        }
+    }
+
+    pub fn turn_to_bytes(&self) -> Vec<u8> {
+        let hash_bytes = bytemuck::cast_slice(&self.hash_functions);
+        let mut hash_bytes = hash_bytes.to_vec();
+        hash_bytes.append(&mut self.bits.to_bytes());
+        hash_bytes
     }
 
     pub fn from_hashes_and_bits(hash_functions: Vec<HashFunction>, bits: Vec<u8>) -> Self {
