@@ -42,11 +42,27 @@ impl BloomFilter {
     }
 
     pub fn insert(&mut self, key: u64) {
-        // TODO
+        let bitmap_len = self.bits.len();
+        let hash_functions = &self.hash_functions;
+        for hashed_index in hash_functions
+            .iter()
+            .map(|func| func.hash_to_index(key, bitmap_len))
+        {
+            self.bits.set(hashed_index, true);
+        }
     }
 
     pub fn query(&self, key: u64) -> bool {
-        // TODO
+        let bitmap_len = self.bits.len();
+        for hashed_index in self
+            .hash_functions
+            .iter()
+            .map(|func| func.hash_to_index(key, bitmap_len))
+        {
+            if !self.bits.get(hashed_index).unwrap() {
+                return false;
+            }
+        }
         true
     }
 }
