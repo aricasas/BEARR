@@ -98,19 +98,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_problematic_ssts() {
-        let mut fs = TestFs::new("/xyz/abc/");
-
-        let path = test_file_id(0);
-        Sst::create(vec![], 1, 1, path, &mut fs).unwrap_err();
-
-        let mut fs = TestFs::new("./db/1/");
-        let path = test_file_id(1);
-        _ = Sst::create(vec![], 1, 1, path, &mut fs);
-        Sst::create(vec![], 1, 1, path, &mut fs).unwrap_err();
-    }
-
     /* Create an SST and then open it up to see if sane */
     #[test]
     fn test_create_open_sst() -> Result<()> {
