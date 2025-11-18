@@ -29,6 +29,7 @@ pub struct MergedIterator<I: Iterator<Item = Result<(u64, u64), DbError>>> {
     levels: Vec<I>,
     heap: BinaryHeap<cmp::Reverse<Entry>>,
     last_key: Option<u64>,
+    delete_tombstones: bool,
     ended: bool,
 }
 
@@ -57,8 +58,10 @@ impl<I: Iterator<Item = Result<(u64, u64), DbError>>> MergedIterator<I> {
     /// For a key with several iterators returning it, only the value of the iterator at the highest level is
     /// returned and the others are skipped.
     ///
+    /// TODO: explain delete_tombstones
+    ///
     /// `levels[0]`is the highest level and `levels[levels.len() - 1]` is the lowest level
-    pub fn new(mut levels: Vec<I>) -> Result<Self, DbError> {
+    pub fn new(mut levels: Vec<I>, delete_tombstones: bool) -> Result<Self, DbError> {
         let mut starting = Vec::new();
         starting.try_reserve_exact(levels.len())?;
 
@@ -75,6 +78,7 @@ impl<I: Iterator<Item = Result<(u64, u64), DbError>>> MergedIterator<I> {
             levels,
             heap,
             last_key: None,
+            delete_tombstones,
             ended,
         })
     }
@@ -129,6 +133,8 @@ impl<I: Iterator<Item = Result<(u64, u64), DbError>>> Iterator for MergedIterato
             };
 
             // Skip entries with keys we've seen at a higher level already
+
+            // TODO: check for tombstones when needed
             if self.last_key.is_none_or(|last_key| min.key > last_key) {
                 break;
             }
@@ -139,6 +145,7 @@ impl<I: Iterator<Item = Result<(u64, u64), DbError>>> Iterator for MergedIterato
     }
 }
 
+// TODO: add more tests
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,7 +153,7 @@ mod tests {
     #[test]
     fn test_merge_one() {
         let iter = (1u64..=5).map(|i| Ok((i, i)));
-        let mut merged = MergedIterator::new(vec![iter]).unwrap();
+        let mut merged = MergedIterator::new(vec![iter], false).unwrap();
 
         assert_eq!(merged.next(), Some(Ok((1, 1))));
         assert_eq!(merged.next(), Some(Ok((2, 2))));
@@ -160,7 +167,7 @@ mod tests {
         let x = Box::new((0u64..=3).map(|i| Ok((i, i)))) as Box<dyn Iterator<Item = _>>;
         let y = Box::new((2u64..=5).map(|i| Ok((i, i * 2)))) as Box<dyn Iterator<Item = _>>;
 
-        let mut merged = MergedIterator::new(vec![x, y]).unwrap();
+        let mut merged = MergedIterator::new(vec![x, y], false).unwrap();
         assert_eq!(merged.next(), Some(Ok((0, 0))));
         assert_eq!(merged.next(), Some(Ok((1, 1))));
         assert_eq!(merged.next(), Some(Ok((2, 2))));
@@ -172,7 +179,7 @@ mod tests {
         let x = Box::new((0u64..=3).map(|i| Ok((i, i)))) as Box<dyn Iterator<Item = _>>;
         let y = Box::new((2u64..=5).map(|i| Ok((i, i * 2)))) as Box<dyn Iterator<Item = _>>;
 
-        let mut merged = MergedIterator::new(vec![y, x]).unwrap();
+        let mut merged = MergedIterator::new(vec![y, x], false).unwrap();
         assert_eq!(merged.next(), Some(Ok((0, 0))));
         assert_eq!(merged.next(), Some(Ok((1, 1))));
         assert_eq!(merged.next(), Some(Ok((2, 4))));

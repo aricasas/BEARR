@@ -1,7 +1,10 @@
 use std::{
     fs,
+    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
 };
+
+use crate::file_system::FileSystem;
 
 pub struct TestPath {
     inner: PathBuf,
@@ -48,4 +51,40 @@ pub fn assert_panics(mut f: impl FnMut()) {
         }))
         .is_err()
     );
+}
+
+pub struct TestFs {
+    prefix: PathBuf,
+    fs: FileSystem,
+}
+impl TestFs {
+    pub fn new(prefix: impl AsRef<Path>) -> Self {
+        let _ = fs::create_dir_all(&prefix);
+        Self {
+            prefix: prefix.as_ref().to_owned(),
+            fs: FileSystem::new(prefix, 16, 1).unwrap(),
+        }
+    }
+}
+
+impl Deref for TestFs {
+    type Target = FileSystem;
+
+    fn deref(&self) -> &Self::Target {
+        &self.fs
+    }
+}
+
+impl DerefMut for TestFs {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.fs
+    }
+}
+
+impl Drop for TestFs {
+    fn drop(&mut self) {
+        if cfg!(feature = "delete_test_files") {
+            delete_path(&self.prefix);
+        }
+    }
 }

@@ -4,17 +4,20 @@ use std::{
     time::Instant,
 };
 
-use bearr::Database;
+use bearr::{Database, DbConfiguration, LsmConfiguration};
 
 const M: usize = 1024 * 1024;
 
 fn main() {
     _ = std::fs::remove_dir_all("poop_db");
 
-    let config = bearr::DbConfiguration {
-        memtable_capacity: 2 * M,
+    let config = DbConfiguration {
         buffer_pool_capacity: 16 * 1024,
         write_buffering: 32,
+        lsm_configuration: LsmConfiguration {
+            size_ratio: 2,
+            memtable_capacity: 2 * M,
+        },
     };
     let mut db = Database::create("poop_db", config).unwrap();
     let mut rng = fastrand::Rng::new();
@@ -35,6 +38,7 @@ fn main() {
 
     println!("{num_puts} puts completed, took {}ms", elapsed.as_millis());
     println!("Avg put took {}s", elapsed.as_secs_f64() / num_puts as f64);
+    println!();
 
     drop(db);
 
@@ -62,6 +66,7 @@ fn main() {
         "Single thread Avg per entry took {}s",
         elapsed.as_secs_f64() / n_entries as f64
     );
+    println!();
 
     drop(db);
 
@@ -83,6 +88,7 @@ fn main() {
 
     println!("{num_gets} gets completed, took {}ms", elapsed.as_millis());
     println!("Avg get took {}s", elapsed.as_secs_f64() / num_gets as f64);
+    println!();
 
     drop(db);
 
@@ -150,4 +156,8 @@ fn main() {
 
     thread_1.join().unwrap();
     thread_2.join().unwrap();
+
+    println!();
+
+    drop(db);
 }

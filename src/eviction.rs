@@ -1,7 +1,6 @@
-use std::path::PathBuf;
-
 use crate::{
     DbError,
+    file_system::PageId,
     hashtable::HashTable,
     list::{EntryId, List},
 };
@@ -32,9 +31,9 @@ pub enum EvictionId {
 /// A_out only stores whether we've recently evicted a page, but not the actual page contents, so it is
 /// not too much memory.
 pub struct Eviction {
-    a_in: List<(PathBuf, usize)>,
-    a_m: List<(PathBuf, usize)>,
-    a_out: List<(PathBuf, usize)>,
+    a_in: List<PageId>,
+    a_m: List<PageId>,
+    a_out: List<PageId>,
     map_out: HashTable<EntryId>,
     k_in: usize,
     k_out: usize,
@@ -72,13 +71,12 @@ impl Eviction {
                 if self.a_out.len() >= self.k_out {
                     // a_out and map_out can't be empty
                     let evicted_a_out = self.a_out.pop_front().unwrap();
-                    self.map_out.remove(evicted_a_out.0, evicted_a_out.1);
+                    self.map_out.remove(evicted_a_out);
                 }
 
                 let evicted_a_in = self.a_in.delete(id);
-                let a_out_id = self.a_out.push_back(evicted_a_in.clone());
-                self.map_out
-                    .insert(evicted_a_in.0, evicted_a_in.1, a_out_id);
+                let a_out_id = self.a_out.push_back(evicted_a_in);
+                self.map_out.insert(evicted_a_in, a_out_id);
             }
             EvictionId::AM(id) => {
                 self.a_m.delete(id);
@@ -88,15 +86,15 @@ impl Eviction {
 
     /// Inserts a new page into the eviction handler. Must be a page that hasn't been inserted before.
     /// Panics if inserting above capacity
-    pub fn insert_new(&mut self, path: PathBuf, page_number: usize) -> EvictionId {
-        if let Some(&idx_out) = self.map_out.get(&path, page_number) {
-            let page = self.a_out.delete(idx_out);
-            debug_assert_eq!((&page.0, page.1), (&path, page_number));
-            self.map_out.remove(path, page_number);
-            let id = self.a_m.push_back(page);
+    pub fn insert_new(&mut self, page_id: PageId) -> EvictionId {
+        if let Some(&idx_out) = self.map_out.get(page_id) {
+            let removed = self.a_out.delete(idx_out);
+            debug_assert_eq!(removed, page_id);
+            self.map_out.remove(page_id);
+            let id = self.a_m.push_back(page_id);
             EvictionId::AM(id)
         } else {
-            let id = self.a_in.push_back((path, page_number));
+            let id = self.a_in.push_back(page_id);
             EvictionId::AIn(id)
         }
     }
@@ -126,7 +124,7 @@ impl<'a> VictimChooser<'a> {
     }
 }
 impl<'a> Iterator for VictimChooser<'a> {
-    type Item = (EvictionId, &'a (PathBuf, usize));
+    type Item = (EvictionId, PageId);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.ended {
@@ -141,13 +139,13 @@ impl<'a> Iterator for VictimChooser<'a> {
                     || (!self.eviction.a_in.is_empty() && self.eviction.a_m.is_empty())
                 {
                     // At this point a_in can't be empty
-                    let (id, front) = self.eviction.a_in.front().unwrap();
+                    let (id, &front) = self.eviction.a_in.front().unwrap();
                     let eviction_id = EvictionId::AIn(id);
                     self.last_id = Some(eviction_id);
                     Some((eviction_id, front))
                 }
                 // Otherwise try evict from a_m
-                else if let Some((id, front)) = self.eviction.a_m.front() {
+                else if let Some((id, &front)) = self.eviction.a_m.front() {
                     let eviction_id = EvictionId::AM(id);
                     self.last_id = Some(eviction_id);
                     Some((eviction_id, front))
@@ -159,13 +157,13 @@ impl<'a> Iterator for VictimChooser<'a> {
             }
             Some(EvictionId::AIn(id)) => {
                 // They didn't want AIn(id) as the victim, choose next in a_in
-                if let Some((next_id, next_entry)) = self.eviction.a_in.get_next(id) {
+                if let Some((next_id, &next_entry)) = self.eviction.a_in.get_next(id) {
                     let eviction_id = EvictionId::AIn(next_id);
                     self.last_id = Some(eviction_id);
                     Some((eviction_id, next_entry))
                 }
                 // If done with a_in, switch to a_m
-                else if let Some((id, front)) = self.eviction.a_m.front() {
+                else if let Some((id, &front)) = self.eviction.a_m.front() {
                     let eviction_id = EvictionId::AM(id);
                     self.last_id = Some(eviction_id);
                     Some((eviction_id, front))
@@ -177,7 +175,7 @@ impl<'a> Iterator for VictimChooser<'a> {
             }
             Some(EvictionId::AM(id)) => {
                 // They didn't want AM(id) as the victim, choose next in a_m
-                if let Some((next_id, next_entry)) = self.eviction.a_m.get_next(id) {
+                if let Some((next_id, &next_entry)) = self.eviction.a_m.get_next(id) {
                     let eviction_id = EvictionId::AM(next_id);
                     self.last_id = Some(eviction_id);
                     Some((eviction_id, next_entry))
@@ -195,10 +193,16 @@ impl<'a> Iterator for VictimChooser<'a> {
 mod tests {
     use anyhow::Result;
 
+    use crate::file_system::FileId;
+
     use super::*;
 
-    fn make_page(id: usize) -> (PathBuf, usize) {
-        (PathBuf::from(format!("p{}", id)), id)
+    fn make_page(id: usize) -> PageId {
+        FileId {
+            lsm_level: 0,
+            sst_number: 0,
+        }
+        .page(id)
     }
 
     #[test]
@@ -206,12 +210,12 @@ mod tests {
         let mut ev = Eviction::new(8)?;
 
         // Insert several new pages to A_in
-        let (path, num) = make_page(1);
-        let p1 = ev.insert_new(path, num);
-        let (path, num) = make_page(2);
-        let p2 = ev.insert_new(path, num);
-        let (path, num) = make_page(3);
-        let p3 = ev.insert_new(path, num);
+        let page_id = make_page(1);
+        let p1 = ev.insert_new(page_id);
+        let page_id = make_page(2);
+        let p2 = ev.insert_new(page_id);
+        let page_id = make_page(3);
+        let p3 = ev.insert_new(page_id);
 
         assert!(matches!(p1, EvictionId::AIn(_)));
         assert!(matches!(p2, EvictionId::AIn(_)));
@@ -244,13 +248,13 @@ mod tests {
         let mut ev = Eviction::new(4)?;
 
         for i in 0..4 {
-            let (path, num) = make_page(i);
-            ev.insert_new(path, num);
+            let page_id = make_page(i);
+            ev.insert_new(page_id);
         }
 
         // Eviction from A_in
         let first_victim = ev.choose_victim().next().unwrap();
-        assert!(first_victim.1.1 == 0);
+        assert!(first_victim.1.page_number == 0);
         ev.evict(first_victim.0);
 
         // Should now appear in A_out
@@ -265,20 +269,20 @@ mod tests {
         let mut ev = Eviction::new(6)?;
 
         // Insert to A_in
-        let (path, num) = make_page(0);
-        ev.insert_new(path.clone(), num);
+        let page_id = make_page(0);
+        ev.insert_new(page_id);
 
         // Evict to A_out
         let victim = ev.choose_victim().next().unwrap();
 
-        assert_eq!(&(path.clone(), num), victim.1);
+        assert_eq!(page_id, victim.1);
         ev.evict(victim.0);
 
         // Now that page should be in A_out
-        assert!(ev.map_out.get(path.clone(), num).is_some());
+        assert!(ev.map_out.get(page_id).is_some());
 
         // Re-accessing should move it to A_m
-        let new_id = ev.insert_new(path.clone(), num);
+        let new_id = ev.insert_new(page_id);
         assert!(matches!(new_id, EvictionId::AM(_)));
         assert!(ev.a_m.len() == 1);
 
@@ -292,14 +296,14 @@ mod tests {
         let mut ids = Vec::new();
         for i in 0..3 {
             // Insert to A_in
-            let (path, num) = make_page(i);
-            let id = ev.insert_new(path.clone(), num);
+            let page_id = make_page(i);
+            let id = ev.insert_new(page_id);
 
             // Evict to A_out
             ev.evict(id);
 
             // Re insert to A_m
-            let id = ev.insert_new(path, num);
+            let id = ev.insert_new(page_id);
             ids.push(id);
         }
 
@@ -331,33 +335,33 @@ mod tests {
 
         // Insert 10 pages
         for i in 0..10 {
-            let (path, num) = make_page(i);
-            ev.insert_new(path, num);
+            let page_id = make_page(i);
+            ev.insert_new(page_id);
         }
 
         // Move 5 pages to A_m
         for i in 0..5 {
             let victim = ev.choose_victim().next().unwrap();
-            let (path, num) = victim.1.clone();
-            assert_eq!(num, i);
+            let page_id = victim.1;
+            assert_eq!(page_id.page_number, i);
 
             ev.evict(victim.0);
-            ev.insert_new(path, num);
+            ev.insert_new(page_id);
         }
 
         // Check eviction order matches FIFO/LRU expectations
         let mut chooser = ev.choose_victim();
 
-        assert!(matches!(chooser.next(), Some((EvictionId::AIn(_), p_n)) if p_n == &make_page(5)));
-        assert!(matches!(chooser.next(), Some((EvictionId::AIn(_), p_n)) if p_n == &make_page(6)));
-        assert!(matches!(chooser.next(), Some((EvictionId::AIn(_), p_n)) if p_n == &make_page(7)));
-        assert!(matches!(chooser.next(), Some((EvictionId::AIn(_), p_n)) if p_n == &make_page(8)));
-        assert!(matches!(chooser.next(), Some((EvictionId::AIn(_), p_n)) if p_n == &make_page(9)));
-        assert!(matches!(chooser.next(), Some((EvictionId::AM(_), p_n)) if p_n == &make_page(0)));
-        assert!(matches!(chooser.next(), Some((EvictionId::AM(_), p_n)) if p_n == &make_page(1)));
-        assert!(matches!(chooser.next(), Some((EvictionId::AM(_), p_n)) if p_n == &make_page(2)));
-        assert!(matches!(chooser.next(), Some((EvictionId::AM(_), p_n)) if p_n == &make_page(3)));
-        assert!(matches!(chooser.next(), Some((EvictionId::AM(_), p_n)) if p_n == &make_page(4)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AIn(_), p_n)) if p_n == make_page(5)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AIn(_), p_n)) if p_n == make_page(6)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AIn(_), p_n)) if p_n == make_page(7)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AIn(_), p_n)) if p_n == make_page(8)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AIn(_), p_n)) if p_n == make_page(9)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AM(_), p_n)) if p_n == make_page(0)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AM(_), p_n)) if p_n == make_page(1)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AM(_), p_n)) if p_n == make_page(2)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AM(_), p_n)) if p_n == make_page(3)));
+        assert!(matches!(chooser.next(), Some((EvictionId::AM(_), p_n)) if p_n == make_page(4)));
         assert!(chooser.next().is_none());
         assert!(chooser.next().is_none());
 
@@ -371,8 +375,8 @@ mod tests {
 
         // Fill beyond A_out capacity
         for i in 0..(k_out + 3) {
-            let (path, num) = make_page(i);
-            ev.insert_new(path, num);
+            let page_id = make_page(i);
+            ev.insert_new(page_id);
             let victim = ev.choose_victim().next().unwrap();
             ev.evict(victim.0);
         }

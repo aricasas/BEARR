@@ -7,6 +7,7 @@ pub enum DbError {
     IoError(String),
     InvalidConfiguration,
     CorruptSst,
+    InvalidValue,
 }
 
 impl Display for DbError {
@@ -17,6 +18,7 @@ impl Display for DbError {
             DbError::IoError(s) => write!(f, "(I/O) {s}"),
             DbError::InvalidConfiguration => write!(f, "invalid database configuration"),
             DbError::CorruptSst => write!(f, "Corrupt SST file"),
+            DbError::InvalidValue => write!(f, "invalid value (cannot use u64::MAX)"),
         }
     }
 }

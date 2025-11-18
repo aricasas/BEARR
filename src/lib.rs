@@ -1,10 +1,13 @@
+mod bloom_filter;
 mod btree;
 mod database;
 mod error;
 mod eviction;
 mod file_system;
+mod hash;
 mod hashtable;
 mod list;
+mod lsm;
 mod memtable;
 mod merge;
 mod sst;
@@ -17,5 +20,6 @@ mod mock;
 
 pub use database::{Database, DbConfiguration};
 pub use error::DbError;
+pub use lsm::LsmConfiguration;
 
 const PAGE_SIZE: usize = 4096;

@@ -61,6 +61,7 @@ name = "bearr"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bit-vec",
  "bytemuck",
  "fastrand",
  "libc",

@@ -1,9 +1,11 @@
-use std::{
-    ops::RangeInclusive,
-    path::{Path, PathBuf},
-};
+use std::ops::RangeInclusive;
 
-use crate::{DbError, btree::BTree, btree::BTreeIter};
+use crate::{
+    DbError,
+    bloom_filter::BloomFilter,
+    btree::{BTree, BTreeIter, BTreeMetadata},
+    file_system::FileId,
+};
 
 #[cfg(not(feature = "mock"))]
 use crate::file_system::FileSystem;
@@ -15,55 +17,59 @@ use crate::mock::FileSystem;
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug)]
 pub struct Sst {
-    pub path: PathBuf,
-    pub nodes_offset: u64,
-    pub leafs_offset: u64,
-    #[cfg_attr(feature = "binary_search", expect(dead_code))]
-    pub tree_depth: u64,
+    pub btree_metadata: BTreeMetadata,
+    pub file_id: FileId,
+    pub filter: BloomFilter,
 }
 
 impl Sst {
     /*
      * Create an SST table to store contents on disk
+     *
+     * `n_entries_hint` is an upper bound
      * */
     pub fn create(
         key_values: impl IntoIterator<Item = Result<(u64, u64), DbError>>,
-        path: impl AsRef<Path>,
+        n_entries_hint: usize,
+        bits_per_entry: usize,
+        file_id: FileId,
         file_system: &mut FileSystem,
     ) -> Result<Sst, DbError> {
-        let path = path.as_ref();
-
-        if path.try_exists()? {
-            return Err(DbError::IoError("Path already exists".into()));
-        }
-
         let key_values = key_values.into_iter();
 
-        let (nodes_offset, leafs_offset, tree_depth) = BTree::write(path, key_values, file_system)?;
+        let (btree_metadata, filter) = BTree::write(
+            file_id,
+            key_values,
+            n_entries_hint,
+            bits_per_entry,
+            file_system,
+        )?;
 
         Ok(Sst {
-            path: path.to_owned(),
-            nodes_offset,
-            leafs_offset,
-            tree_depth,
+            file_id,
+            btree_metadata,
+            filter,
         })
     }
 
     /* Open the file and add it to opened files
      * find the file's SST and give it back
      * */
-    pub fn open(path: impl AsRef<Path>, file_system: &FileSystem) -> Result<Sst, DbError> {
-        let (nodes_offset, leafs_offset, tree_depth) = BTree::open(&path, file_system)?;
+    pub fn open(file_id: FileId, file_system: &FileSystem) -> Result<Sst, DbError> {
+        let (btree_metadata, filter) = BTree::open(file_id, file_system)?;
 
         Ok(Sst {
-            path: path.as_ref().to_owned(),
-            nodes_offset,
-            leafs_offset,
-            tree_depth,
+            file_id,
+            btree_metadata,
+            filter,
         })
     }
 
     pub fn get(&self, key: u64, file_system: &FileSystem) -> Result<Option<u64>, DbError> {
+        if !self.filter.query(key) {
+            return Ok(None);
+        }
+
         BTree::get(self, key, file_system)
     }
 
@@ -79,59 +85,29 @@ impl Sst {
 /* Tests for SSTs */
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
-
     use anyhow::Result;
+
+    use crate::test_util::TestFs;
 
     use super::*;
 
-    struct TestPath {
-        path: PathBuf,
-    }
-
-    impl TestPath {
-        fn new(path: impl AsRef<Path>) -> Self {
-            Self {
-                path: path.as_ref().to_path_buf(),
-            }
+    fn test_file_id(num: usize) -> FileId {
+        FileId {
+            lsm_level: 0,
+            sst_number: num,
         }
-    }
-
-    impl AsRef<Path> for TestPath {
-        fn as_ref(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for TestPath {
-        fn drop(&mut self) {
-            _ = fs::remove_file(&self.path);
-        }
-    }
-
-    #[test]
-    fn test_problematic_ssts() {
-        let path = &TestPath::new("/xyz/abc/file");
-        Sst::create(vec![], path, &mut Default::default()).unwrap_err();
-
-        let path = &TestPath::new("./db/SST_Duplicate");
-        _ = Sst::create(vec![], path, &mut Default::default());
-        Sst::create(vec![], path, &mut Default::default()).unwrap_err();
     }
 
     /* Create an SST and then open it up to see if sane */
     #[test]
     fn test_create_open_sst() -> Result<()> {
-        let file_name = "./db/SST_Test_Create_Open";
-        let path = &TestPath::new(file_name);
-        let mut file_system = FileSystem::new(1, 1)?;
+        let mut fs = TestFs::new("./db/2/");
 
-        Sst::create(vec![], path, &mut file_system)?;
+        let path = test_file_id(2);
 
-        assert!(matches!(
-            Sst::open(path, &file_system),
-            Err(DbError::CorruptSst)
-        ));
+        Sst::create(vec![], 1, 1, path, &mut fs)?;
+
+        assert!(matches!(Sst::open(path, &fs), Err(DbError::CorruptSst)));
 
         Ok(())
     }
@@ -139,8 +115,9 @@ mod tests {
     /* Write contents to SST and read them afterwards */
     #[test]
     fn test_read_write_to_sst() -> Result<()> {
-        let file_name = "./db/SST_Test_Read_Write";
-        let path = &TestPath::new(file_name);
+        let mut fs = TestFs::new("./db/3/");
+
+        let path = test_file_id(3);
 
         Sst::create(
             [
@@ -155,19 +132,20 @@ mod tests {
             ]
             .into_iter()
             .map(Ok),
+            8,
+            8,
             path,
-            &mut Default::default(),
+            &mut fs,
         )?;
 
-        let file_system = FileSystem::default();
-        let sst = Sst::open(path, &file_system)?;
+        let sst = Sst::open(path, &fs)?;
 
-        let scan = sst.scan(11..=12, &file_system)?;
+        let scan = sst.scan(11..=12, &fs)?;
         println!("{} {}", scan.page_number, scan.item_number);
         assert_eq!(scan.page_number, 1);
         assert_eq!(scan.item_number, 5);
 
-        let scan = sst.scan(2..=12, &file_system)?;
+        let scan = sst.scan(2..=12, &fs)?;
         println!("{} {}", scan.page_number, scan.item_number);
         assert_eq!(scan.page_number, 1);
         assert_eq!(scan.item_number, 1);
@@ -177,8 +155,9 @@ mod tests {
 
     #[test]
     fn test_scan_sst() -> Result<()> {
-        let file_name = "./db/SST_Test_Scan";
-        let path = &TestPath::new(file_name);
+        let mut fs = TestFs::new("./db/4/");
+
+        let path = test_file_id(4);
 
         Sst::create(
             [
@@ -193,14 +172,15 @@ mod tests {
             ]
             .into_iter()
             .map(Ok),
+            8,
+            8,
             path,
-            &mut Default::default(),
+            &mut fs,
         )?;
 
-        let file_system = FileSystem::default();
-        let sst = Sst::open(path, &file_system)?;
+        let sst = Sst::open(path, &fs)?;
 
-        let mut scan = sst.scan(2..=12, &file_system)?;
+        let mut scan = sst.scan(2..=12, &fs)?;
         assert_eq!(scan.next().unwrap()?, (3, 4));
         assert_eq!(scan.next().unwrap()?, (5, 6));
         assert_eq!(scan.next().unwrap()?, (7, 8));
@@ -217,27 +197,26 @@ mod tests {
      * */
     #[test]
     fn test_huge_test() -> Result<()> {
-        let file_name = "./db/SST_Test_Huge";
-        let path = &TestPath::new(file_name);
+        let mut fs = TestFs::new("./db/5/");
+
+        let path = test_file_id(5);
 
         let mut test_vec = Vec::<(u64, u64)>::new();
         for i in 1..400_000 {
             test_vec.push((i, i));
         }
 
-        let mut file_system = FileSystem::default();
-        Sst::create(test_vec.into_iter().map(Ok), path, &mut file_system)?;
+        Sst::create(test_vec.into_iter().map(Ok), 400_000, 8, path, &mut fs)?;
 
-        let sst = Sst::open(path, &file_system)?;
+        let sst = Sst::open(path, &fs)?;
 
         // let file_size = sst.num_pages * PAGE_SIZE;
         // println!("Current File Size : {}", file_size);
 
         let range_start = 1;
         let range_end = 4000;
-        let file_system = FileSystem::default();
 
-        let mut scan = sst.scan(range_start..=range_end, &file_system)?;
+        let mut scan = sst.scan(range_start..=range_end, &fs)?;
 
         let mut page_number = 0;
         for i in range_start..range_end {
