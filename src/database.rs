@@ -144,7 +144,13 @@ impl Database {
         self.lsm.put(key, value, &mut self.file_system)
     }
 
-    /// TODO: Documentation
+    /// Removes the key-value pair with given key from the database, if one exists.
+    ///
+    /// Has no effect on the set of key-value pairs in the database
+    /// if the pair with the given key does not exist,
+    /// but may affect how the data is internally stored.
+    ///
+    /// Returns an error if deletion fails.
     pub fn delete(&mut self, key: u64) -> Result<(), DbError> {
         self.lsm.delete(key, &mut self.file_system)
     }
@@ -224,6 +230,7 @@ mod tests {
                 lsm_configuration: LsmConfiguration {
                     size_ratio: 2,
                     memtable_capacity: 3,
+                    bloom_filter_bits: 1,
                 },
             },
         )?;
@@ -282,6 +289,7 @@ mod tests {
                     lsm_configuration: LsmConfiguration {
                         size_ratio: 2,
                         memtable_capacity: 10,
+                        bloom_filter_bits: 2,
                     },
                 },
             )?;

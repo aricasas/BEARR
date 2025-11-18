@@ -204,7 +204,7 @@ impl BTree {
         mut pairs: impl Iterator<Item = Result<(u64, u64), DbError>>,
         n_entries_hint: usize,
         bits_per_entry: usize,
-        file_system: &mut FileSystem,
+        file_system: &FileSystem,
     ) -> Result<(BTreeMetadata, BloomFilter), DbError> {
         let mut nodes_offset: u64;
         let mut largest_keys: Vec<u64> = Vec::new();

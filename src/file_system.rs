@@ -1,5 +1,6 @@
 use std::{
     fs,
+    num::NonZeroUsize,
     ops::DerefMut,
     os::unix::fs::{FileExt, OpenOptionsExt},
     path::{Path, PathBuf},
@@ -45,6 +46,19 @@ pub struct PageId {
     pub page_number: usize,
 }
 
+#[repr(C)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
+/// An identifier for a version of a file in the buffer pool.
+pub struct BufferFileId(pub usize);
+
+#[repr(C)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
+/// Information that identifies a page in the buffer pool.
+pub struct BufferPageId {
+    pub file_id: BufferFileId,
+    pub page_number: usize,
+}
+
 impl FileId {
     /// Returns the filename for the corresponding file of this ID.
     pub fn name(self) -> String {
@@ -76,8 +90,14 @@ pub struct FileSystem {
 }
 
 struct InnerFs {
-    buffer_pool: HashTable<BufferPoolEntry>,
+    buffer_pool: HashTable<BufferPageId, BufferPoolEntry>,
     eviction_handler: Eviction,
+    file_map: FileMap,
+}
+
+struct FileMap {
+    map: Vec<Vec<Option<NonZeroUsize>>>,
+    counter: NonZeroUsize,
 }
 
 struct BufferPoolEntry {
@@ -102,6 +122,7 @@ impl FileSystem {
         let inner = InnerFs {
             buffer_pool,
             eviction_handler,
+            file_map: FileMap::new(),
         };
 
         Ok(Self {
@@ -110,6 +131,10 @@ impl FileSystem {
             capacity,
             write_buffering,
         })
+    }
+
+    fn path(&self, file_id: FileId) -> PathBuf {
+        self.prefix.join(file_id.name())
     }
 
     /// Gets the page with the given ID.
@@ -122,7 +147,7 @@ impl FileSystem {
         let mut inner = self.inner.lock().unwrap(); // If lock is poisoned, this is unrecoverable
         let inner = inner.deref_mut();
 
-        if let Some(entry) = inner.buffer_pool.get(page_id) {
+        if let Some(entry) = inner.buffer_pool.get(inner.file_map.lookup_page(page_id)) {
             inner.eviction_handler.touch(entry.eviction_id);
             Ok(Arc::clone(&entry.page))
         } else {
@@ -140,7 +165,7 @@ impl FileSystem {
                 file_id,
                 page_number,
             } = page_id;
-            let path = self.prefix.join(file_id.name());
+            let path = self.path(file_id);
             let file = fs::OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_DIRECT | libc::O_SYNC)
@@ -168,7 +193,7 @@ impl FileSystem {
     /// Returns an error if `next_page` has an error, or if there is some I/O error.
     /// Otherwise, returns the number of pages written by `next_page`.
     pub fn write_file(
-        &mut self,
+        &self,
         starting_page_id: PageId,
         // Closure that writes out the next page and returns whether it wrote something (false if done)
         mut next_page: impl FnMut(&mut Aligned) -> Result<bool, DbError>,
@@ -177,13 +202,15 @@ impl FileSystem {
             file_id,
             page_number: starting_page_number,
         } = starting_page_id;
-        let path = self.prefix.join(file_id.name());
+        let path = self.path(file_id);
 
         let file = fs::OpenOptions::new()
             .create(true)
             .write(true)
             .custom_flags(libc::O_DIRECT | libc::O_SYNC)
             .open(&path)?;
+
+        self.inner.lock().unwrap().file_map.remap_file(file_id);
 
         let mut buffer: Vec<Aligned> = bytemuck::allocation::zeroed_vec(self.write_buffering);
         let mut page_number_unwritten = starting_page_number;
@@ -222,13 +249,49 @@ impl FileSystem {
     /// Panics if the file doesn't exist.
     ///
     /// Returns `DbError::IoError` if there is an I/O error.
-    pub fn delete_file(&mut self, file_id: FileId) -> Result<(), DbError> {
-        todo!()
+    pub fn delete_file(&self, file_id: FileId) -> Result<(), DbError> {
+        let path = self.path(file_id);
+
+        if !path.try_exists()? {
+            panic!("Cannot delete non-existent file: {file_id:?}");
+        }
+
+        self.inner.lock().unwrap().file_map.unmap_file(file_id);
+
+        fs::remove_file(path)?;
+
+        Ok(())
+    }
+
+    /// Changes the file with the given old ID to have the given new ID instead.
+    ///
+    /// Panics if a file with the old ID doesn't exist,
+    /// or if a file with the new ID does exist.
+    ///
+    /// Returns `DbError::IoError` if there is an I/O error.
+    pub fn rename_file(&self, old_file_id: FileId, new_file_id: FileId) -> Result<(), DbError> {
+        let old_path = self.path(old_file_id);
+        let new_path = self.path(new_file_id);
+
+        if !old_path.try_exists()? {
+            panic!("Cannot rename non-existent file: {old_file_id:?}");
+        }
+        if new_path.try_exists()? {
+            panic!("Cannot rename to existing file: {new_file_id:?}");
+        }
+
+        fs::rename(old_path, new_path)?;
+
+        let file_map = &mut self.inner.lock().unwrap().file_map;
+        file_map.unmap_file(old_file_id);
+        file_map.remap_file(new_file_id);
+
+        Ok(())
     }
 }
 
 impl InnerFs {
-    fn evict_page(&mut self) -> Result<(), DbError> {
+    pub fn evict_page(&mut self) -> Result<(), DbError> {
         let chooser = self.eviction_handler.choose_victim();
         for (victim, page_id) in chooser {
             let page = &self.buffer_pool.get(page_id).unwrap().page;
@@ -241,120 +304,127 @@ impl InnerFs {
         Err(DbError::Oom)
     }
 
-    fn add_new_page(&mut self, page: Arc<Aligned>, page_id: PageId) {
+    pub fn add_new_page(&mut self, page: Arc<Aligned>, page_id: PageId) {
+        let page_id = self.file_map.lookup_page(page_id);
         let eviction_id = self.eviction_handler.insert_new(page_id);
         let entry = BufferPoolEntry { eviction_id, page };
         self.buffer_pool.insert(page_id, entry);
     }
 }
 
+impl FileMap {
+    pub fn new() -> Self {
+        Self {
+            map: Vec::new(),
+            counter: NonZeroUsize::MIN,
+        }
+    }
+
+    fn access(
+        &mut self,
+        file_id: FileId,
+    ) -> (&mut Option<NonZeroUsize>, impl FnOnce() -> NonZeroUsize) {
+        let Self { map, counter } = self;
+        let FileId {
+            lsm_level,
+            sst_number,
+        } = file_id;
+        while !(0..map.len()).contains(&lsm_level) {
+            map.push(Vec::new());
+        }
+        let level = map.get_mut(lsm_level).unwrap();
+        while !(0..level.len()).contains(&sst_number) {
+            level.push(None);
+        }
+        let id = level.get_mut(sst_number).unwrap();
+        let next = || {
+            *counter = counter.checked_add(1).unwrap();
+            *counter
+        };
+        (id, next)
+    }
+
+    fn lookup_file(&mut self, file_id: FileId) -> BufferFileId {
+        let (id, next) = self.access(file_id);
+        let id = id.get_or_insert_with(next);
+        BufferFileId(id.get())
+    }
+
+    pub fn lookup_page(&mut self, page_id: PageId) -> BufferPageId {
+        let PageId {
+            file_id,
+            page_number,
+        } = page_id;
+        BufferPageId {
+            file_id: self.lookup_file(file_id),
+            page_number,
+        }
+    }
+
+    pub fn remap_file(&mut self, file_id: FileId) {
+        let (id, next) = self.access(file_id);
+        *id = Some(next());
+    }
+
+    pub fn unmap_file(&mut self, file_id: FileId) {
+        let (id, _) = self.access(file_id);
+        *id = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    // TODO: redo
+    use anyhow::Result;
 
-    // use anyhow::Result;
-    //
-    // use crate::test_util::TestPath;
-    //
-    // use super::*;
-    //
-    // fn test_path(name: &str) -> TestPath {
-    //     TestPath::new("file_system", name)
-    // }
-    //
-    // fn write_string(
-    //     fs: &mut FileSystem,
-    //     path: &TestPath,
-    //     starting_page_number: usize,
-    //     s: &str,
-    // ) -> Result<()> {
-    //     let mut bytes = s.bytes();
-    //     assert_eq!(
-    //         fs.write_file(path, starting_page_number, |out| {
-    //             Ok(bytes.next().map(|c| out.0.fill(c)).is_some())
-    //         })?,
-    //         s.len()
-    //     );
-    //     Ok(())
-    // }
-    //
-    // fn assert_page_contents(
-    //     fs: &FileSystem,
-    //     path: &TestPath,
-    //     starting_page_number: usize,
-    //     s: &str,
-    // ) -> Result<()> {
-    //     let bytes = s.bytes();
-    //     for (page_number, a) in (starting_page_number..).zip(bytes) {
-    //         let page = fs.get(path, page_number)?;
-    //         for &b in &page.0 {
-    //             assert_eq!(a, b);
-    //         }
-    //     }
-    //     Ok(())
-    // }
-    //
-    // #[test]
-    // fn test_basic() -> Result<()> {
-    //     let path = &test_path("monad");
-    //     let mut fs = FileSystem::new(8, 4)?;
-    //
-    //     write_string(
-    //         &mut fs,
-    //         path,
-    //         "a monad ".len(),
-    //         "is a ?????? in the category of ",
-    //     )?;
-    //     write_string(&mut fs, path, "".len(), "a monad ")?;
-    //     write_string(&mut fs, path, "a monad is a ".len(), "monoid")?;
-    //
-    //     for _ in 0..3 {
-    //         assert_page_contents(&fs, path, "a ".len(), "monad")?;
-    //     }
-    //     for _ in 0..3 {
-    //         assert_page_contents(&fs, path, "a monad is a ".len(), "monoid")?;
-    //     }
-    //
-    //     write_string(
-    //         &mut fs,
-    //         path,
-    //         "a monad is a monoid in the category of ".len(),
-    //         "endofunctors",
-    //     )?;
-    //
-    //     for _ in 0..3 {
-    //         assert_page_contents(
-    //             &fs,
-    //             path,
-    //             "a monad is a monoid in the category of endo".len(),
-    //             "functor",
-    //         )?;
-    //     }
-    //
-    //     Ok(())
-    // }
-    //
-    // #[test]
-    // fn test_multiple_files() -> Result<()> {
-    //     let mut fs = FileSystem::new(2, 1)?;
-    //
-    //     let a = &test_path("multi-a");
-    //     let b = &test_path("multi-b");
-    //     let c = &test_path("multi-c");
-    //
-    //     write_string(&mut fs, a, 0, "a")?;
-    //     write_string(&mut fs, b, 0, "b")?;
-    //     write_string(&mut fs, c, 0, "c")?;
-    //
-    //     assert_page_contents(&fs, a, 0, "a")?;
-    //     assert_page_contents(&fs, b, 0, "b")?;
-    //     assert_page_contents(&fs, c, 0, "c")?;
-    //     assert_page_contents(&fs, b, 0, "b")?;
-    //     assert_page_contents(&fs, a, 0, "a")?;
-    //     assert_page_contents(&fs, c, 0, "c")?;
-    //     assert_page_contents(&fs, a, 0, "a")?;
-    //     assert_page_contents(&fs, b, 0, "b")?;
-    //
-    //     Ok(())
-    // }
+    use crate::test_util::TestPath;
+
+    use super::*;
+
+    fn test_path(name: &str) -> TestPath {
+        TestPath::new("file_system", name)
+    }
+
+    fn page_id(lsm_level: usize, sst_number: usize, page_number: usize) -> PageId {
+        FileId {
+            lsm_level,
+            sst_number,
+        }
+        .page(page_number)
+    }
+
+    fn write_string(fs: &FileSystem, starting_page_id: PageId, s: &str) -> Result<()> {
+        let mut bytes = s.bytes();
+        assert_eq!(
+            fs.write_file(starting_page_id, |out| {
+                Ok(bytes.next().map(|c| out.0.fill(c)).is_some())
+            })?,
+            s.len()
+        );
+        Ok(())
+    }
+
+    fn assert_page_contents(fs: &FileSystem, starting_page_id: PageId, s: &str) -> Result<()> {
+        let PageId {
+            file_id,
+            page_number: starting_page_number,
+        } = starting_page_id;
+        let bytes = s.bytes();
+        for (page_number, a) in (starting_page_number..).zip(bytes) {
+            let page = fs.get(file_id.page(page_number))?;
+            for &b in &page.0 {
+                assert_eq!(a, b);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_basic() -> Result<()> {
+        let path = &test_path("monad");
+        let mut fs = FileSystem::new(path, 8, 4)?;
+
+        // TODO
+
+        Ok(())
+    }
 }

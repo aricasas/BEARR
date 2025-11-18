@@ -76,7 +76,7 @@ use murmur3_32 as hash;
 
 #[cfg(feature = "mock_hash")]
 fn hash(key: &[u8], _seed: u32) -> u32 {
-    usize::from_ne_bytes(key[..std::mem::size_of::<usize>()].try_into().unwrap()) as u32
+    usize::from_ne_bytes(key[8..16].try_into().unwrap()) as u32
 }
 
 #[cfg(test)]
@@ -99,25 +99,22 @@ mod tests {
         assert_eq!(murmur3_32(key.as_bytes(), seed), expected);
     }
 
+    fn murmur_hash_to_index(key: &str, length: usize, seed: u32) -> usize {
+        murmur3_32(key.as_bytes(), seed) as usize % length
+    }
+
     #[test]
     fn test_hash_function() {
-        // TODO
+        assert!((0..16).contains(&murmur_hash_to_index("monad", 16, 314)));
 
-        // assert!((0..16).contains(&murmur_hash_to_index("monad", 2, 16, 314)));
-        //
-        // assert_ne!(
-        //     murmur_hash_to_index("monad", 2, 32, 159),
-        //     murmur_hash_to_index("monoid", 2, 32, 159),
-        // );
-        //
-        // assert_ne!(
-        //     murmur_hash_to_index("monad", 3, 48, 265),
-        //     murmur_hash_to_index("monad", 5, 48, 265),
-        // );
-        //
-        // assert_ne!(
-        //     murmur_hash_to_index("monad", 7, 64, 358),
-        //     murmur_hash_to_index("monad", 7, 64, 979),
-        // );
+        assert_ne!(
+            murmur_hash_to_index("monad", 32, 159),
+            murmur_hash_to_index("monoid", 32, 159),
+        );
+
+        assert_ne!(
+            murmur_hash_to_index("monad", 64, 265),
+            murmur_hash_to_index("monad", 64, 358),
+        );
     }
 }

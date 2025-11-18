@@ -17,6 +17,7 @@ fn main() {
         lsm_configuration: LsmConfiguration {
             size_ratio: 2,
             memtable_capacity: 2 * M,
+            bloom_filter_bits: 8,
         },
     };
     let mut db = Database::create("poop_db", config).unwrap();
