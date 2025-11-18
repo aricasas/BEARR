@@ -46,9 +46,9 @@ pub struct BTreeMetadata {
     pub leafs_offset: u64,
     pub nodes_offset: u64,
     pub bloom_offset: u64,
-    pub tree_depth: u64,
-    pub size: u64,
-    pub bloom_size: u64,
+    pub tree_depth: u64, // Number of layers in the internal nodes
+    pub size: u64,       // Entire file size in pages
+    pub bloom_size: u64, // Bloom filter(including hash functions and bitmap) size in bytes
     pub num_hashes: u64,
     pub n_entries: u64,
 }
@@ -290,7 +290,7 @@ impl BTree {
         // Bloom filter write closure trait
         let write_next_bloom_page = |page_bytes: &mut Aligned| {
             let mut page_length: u64 = 0;
-            for (dest, src) in (&mut page_bytes.0).into_iter().zip(&mut bloom_bytes_iter) {
+            for (dest, src) in page_bytes.0.iter_mut().zip(&mut bloom_bytes_iter) {
                 *dest = src;
                 page_length += 1;
             }
@@ -298,10 +298,8 @@ impl BTree {
             Ok(page_length > 0)
         };
 
-        let _bloom_written = file_system
-            .write_file(file_id.page(bloom_offset as usize), write_next_bloom_page)?
-            as u64;
-        let file_size = bloom_offset + bloom_size; //TODO: change this to include bloom filter
+        file_system.write_file(file_id.page(bloom_offset as usize), write_next_bloom_page)?;
+        let file_size = bloom_offset + bloom_size;
 
         let btree_metadata = BTreeMetadata {
             magic: BEAR_MAGIC,
@@ -323,8 +321,8 @@ impl BTree {
 
             Ok(write_metadata == 1)
         };
-        let _metadata_pages =
-            file_system.write_file(file_id.page(METADATA_OFFSET as usize), write_metadata)? as u64;
+
+        file_system.write_file(file_id.page(METADATA_OFFSET as usize), write_metadata)?;
 
         Ok((btree_metadata, filter))
     }
@@ -353,19 +351,16 @@ impl BTree {
         let mut bloom_vec: Vec<u8> = vec![];
         for page in 0..bloom_pages_num {
             let bloom_page = file_system.get(file_id.page((bloom_offset + page) as usize))?;
-            let mut end;
-            if page == bloom_pages_num - 1 {
-                end = (bloom_size % (PAGE_SIZE as u64)) as usize;
+            let end = if page == bloom_pages_num - 1 {
+                (bloom_size % (PAGE_SIZE as u64)) as usize
             } else {
-                end = 4096;
-            }
+                PAGE_SIZE
+            };
 
             bloom_vec.extend_from_slice(&bloom_page.0[0..end]);
         }
 
         let filter = BloomFilter::from_bytes(&bloom_vec, num_hashes as usize);
-        // TODO read bloom filter from file and use
-        // let filter = BloomFilter::from_hashes_and_bits(todo!(), todo!());
 
         Ok((metadata, filter))
     }
