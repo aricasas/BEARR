@@ -1,9 +1,9 @@
 mod bloom_filter;
-mod btree;
+pub mod btree;
 mod database;
 mod error;
 mod eviction;
-mod file_system;
+pub mod file_system;
 mod hash;
 mod hashtable;
 mod list;

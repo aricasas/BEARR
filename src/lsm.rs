@@ -10,7 +10,7 @@ use crate::{
     sst::Sst,
 };
 
-#[derive(Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub struct LsmConfiguration {
     pub size_ratio: usize,
     pub memtable_capacity: usize,
@@ -28,7 +28,7 @@ impl LsmConfiguration {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct LsmMetadata {
     pub ssts_per_level: Vec<usize>,
     pub bottom_leveling: usize,
@@ -196,6 +196,7 @@ impl LsmTree {
 
         if self.levels.is_empty() {
             self.levels.push(Vec::new());
+            self.bottom_leveling = 1;
         }
 
         let mem_table_size = self.memtable.size();

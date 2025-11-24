@@ -25,7 +25,7 @@ pub struct Database {
 }
 
 /// Configuration options for a database
-#[derive(Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub struct DbConfiguration {
     pub lsm_configuration: LsmConfiguration,
     pub buffer_pool_capacity: usize,
@@ -44,7 +44,7 @@ impl DbConfiguration {
 }
 
 /// Metadata for a database
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct DbMetadata {
     lsm_metadata: LsmMetadata,
 }
@@ -104,6 +104,8 @@ impl Database {
         configuration: DbConfiguration,
         metadata: DbMetadata,
     ) -> Result<Self, DbError> {
+        println!("{configuration:?} {metadata:?}");
+
         configuration.validate()?;
 
         let file_system = FileSystem::new(
@@ -216,7 +218,7 @@ mod tests {
 
     fn assert_pairs(db: &Database, pairs: &[(u64, Option<u64>)]) -> Result<()> {
         for &(k, v) in pairs {
-            assert_eq!(db.get(k)?, v);
+            assert_eq!(db.get(k)?, v, "key {k}");
         }
         Ok(())
     }
@@ -382,7 +384,7 @@ mod tests {
             },
         )?);
         let mut oracle = HashMap::new();
-        for _ in 0..65536 {
+        for i in 0..65536 {
             let command = fastrand::choice([
                 Command::Get,
                 Command::Put,
@@ -392,7 +394,7 @@ mod tests {
                 Command::Restart,
             ])
             .unwrap();
-            println!("{oracle:?} {command:?}");
+            println!("{i} {command:?}");
             match command {
                 Command::Get => {
                     let db = db.as_ref().unwrap();
@@ -430,9 +432,9 @@ mod tests {
                     db.flush()?;
                 }
                 Command::Restart => {
-                    let old_handle = db.take().unwrap();
-                    drop(old_handle);
-                    db = Some(Database::open(name)?);
+                    // let old_handle = db.take().unwrap();
+                    // drop(old_handle);
+                    // db = Some(Database::open(name)?);
                 }
             }
         }

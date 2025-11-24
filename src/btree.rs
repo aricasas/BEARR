@@ -504,7 +504,7 @@ impl BTree {
     }
 
     #[allow(dead_code)]
-    fn pretty_print_pages(file_id: FileId, file_system: &FileSystem) -> Result<(), DbError> {
+    pub fn pretty_print_pages(file_id: FileId, file_system: &FileSystem) -> Result<(), DbError> {
         let metadata_page = file_system.get(file_id.page(METADATA_OFFSET as usize))?;
         let metadata: Arc<MetadataPage> = bytemuck::cast_arc(metadata_page);
         let metadata = metadata.metadata;
