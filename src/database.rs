@@ -141,7 +141,7 @@ impl Database {
             return Err(DbError::InvalidValue);
         }
 
-        self.lsm.put(key, value, &mut self.file_system)
+        self.lsm.put(key, value, &self.file_system)
     }
 
     /// Removes the key-value pair with given key from the database, if one exists.
@@ -152,7 +152,7 @@ impl Database {
     ///
     /// Returns an error if deletion fails.
     pub fn delete(&mut self, key: u64) -> Result<(), DbError> {
-        self.lsm.delete(key, &mut self.file_system)
+        self.lsm.delete(key, &self.file_system)
     }
 
     /// Returns a sorted list of all key-value pairs where the key is in the given range.
@@ -174,7 +174,7 @@ impl Database {
     /// - Creation of the new SST fails.
     /// - Creation of the new memtable fails.
     pub fn flush(&mut self) -> Result<(), DbError> {
-        self.lsm.flush_memtable(&mut self.file_system)?;
+        self.lsm.flush_memtable(&self.file_system)?;
         let lsm_metadata = self.lsm.metadata();
         let metadata = DbMetadata { lsm_metadata };
         let metadata_file = File::create(self.name.join(METADATA_FILENAME))?;
@@ -195,6 +195,8 @@ impl Drop for Database {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::HashMap, ops::Range};
+
     use anyhow::Result;
 
     use crate::test_util::TestPath;
@@ -348,6 +350,92 @@ mod tests {
             );
         }
 
+        Ok(())
+    }
+
+    #[derive(Debug)]
+    enum Command {
+        Get,
+        Put,
+        Delete,
+        Scan,
+        Flush,
+        Restart,
+    }
+
+    #[test]
+    fn test_chaotic() -> Result<()> {
+        const KEY_RANGE: Range<u64> = 0..65536;
+        const VALUE_RANGE: Range<u64> = 0..65536;
+
+        let name = &test_path("chaotic");
+        let mut db = Some(Database::create(
+            name,
+            DbConfiguration {
+                buffer_pool_capacity: 16,
+                write_buffering: 8,
+                lsm_configuration: LsmConfiguration {
+                    size_ratio: 3,
+                    memtable_capacity: 256,
+                    bloom_filter_bits: 4,
+                },
+            },
+        )?);
+        let mut oracle = HashMap::new();
+        for _ in 0..65536 {
+            let command = fastrand::choice([
+                Command::Get,
+                Command::Put,
+                Command::Delete,
+                Command::Scan,
+                Command::Flush,
+                Command::Restart,
+            ])
+            .unwrap();
+            println!("{oracle:?} {command:?}");
+            match command {
+                Command::Get => {
+                    let db = db.as_ref().unwrap();
+                    let key = fastrand::u64(KEY_RANGE);
+                    assert_eq!(db.get(key)?, oracle.get(&key).copied());
+                }
+                Command::Put => {
+                    let db = db.as_mut().unwrap();
+                    let key = fastrand::u64(KEY_RANGE);
+                    let value = fastrand::u64(VALUE_RANGE);
+                    db.put(key, value)?;
+                    oracle.insert(key, value);
+                }
+                Command::Delete => {
+                    let db = db.as_mut().unwrap();
+                    let key = fastrand::u64(KEY_RANGE);
+                    db.delete(key)?;
+                    oracle.remove(&key);
+                }
+                Command::Scan => {
+                    let db = db.as_ref().unwrap();
+                    let a = fastrand::u64(KEY_RANGE);
+                    let b = fastrand::u64(KEY_RANGE);
+                    let start = u64::min(a, b);
+                    let end = u64::max(a, b);
+                    let scan = db.scan(start..=end)?.collect::<Result<Vec<_>, _>>()?;
+                    let mut oracle_scan: Vec<_> = (start..=end)
+                        .filter_map(|key| oracle.get(&key).map(|&value| (key, value)))
+                        .collect();
+                    oracle_scan.sort_unstable();
+                    assert_eq!(scan, oracle_scan);
+                }
+                Command::Flush => {
+                    let db = db.as_mut().unwrap();
+                    db.flush()?;
+                }
+                Command::Restart => {
+                    let old_handle = db.take().unwrap();
+                    drop(old_handle);
+                    db = Some(Database::open(name)?);
+                }
+            }
+        }
         Ok(())
     }
 }

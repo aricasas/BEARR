@@ -147,16 +147,19 @@ impl FileSystem {
         let mut inner_lock = self.inner.lock().unwrap(); // If lock is poisoned, this is unrecoverable
         let inner = inner_lock.deref_mut();
 
-        if let Some(entry) = inner.buffer_pool.get(inner.file_map.lookup_page(page_id)) {
+        if let Some(entry) = inner
+            .buffer_pool
+            .get(inner.file_map.get_or_assign_page(page_id))
+        {
             inner.eviction_handler.touch(entry.eviction_id);
             Ok(Arc::clone(&entry.page))
         } else {
             if cfg!(test) {
-                eprintln!("get {page_id:?}");
+                // eprintln!("get {page_id:?}");
             }
             if inner.buffer_pool.len() == self.capacity {
                 if cfg!(test) {
-                    eprintln!("evict page");
+                    // eprintln!("evict page");
                 }
                 inner.evict_page()?;
             }
@@ -210,7 +213,7 @@ impl FileSystem {
             .custom_flags(libc::O_DIRECT | libc::O_SYNC)
             .open(&path)?;
 
-        self.inner.lock().unwrap().file_map.remap_file(file_id);
+        self.inner.lock().unwrap().file_map.reassign_file(file_id);
 
         let mut buffer: Vec<Aligned> = bytemuck::allocation::zeroed_vec(self.write_buffering);
         let mut page_number_unwritten = starting_page_number;
@@ -230,7 +233,7 @@ impl FileSystem {
             let buffer_data_end = page_number_unwritten - page_number_written;
             if buffer_data_end > 0 {
                 if cfg!(test) {
-                    eprintln!("write {buffer_data_end} page(s)");
+                    // eprintln!("write {buffer_data_end} page(s)");
                 }
                 let bytes: &[u8] = bytemuck::cast_slice(&buffer[0..buffer_data_end]);
                 let offset = page_number_written * PAGE_SIZE;
@@ -256,7 +259,7 @@ impl FileSystem {
             panic!("Cannot delete non-existent file: {file_id:?}");
         }
 
-        self.inner.lock().unwrap().file_map.unmap_file(file_id);
+        self.inner.lock().unwrap().file_map.unassign_file(file_id);
 
         fs::remove_file(path)?;
 
@@ -283,8 +286,8 @@ impl FileSystem {
         fs::rename(old_path, new_path)?;
 
         let file_map = &mut self.inner.lock().unwrap().file_map;
-        file_map.unmap_file(old_file_id);
-        file_map.remap_file(new_file_id);
+        file_map.unassign_file(old_file_id);
+        file_map.reassign_file(new_file_id);
 
         Ok(())
     }
@@ -305,7 +308,7 @@ impl InnerFs {
     }
 
     pub fn add_new_page(&mut self, page: Arc<Aligned>, page_id: PageId) {
-        let page_id = self.file_map.lookup_page(page_id);
+        let page_id = self.file_map.get_or_assign_page(page_id);
         let eviction_id = self.eviction_handler.insert_new(page_id);
         let entry = BufferPoolEntry { eviction_id, page };
         self.buffer_pool.insert(page_id, entry);
@@ -344,29 +347,29 @@ impl FileMap {
         (id, next)
     }
 
-    fn lookup_file(&mut self, file_id: FileId) -> BufferFileId {
+    fn get_or_assign_file(&mut self, file_id: FileId) -> BufferFileId {
         let (id, next) = self.access(file_id);
         let id = id.get_or_insert_with(next);
         BufferFileId(id.get())
     }
 
-    pub fn lookup_page(&mut self, page_id: PageId) -> BufferPageId {
+    pub fn get_or_assign_page(&mut self, page_id: PageId) -> BufferPageId {
         let PageId {
             file_id,
             page_number,
         } = page_id;
         BufferPageId {
-            file_id: self.lookup_file(file_id),
+            file_id: self.get_or_assign_file(file_id),
             page_number,
         }
     }
 
-    pub fn remap_file(&mut self, file_id: FileId) {
+    pub fn reassign_file(&mut self, file_id: FileId) {
         let (id, next) = self.access(file_id);
         *id = Some(next());
     }
 
-    pub fn unmap_file(&mut self, file_id: FileId) {
+    pub fn unassign_file(&mut self, file_id: FileId) {
         let (id, _) = self.access(file_id);
         *id = None;
     }

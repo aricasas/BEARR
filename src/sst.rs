@@ -115,11 +115,11 @@ mod tests {
     /* Create an SST and then open it up to see if sane */
     #[test]
     fn test_create_open_sst() -> Result<()> {
-        let mut fs = TestFs::new("./db/2/");
+        let fs = TestFs::new("./db/2/");
 
         let path = test_file_id(2);
 
-        Sst::create(vec![], 1, 1, path, &mut fs)?;
+        Sst::create(vec![], 1, 1, path, &fs)?;
 
         assert!(matches!(Sst::open(path, &fs), Err(DbError::CorruptSst)));
 
@@ -129,7 +129,7 @@ mod tests {
     /* Write contents to SST and read them afterwards */
     #[test]
     fn test_read_write_to_sst() -> Result<()> {
-        let mut fs = TestFs::new("./db/3/");
+        let fs = TestFs::new("./db/3/");
 
         let path = test_file_id(3);
 
@@ -149,7 +149,7 @@ mod tests {
             8,
             8,
             path,
-            &mut fs,
+            &fs,
         )?;
 
         let sst = Sst::open(path, &fs)?;
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn test_scan_sst() -> Result<()> {
-        let mut fs = TestFs::new("./db/4/");
+        let fs = TestFs::new("./db/4/");
 
         let path = test_file_id(4);
 
@@ -189,7 +189,7 @@ mod tests {
             8,
             8,
             path,
-            &mut fs,
+            &fs,
         )?;
 
         let sst = Sst::open(path, &fs)?;
@@ -211,7 +211,7 @@ mod tests {
      * */
     #[test]
     fn test_huge_test() -> Result<()> {
-        let mut fs = TestFs::new("./db/5/");
+        let fs = TestFs::new("./db/5/");
 
         let path = test_file_id(5);
 
@@ -220,7 +220,7 @@ mod tests {
             test_vec.push((i, i));
         }
 
-        Sst::create(test_vec.into_iter().map(Ok), 400_000, 8, path, &mut fs)?;
+        Sst::create(test_vec.into_iter().map(Ok), 400_000, 8, path, &fs)?;
 
         let sst = Sst::open(path, &fs)?;
 
