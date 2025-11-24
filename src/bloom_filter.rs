@@ -11,7 +11,6 @@ pub struct BloomFilter {
 impl BloomFilter {
     /// Create an empty bloom filter having the number of entries and bits per each entry
     pub fn empty(n_entries: usize, bits_per_entry: usize) -> Self {
-        let bits_per_entry = bits_per_entry.max(1);
         // Calculate how many hash functions it needs to be optimal: bits_per_entry * ln(2)
         let bits = BitVec::from_elem((n_entries * bits_per_entry).next_multiple_of(8), false);
         let num_hashes = (bits_per_entry as f32 * f32::ln(2.0)).ceil() as usize;
