@@ -14,7 +14,6 @@ use crate::file_system::FileSystem;
 use crate::mock::FileSystem;
 
 /// A handle to an SST of a database
-#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug)]
 pub struct Sst {
     pub btree_metadata: BTreeMetadata,
@@ -33,7 +32,7 @@ impl Sst {
         n_entries_hint: usize,
         bits_per_entry: usize,
         file_id: FileId,
-        file_system: &mut FileSystem,
+        file_system: &FileSystem,
     ) -> Result<Sst, DbError> {
         let key_values = key_values.into_iter();
 
@@ -79,6 +78,21 @@ impl Sst {
         file_system: &'b FileSystem,
     ) -> Result<BTreeIter<'a, 'b>, DbError> {
         BTreeIter::new(self, range, file_system)
+    }
+
+    pub fn num_entries(&self) -> usize {
+        self.btree_metadata.n_entries as usize
+    }
+
+    pub fn destroy(self, file_system: &FileSystem) -> Result<(), DbError> {
+        file_system.delete_file(self.file_id)?;
+        Ok(())
+    }
+
+    pub fn rename(&mut self, new_file_id: FileId, file_system: &FileSystem) -> Result<(), DbError> {
+        file_system.rename_file(self.file_id, new_file_id)?;
+        self.file_id = new_file_id;
+        Ok(())
     }
 }
 

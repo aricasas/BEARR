@@ -14,6 +14,8 @@ use crate::{
 pub struct LsmConfiguration {
     pub size_ratio: usize,
     pub memtable_capacity: usize,
+    /// The number of bits per entry for bloom filters at the topmost LSM level.
+    pub bloom_filter_bits: usize,
 }
 
 impl LsmConfiguration {
@@ -29,12 +31,14 @@ impl LsmConfiguration {
 #[derive(Serialize, Deserialize)]
 pub struct LsmMetadata {
     pub ssts_per_level: Vec<usize>,
+    pub bottom_leveling: usize,
 }
 
 impl LsmMetadata {
     pub fn empty() -> Self {
         Self {
             ssts_per_level: Vec::new(),
+            bottom_leveling: 0,
         }
     }
 }
@@ -46,6 +50,8 @@ pub struct LsmTree {
     /// levels[0] is top level
     /// levels[0][0] is oldest sst in level 0
     levels: Vec<Vec<Sst>>,
+    /// The number of original SSTs that the SST at the bottom level consists of.
+    bottom_leveling: usize,
     configuration: LsmConfiguration,
 }
 
@@ -79,6 +85,7 @@ impl LsmTree {
         Ok(Self {
             memtable: MemTable::new(configuration.memtable_capacity)?,
             levels,
+            bottom_leveling: metadata.bottom_leveling,
             configuration,
         })
     }
@@ -108,12 +115,7 @@ impl LsmTree {
         Ok(None)
     }
 
-    pub fn put(
-        &mut self,
-        key: u64,
-        value: u64,
-        file_system: &mut FileSystem,
-    ) -> Result<(), DbError> {
+    pub fn put(&mut self, key: u64, value: u64, file_system: &FileSystem) -> Result<(), DbError> {
         self.memtable.put(key, value);
 
         if self.memtable.size() >= self.configuration.memtable_capacity {
@@ -123,7 +125,7 @@ impl LsmTree {
         Ok(())
     }
 
-    pub fn delete(&mut self, key: u64, file_system: &mut FileSystem) -> Result<(), DbError> {
+    pub fn delete(&mut self, key: u64, file_system: &FileSystem) -> Result<(), DbError> {
         self.put(key, TOMBSTONE, file_system)
     }
 
@@ -147,7 +149,47 @@ impl LsmTree {
         MergedIterator::new(scans, true)
     }
 
-    pub fn flush_memtable(&mut self, file_system: &mut FileSystem) -> Result<(), DbError> {
+    fn bottom_level_number(&self) -> Option<usize> {
+        self.levels.len().checked_sub(1)
+    }
+
+    /// Returns the maximum possible size of an SST at the given level.
+    ///
+    /// For the bottom level, this will be the maximum size of the entire level.
+    fn sst_size_at_level(&self, level: usize) -> usize {
+        assert!(
+            level < self.levels.len(),
+            "can only query the max SST size of a level that exists"
+        );
+        let p = self.configuration.memtable_capacity;
+        let t = self.configuration.size_ratio;
+        if level == self.bottom_level_number().unwrap() {
+            p * t.pow(level as u32 + 1)
+        } else {
+            p * t.pow(level as u32)
+        }
+    }
+
+    fn monkey(&self, level: usize) -> usize {
+        let t = self.configuration.size_ratio as f64;
+        let m = self.configuration.bloom_filter_bits as f64;
+        // ep(M): false positive rate for M bits
+        // T: size ratio, k: level, M_k: bits for kth level
+        // ep(M) = 2^(-M ln 2)
+        // ep(M_0) = ep(M_k) / T^k
+        // 2^(-M_0 ln 2) = 2^(-M_k ln 2) / T^k
+        //               = 2^(-M_k ln 2) / 2^(k log2(T))
+        //               = 2^(-M_k ln 2 - k log2(T))
+        //               = 2^(-M_k ln 2 - k ln T / ln 2)
+        //               = 2^(-M_k ln 2 - k ln T ln 2 / (ln 2)^2)
+        //     -M_0 ln 2 = -M_k ln 2 - k ln T ln 2 / (ln 2)^2
+        //          -M_0 = -M_k - k ln T / (ln 2)^2
+        //           M_0 =  M_k + k ln T / (ln 2)^2
+        //           M_k =  M_0 - k ln T / (ln 2)^2
+        (m - (level as f64) * t.ln() / 2_f64.ln() / 2_f64.ln()) as usize
+    }
+
+    pub fn flush_memtable(&mut self, file_system: &FileSystem) -> Result<(), DbError> {
         if self.memtable.size() == 0 {
             return Ok(());
         }
@@ -166,7 +208,7 @@ impl LsmTree {
         let sst = Sst::create(
             key_values.map(Ok),
             mem_table_size,
-            8, // TODO: implement Monkey
+            self.monkey(0),
             file_id,
             file_system,
         )?;
@@ -175,14 +217,127 @@ impl LsmTree {
 
         self.memtable.clear();
 
-        // TODO stuff with self.levels
-        // and compaction
+        self.merge_levels(file_system)?;
+
+        Ok(())
+    }
+
+    /// Ensures that each level of the LSM tree does not have too many SSTs.
+    fn merge_levels(&mut self, file_system: &FileSystem) -> Result<(), DbError> {
+        // Don't have to do anything if there are no levels
+        let Some(bottom_level_number) = self.bottom_level_number() else {
+            return Ok(());
+        };
+
+        let t = self.configuration.size_ratio;
+
+        for i in 0..bottom_level_number {
+            let bits_per_entry = self.monkey(i + 1);
+
+            let [level, level_below] = self.levels.get_disjoint_mut([i, i + 1]).unwrap();
+
+            if level.len() < t {
+                continue;
+            }
+
+            let mut scans = Vec::new();
+            let mut n_entries_hint = 0;
+            for sst in level.iter().rev() {
+                let sst_scan = sst.scan(u64::MIN..=u64::MAX, file_system)?;
+                scans.push(merge::Sources::BTree(sst_scan));
+                n_entries_hint += sst.num_entries();
+            }
+            let key_values = MergedIterator::new(scans, false)?;
+
+            let file_id = FileId {
+                lsm_level: i + 1,
+                sst_number: level_below.len(),
+            };
+
+            let sst = Sst::create(
+                key_values,
+                n_entries_hint,
+                bits_per_entry,
+                file_id,
+                file_system,
+            )?;
+            level_below.push(sst);
+
+            for sst in level.drain(..) {
+                sst.destroy(file_system)?;
+            }
+        }
+
+        let bottom_bits_per_entry = self.monkey(bottom_level_number);
+        let bottom_level = &mut self.levels[bottom_level_number];
+        debug_assert_ne!(bottom_level.len(), 0);
+        if bottom_level.len() > 1 {
+            self.bottom_leveling += bottom_level.len() - 1;
+
+            let mut scans = Vec::new();
+            let mut n_entries_hint = 0;
+            for sst in bottom_level.iter().rev() {
+                let sst_scan = sst.scan(u64::MIN..=u64::MAX, file_system)?;
+                scans.push(merge::Sources::BTree(sst_scan));
+                n_entries_hint += sst.num_entries();
+            }
+            let key_values = MergedIterator::new(scans, false)?;
+
+            // Pick some file ID that doesn't exist, to avoid overwriting files that we're reading
+            // Rename into the correct position after fully writing everything, if needed
+            let file_id = FileId {
+                lsm_level: bottom_level_number + 1,
+                sst_number: 0,
+            };
+
+            let mut new_sst = Sst::create(
+                key_values,
+                n_entries_hint,
+                bottom_bits_per_entry,
+                file_id,
+                file_system,
+            )?;
+
+            for sst in bottom_level.drain(..) {
+                sst.destroy(file_system)?;
+            }
+
+            let new_file_id = FileId {
+                lsm_level: bottom_level_number,
+                sst_number: 0,
+            };
+            new_sst.rename(new_file_id, file_system)?;
+            bottom_level.push(new_sst);
+        }
+
+        if self.bottom_leveling >= t {
+            self.levels.push(Vec::new());
+
+            let [former_bottom_level, new_bottom_level] = self
+                .levels
+                .get_disjoint_mut([bottom_level_number, bottom_level_number + 1])
+                .unwrap();
+
+            let mut sst = former_bottom_level.pop().unwrap();
+            debug_assert_eq!(former_bottom_level.len(), 0);
+
+            let new_file_id = FileId {
+                lsm_level: bottom_level_number + 1,
+                sst_number: 0,
+            };
+            sst.rename(new_file_id, file_system)?;
+            new_bottom_level.push(sst);
+
+            self.bottom_leveling = 1;
+        }
+
         Ok(())
     }
 
     pub fn metadata(&self) -> LsmMetadata {
         LsmMetadata {
             ssts_per_level: self.levels.iter().map(|level| level.len()).collect(),
+            bottom_leveling: self.bottom_leveling,
         }
     }
 }

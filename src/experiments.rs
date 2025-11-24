@@ -16,6 +16,7 @@ fn main() {
         lsm_configuration: LsmConfiguration {
             size_ratio: 2,
             memtable_capacity: 655_360, // (10 MiB) / (16 B per row)
+            bloom_filter_bits: 8,
         },
     };
 
