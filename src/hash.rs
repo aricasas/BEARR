@@ -9,6 +9,7 @@ pub struct HashFunction {
 
 impl HashFunction {
     /// Returns a new hash function with a random seed.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             seed: fastrand::u32(..),

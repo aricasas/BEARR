@@ -382,7 +382,7 @@ mod tests {
             },
         )?);
         let mut oracle = HashMap::new();
-        for i in 0..256 {
+        for i in 0..4096 {
             let command = fastrand::choice([
                 Command::Get,
                 Command::Put,
@@ -392,25 +392,45 @@ mod tests {
                 Command::Restart,
             ])
             .unwrap();
+            let command_description;
             match command {
                 Command::Get => {
                     let db = db.as_ref().unwrap();
-                    let key = fastrand::u64(KEY_RANGE);
-                    println!("{i}. get {key}");
-                    assert_eq!(db.get(key)?, oracle.get(&key).copied());
+                    let key = if fastrand::f64() < 0.9
+                        && let Some(&k) = fastrand::choice(oracle.keys())
+                    {
+                        k
+                    } else {
+                        fastrand::u64(KEY_RANGE)
+                    };
+                    let value = db.get(key)?;
+                    assert_eq!(value, oracle.get(&key).copied());
+                    command_description = format!("get {key} ==> {value:?}");
                 }
                 Command::Put => {
                     let db = db.as_mut().unwrap();
-                    let key = fastrand::u64(KEY_RANGE);
+                    let key = if fastrand::f64() < 0.1
+                        && let Some(&k) = fastrand::choice(oracle.keys())
+                    {
+                        k
+                    } else {
+                        fastrand::u64(KEY_RANGE)
+                    };
                     let value = fastrand::u64(VALUE_RANGE);
-                    println!("{i}. put {key} => {value}");
+                    command_description = format!("put ({key}, {value})");
                     db.put(key, value)?;
                     oracle.insert(key, value);
                 }
                 Command::Delete => {
                     let db = db.as_mut().unwrap();
-                    let key = fastrand::u64(KEY_RANGE);
-                    println!("{i}. delete {key}");
+                    let key = if fastrand::f64() < 0.9
+                        && let Some(&k) = fastrand::choice(oracle.keys())
+                    {
+                        k
+                    } else {
+                        fastrand::u64(KEY_RANGE)
+                    };
+                    command_description = format!("delete {key}");
                     db.delete(key)?;
                     oracle.remove(&key);
                 }
@@ -420,25 +440,33 @@ mod tests {
                     let b = fastrand::u64(KEY_RANGE);
                     let start = u64::min(a, b);
                     let end = u64::max(a, b);
-                    println!("{i}. scan {start}..={end}");
                     let scan = db.scan(start..=end)?.collect::<Result<Vec<_>, _>>()?;
                     let mut oracle_scan: Vec<_> = (start..=end)
                         .filter_map(|key| oracle.get(&key).map(|&value| (key, value)))
                         .collect();
                     oracle_scan.sort_unstable();
                     assert_eq!(scan, oracle_scan);
+                    command_description = format!("scan {start}..={end} ==> # = {}", scan.len());
                 }
                 Command::Flush => {
-                    println!("{i}. flush");
+                    command_description = "flush".to_owned();
                     let db = db.as_mut().unwrap();
                     db.flush()?;
                 }
                 Command::Restart => {
-                    println!("{i}. restart");
+                    command_description = "restart".to_owned();
                     let old_handle = db.take().unwrap();
                     drop(old_handle);
                     db = Some(Database::open(name)?);
                 }
+            }
+            let state = db
+                .as_ref()
+                .unwrap()
+                .scan(u64::MIN..=u64::MAX)?
+                .collect::<Result<Vec<_>, _>>()?;
+            if i % 256 == 0 {
+                println!("{i}. {command_description}; {state:?}");
             }
         }
         Ok(())

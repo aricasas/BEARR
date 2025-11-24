@@ -153,23 +153,6 @@ impl LsmTree {
         self.levels.len().checked_sub(1)
     }
 
-    /// Returns the maximum possible size of an SST at the given level.
-    ///
-    /// For the bottom level, this will be the maximum size of the entire level.
-    fn sst_size_at_level(&self, level: usize) -> usize {
-        assert!(
-            level < self.levels.len(),
-            "can only query the max SST size of a level that exists"
-        );
-        let p = self.configuration.memtable_capacity;
-        let t = self.configuration.size_ratio;
-        if level == self.bottom_level_number().unwrap() {
-            p * t.pow(level as u32 + 1)
-        } else {
-            p * t.pow(level as u32)
-        }
-    }
-
     fn monkey(&self, level: usize) -> usize {
         let t = self.configuration.size_ratio as f64;
         let m_0 = self.configuration.bloom_filter_bits as f64;
@@ -245,7 +228,7 @@ impl LsmTree {
             let mut n_entries_hint = 0;
             for sst in level.iter().rev() {
                 let sst_scan = sst.scan(u64::MIN..=u64::MAX, file_system)?;
-                scans.push(merge::Sources::BTree(sst_scan));
+                scans.push(sst_scan);
                 n_entries_hint += sst.num_entries();
             }
             let key_values = MergedIterator::new(scans, false)?;
@@ -279,7 +262,7 @@ impl LsmTree {
             let mut n_entries_hint = 0;
             for sst in bottom_level.iter().rev() {
                 let sst_scan = sst.scan(u64::MIN..=u64::MAX, file_system)?;
-                scans.push(merge::Sources::BTree(sst_scan));
+                scans.push(sst_scan);
                 n_entries_hint += sst.num_entries();
             }
             let key_values = MergedIterator::new(scans, false)?;
