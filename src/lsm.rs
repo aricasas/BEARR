@@ -172,7 +172,8 @@ impl LsmTree {
 
     fn monkey(&self, level: usize) -> usize {
         let t = self.configuration.size_ratio as f64;
-        let m = self.configuration.bloom_filter_bits as f64;
+        let m_0 = self.configuration.bloom_filter_bits as f64;
+        // TODO: explain in more detail
         // ep(M): false positive rate for M bits
         // T: size ratio, k: level, M_k: bits for kth level
         // ep(M) = 2^(-M ln 2)
@@ -180,13 +181,12 @@ impl LsmTree {
         // 2^(-M_0 ln 2) = 2^(-M_k ln 2) / T^k
         //               = 2^(-M_k ln 2) / 2^(k log2(T))
         //               = 2^(-M_k ln 2 - k log2(T))
-        //               = 2^(-M_k ln 2 - k ln T / ln 2)
-        //               = 2^(-M_k ln 2 - k ln T ln 2 / (ln 2)^2)
-        //     -M_0 ln 2 = -M_k ln 2 - k ln T ln 2 / (ln 2)^2
-        //          -M_0 = -M_k - k ln T / (ln 2)^2
-        //           M_0 =  M_k + k ln T / (ln 2)^2
-        //           M_k =  M_0 - k ln T / (ln 2)^2
-        (m - (level as f64) * t.ln() / 2_f64.ln() / 2_f64.ln()) as usize
+        //               = 2^(-M_k ln 2 - k (log2(T) / ln 2) ln 2) ==>
+        //     -M_0 ln 2 = -M_k ln 2 - k (log2(T) / ln 2) ln 2
+        //          -M_0 = -M_k - k log2(T) / ln 2
+        //           M_0 =  M_k + k log2(T) / ln 2
+        //           M_k =  M_0 - k log2(T) / ln 2
+        (m_0 - (level as f64) * t.log2() / 2_f64.ln()) as usize
     }
 
     pub fn flush_memtable(&mut self, file_system: &FileSystem) -> Result<(), DbError> {
@@ -340,5 +340,40 @@ impl LsmTree {
             ssts_per_level: self.levels.iter().map(|level| level.len()).collect(),
             bottom_leveling: self.bottom_leveling,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+
+    use crate::test_util::{TestFs, TestPath};
+
+    use super::*;
+
+    fn test_path(name: &str) -> TestPath {
+        TestPath::new("lsm", name)
+    }
+
+    fn empty_lsm(prefix: &TestPath) -> Result<LsmTree> {
+        let prefix = &test_path("monkey");
+        let fs = FileSystem::new(prefix, 16, 1)?;
+        let lsm = LsmTree::open(
+            LsmMetadata::empty(),
+            LsmConfiguration {
+                size_ratio: 3,
+                memtable_capacity: 4,
+                bloom_filter_bits: 4,
+            },
+            &fs,
+        )?;
+        Ok(lsm)
+    }
+
+    #[test]
+    fn test_monkey() -> Result<()> {
+        let prefix = &test_path("monkey");
+        let lsm = empty_lsm(prefix);
+        Ok(())
     }
 }

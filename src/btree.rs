@@ -348,7 +348,8 @@ impl BTree {
 
         let bloom_pages_num = bloom_size.div_ceil(PAGE_SIZE as u64);
 
-        let mut bloom_vec: Vec<u8> = vec![];
+        let mut bloom_vec: aligned_vec::AVec<u8, aligned_vec::ConstAlign<4>> =
+            aligned_vec::AVec::new(4);
         for page in 0..bloom_pages_num {
             let bloom_page = file_system.get(file_id.page((bloom_offset + page) as usize))?;
             let end = if page == bloom_pages_num - 1 {

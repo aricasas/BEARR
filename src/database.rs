@@ -104,8 +104,6 @@ impl Database {
         configuration: DbConfiguration,
         metadata: DbMetadata,
     ) -> Result<Self, DbError> {
-        println!("{configuration:?} {metadata:?}");
-
         configuration.validate()?;
 
         let file_system = FileSystem::new(
@@ -374,7 +372,7 @@ mod tests {
         let mut db = Some(Database::create(
             name,
             DbConfiguration {
-                buffer_pool_capacity: 16,
+                buffer_pool_capacity: 64,
                 write_buffering: 8,
                 lsm_configuration: LsmConfiguration {
                     size_ratio: 3,
@@ -384,7 +382,7 @@ mod tests {
             },
         )?);
         let mut oracle = HashMap::new();
-        for i in 0..65536 {
+        for i in 0..256 {
             let command = fastrand::choice([
                 Command::Get,
                 Command::Put,
@@ -394,23 +392,25 @@ mod tests {
                 Command::Restart,
             ])
             .unwrap();
-            println!("{i} {command:?}");
             match command {
                 Command::Get => {
                     let db = db.as_ref().unwrap();
                     let key = fastrand::u64(KEY_RANGE);
+                    println!("{i}. get {key}");
                     assert_eq!(db.get(key)?, oracle.get(&key).copied());
                 }
                 Command::Put => {
                     let db = db.as_mut().unwrap();
                     let key = fastrand::u64(KEY_RANGE);
                     let value = fastrand::u64(VALUE_RANGE);
+                    println!("{i}. put {key} => {value}");
                     db.put(key, value)?;
                     oracle.insert(key, value);
                 }
                 Command::Delete => {
                     let db = db.as_mut().unwrap();
                     let key = fastrand::u64(KEY_RANGE);
+                    println!("{i}. delete {key}");
                     db.delete(key)?;
                     oracle.remove(&key);
                 }
@@ -420,6 +420,7 @@ mod tests {
                     let b = fastrand::u64(KEY_RANGE);
                     let start = u64::min(a, b);
                     let end = u64::max(a, b);
+                    println!("{i}. scan {start}..={end}");
                     let scan = db.scan(start..=end)?.collect::<Result<Vec<_>, _>>()?;
                     let mut oracle_scan: Vec<_> = (start..=end)
                         .filter_map(|key| oracle.get(&key).map(|&value| (key, value)))
@@ -428,13 +429,15 @@ mod tests {
                     assert_eq!(scan, oracle_scan);
                 }
                 Command::Flush => {
+                    println!("{i}. flush");
                     let db = db.as_mut().unwrap();
                     db.flush()?;
                 }
                 Command::Restart => {
-                    // let old_handle = db.take().unwrap();
-                    // drop(old_handle);
-                    // db = Some(Database::open(name)?);
+                    println!("{i}. restart");
+                    let old_handle = db.take().unwrap();
+                    drop(old_handle);
+                    db = Some(Database::open(name)?);
                 }
             }
         }

@@ -20,43 +20,43 @@ fn main() {
         },
     };
 
-    let total_entries = 64 * 1024 * 1024; // 64M rows = 1 GiB
+    let total_entries = 16 * 1024 * 1024; // 64M rows = 1 GiB
     let sample_spacing = 1024 * 1024; // Sample every 1M rows inserted = every 16 MiB
 
-    bench_get(BenchGetConfig {
-        out_path: if cfg!(feature = "binary_search") {
-            "bench_get_binary.csv"
-        } else {
-            "bench_get.csv"
-        },
-        total_entries,
-        key_range: ..,
-        get_key_range: ..,
-        sample_spacing,
-        gets_per_sample: 100,
-        db_config,
-    });
-
-    for num_threads in [4, 16, 64, 512] {
-        bench_concurrent_get(BenchConcurrentGetConfig {
-            out_path: format!("bench_concurrent_get_{}.csv", num_threads),
-            total_entries,
-            num_threads,
-            key_range: ..,
-            get_key_range: ..,
-            sample_spacing,
-            gets_per_sample_per_thread: 100,
-            db_config,
-        });
-    }
-
-    bench_put(BenchPutConfig {
-        out_path: "bench_put.csv",
-        total_entries,
-        key_range: ..,
-        sample_spacing: 2 * db_config.lsm_configuration.memtable_capacity, // Sample every 2 memtable flushes
-        db_config,
-    });
+    // bench_get(BenchGetConfig {
+    //     out_path: if cfg!(feature = "binary_search") {
+    //         "bench_get_binary.csv"
+    //     } else {
+    //         "bench_get.csv"
+    //     },
+    //     total_entries,
+    //     key_range: ..,
+    //     get_key_range: ..,
+    //     sample_spacing,
+    //     gets_per_sample: 100,
+    //     db_config,
+    // });
+    //
+    // for num_threads in [4, 16, 64, 512] {
+    //     bench_concurrent_get(BenchConcurrentGetConfig {
+    //         out_path: format!("bench_concurrent_get_{}.csv", num_threads),
+    //         total_entries,
+    //         num_threads,
+    //         key_range: ..,
+    //         get_key_range: ..,
+    //         sample_spacing,
+    //         gets_per_sample_per_thread: 100,
+    //         db_config,
+    //     });
+    // }
+    //
+    // bench_put(BenchPutConfig {
+    //     out_path: "bench_put.csv",
+    //     total_entries,
+    //     key_range: ..,
+    //     sample_spacing: 2 * db_config.lsm_configuration.memtable_capacity, // Sample every 2 memtable flushes
+    //     db_config,
+    // });
 
     bench_full_scan(BenchFullScanConfig {
         out_path: "bench_full_scan.csv",
