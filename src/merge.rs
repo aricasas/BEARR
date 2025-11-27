@@ -153,7 +153,6 @@ impl<I: Iterator<Item = Result<(u64, u64), DbError>>> Iterator for MergedIterato
     }
 }
 
-// TODO: add more tests
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +190,31 @@ mod tests {
         assert_eq!(merged.next(), Some(Ok((0, 0))));
         assert_eq!(merged.next(), Some(Ok((1, 1))));
         assert_eq!(merged.next(), Some(Ok((2, 4))));
+        assert_eq!(merged.next(), Some(Ok((3, 6))));
+        assert_eq!(merged.next(), Some(Ok((4, 8))));
+        assert_eq!(merged.next(), Some(Ok((5, 10))));
+        assert_eq!(merged.next(), None);
+    }
+
+    #[test]
+    fn test_delete_tombstones() {
+        let x = vec![Ok((0, 0)), Ok((1, 1)), Ok((2, 2)), Ok((3, TOMBSTONE))].into_iter();
+        let y = vec![Ok((2, TOMBSTONE)), Ok((3, 6)), Ok((4, 8)), Ok((5, 10))].into_iter();
+
+        let mut merged = MergedIterator::new(vec![x, y], true).unwrap();
+        assert_eq!(merged.next(), Some(Ok((0, 0))));
+        assert_eq!(merged.next(), Some(Ok((1, 1))));
+        assert_eq!(merged.next(), Some(Ok((2, 2))));
+        assert_eq!(merged.next(), Some(Ok((4, 8))));
+        assert_eq!(merged.next(), Some(Ok((5, 10))));
+        assert_eq!(merged.next(), None);
+
+        let x = vec![Ok((0, 0)), Ok((1, 1)), Ok((2, 2)), Ok((3, TOMBSTONE))].into_iter();
+        let y = vec![Ok((2, TOMBSTONE)), Ok((3, 6)), Ok((4, 8)), Ok((5, 10))].into_iter();
+
+        let mut merged = MergedIterator::new(vec![y, x], true).unwrap();
+        assert_eq!(merged.next(), Some(Ok((0, 0))));
+        assert_eq!(merged.next(), Some(Ok((1, 1))));
         assert_eq!(merged.next(), Some(Ok((3, 6))));
         assert_eq!(merged.next(), Some(Ok((4, 8))));
         assert_eq!(merged.next(), Some(Ok((5, 10))));

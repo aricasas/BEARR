@@ -144,38 +144,44 @@ impl FileSystem {
     ///
     /// Returns a reference to the bytes of the page, or an error.
     pub fn get(&self, page_id: PageId) -> Result<Arc<Aligned>, DbError> {
-        let mut inner_lock = self.inner.lock().unwrap(); // If lock is poisoned, this is unrecoverable
-        let inner = inner_lock.deref_mut();
-
-        if let Some(entry) = inner
-            .buffer_pool
-            .get(inner.file_map.get_or_assign_page(page_id))
+        let buffer_page_id;
         {
-            inner.eviction_handler.touch(entry.eviction_id);
-            Ok(Arc::clone(&entry.page))
-        } else {
-            if cfg!(test) {
-                // eprintln!("get {page_id:?}");
+            let mut inner_lock = self.inner.lock().unwrap(); // If lock is poisoned, this is unrecoverable
+            let inner = inner_lock.deref_mut();
+
+            buffer_page_id = inner.file_map.get_or_assign_page(page_id);
+
+            if let Some(entry) = inner.buffer_pool.get(buffer_page_id) {
+                inner.eviction_handler.touch(entry.eviction_id);
+                return Ok(Arc::clone(&entry.page));
             }
+        }
+
+        let PageId {
+            file_id,
+            page_number,
+        } = page_id;
+        let path = self.path(file_id);
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECT | libc::O_SYNC)
+            .open(path)?;
+        let mut page = Aligned::new();
+        let page_offset = page_number * PAGE_SIZE;
+        file.read_exact_at(page.inner_mut().unwrap(), page_offset as u64)?;
+
+        {
+            let mut inner_lock = self.inner.lock().unwrap();
+            let inner = inner_lock.deref_mut();
+
+            if let Some(entry) = inner.buffer_pool.get(buffer_page_id) {
+                inner.eviction_handler.touch(entry.eviction_id);
+                return Ok(Arc::clone(&entry.page));
+            }
+
             if inner.buffer_pool.len() == self.capacity {
-                if cfg!(test) {
-                    // eprintln!("evict page");
-                }
                 inner.evict_page()?;
             }
-
-            let PageId {
-                file_id,
-                page_number,
-            } = page_id;
-            let path = self.path(file_id);
-            let file = fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_DIRECT | libc::O_SYNC)
-                .open(path)?;
-            let mut page = Aligned::new();
-            let page_offset = page_number * PAGE_SIZE;
-            file.read_exact_at(page.inner_mut().unwrap(), page_offset as u64)?;
 
             inner.add_new_page(Arc::clone(&page), page_id);
 

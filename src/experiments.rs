@@ -20,7 +20,7 @@ fn main() {
         },
     };
 
-    let total_entries = 16 * 1024 * 1024; // 64M rows = 1 GiB
+    let total_entries = 64 * 1024 * 1024; // 64M rows = 1 GiB
     let sample_spacing = 1024 * 1024; // Sample every 1M rows inserted = every 16 MiB
 
     bench_get(BenchGetConfig {
@@ -146,7 +146,9 @@ fn bench_get<P: AsRef<Path>, R1: RangeBounds<u64> + Clone, R2: RangeBounds<u64> 
     }
     csv_writer.flush().unwrap();
 
-    std::fs::remove_dir_all("bench_get_db").unwrap();
+    if !cfg!(feature = "keep_test_files") {
+        std::fs::remove_dir_all("bench_get_db").unwrap();
+    }
 
     let bench_elapsed = bench_start.elapsed();
     eprintln!(
@@ -246,7 +248,9 @@ fn bench_concurrent_get<
     }
     csv_writer.flush().unwrap();
 
-    std::fs::remove_dir_all("bench_concurrent_get_db").unwrap();
+    if !cfg!(feature = "keep_test_files") {
+        std::fs::remove_dir_all("bench_concurrent_get_db").unwrap();
+    }
 
     let bench_elapsed = bench_start.elapsed();
     eprintln!(
@@ -321,7 +325,9 @@ fn bench_put<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(bench_config: BenchPut
     }
     csv_writer.flush().unwrap();
 
-    std::fs::remove_dir_all("bench_put_db").unwrap();
+    if !cfg!(feature = "keep_test_files") {
+        std::fs::remove_dir_all("bench_put_db").unwrap();
+    }
 
     let bench_elapsed = bench_start.elapsed();
     eprintln!(
@@ -397,7 +403,9 @@ fn bench_full_scan<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(
     }
     csv_writer.flush().unwrap();
 
-    std::fs::remove_dir_all("bench_full_scan_db").unwrap();
+    if !cfg!(feature = "keep_test_files") {
+        std::fs::remove_dir_all("bench_full_scan_db").unwrap();
+    }
 
     let bench_elapsed = bench_start.elapsed();
     eprintln!(
