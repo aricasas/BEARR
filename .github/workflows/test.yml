@@ -32,14 +32,14 @@ jobs:
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
       
-      - name: Build tests
-        run: cargo build --tests --release
+      - name: Check Project
+        run: cargo check
         env:
           RUSTFLAGS: "-W warnings"
       
       - name: Run tests with memory tracking
         run: |
-          /usr/bin/time -v cargo test --release --no-fail-fast 2>&1 | tee memory_report.txt
+          RUSTFLAGS="-W warnings" /usr/bin/time -v cargo test --release --no-fail-fast 2>&1 | tee memory_report.txt
           
           # Extract peak memory usage
           echo "=== Memory Usage Summary ===" | tee -a $GITHUB_STEP_SUMMARY
