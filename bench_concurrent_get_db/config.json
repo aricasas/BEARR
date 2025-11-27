@@ -1,8 +1,0 @@
-{
-  "lsm_configuration": {
-    "size_ratio": 2,
-    "memtable_capacity": 655360
-  },
-  "buffer_pool_capacity": 65536,
-  "write_buffering": 32
-}
