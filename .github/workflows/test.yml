@@ -35,7 +35,7 @@ jobs:
       - name: Build tests
         run: cargo build --tests --release
         env:
-          RUSTFLAGS: ""
+          RUSTFLAGS: "-W warnings"
       
       - name: Run tests with memory tracking
         run: |
