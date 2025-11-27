@@ -404,29 +404,112 @@ mod tests {
         Ok(())
     }
 
+    fn delete_and_assert(
+        lsm: &mut LsmTree,
+        fs: &TestFs,
+        key: u64,
+        expected_sst_sizes: &[&[usize]],
+        expected_bottom_leveling: usize,
+    ) -> Result<()> {
+        lsm.delete(key, fs)?;
+        assert_state(lsm, expected_sst_sizes, expected_bottom_leveling);
+        Ok(())
+    }
+
     #[test]
     fn test_basic() -> Result<()> {
         let fs = &test_fs("basic");
         let lsm = &mut empty_lsm(fs)?;
         assert_state(lsm, &[], 0);
-        put_and_assert(lsm, fs, 30, 0, &[], 0)?;
-        put_and_assert(lsm, fs, 10, 1, &[], 0)?;
-        put_and_assert(lsm, fs, 40, 2, &[], 0)?;
-        put_and_assert(lsm, fs, 11, 3, &[], 0)?;
-        put_and_assert(lsm, fs, 50, 4, &[], 0)?;
-        put_and_assert(lsm, fs, 90, 5, &[&[6]], 1)?;
-        put_and_assert(lsm, fs, 20, 6, &[&[6]], 1)?;
-        put_and_assert(lsm, fs, 60, 7, &[&[6]], 1)?;
-        put_and_assert(lsm, fs, 51, 8, &[&[6]], 1)?;
-        put_and_assert(lsm, fs, 31, 9, &[&[6]], 1)?;
-        put_and_assert(lsm, fs, 52, 10, &[&[6]], 1)?;
-        put_and_assert(lsm, fs, 80, 11, &[&[12]], 2)?;
-        put_and_assert(lsm, fs, 91, 12, &[&[12]], 2)?;
-        put_and_assert(lsm, fs, 70, 13, &[&[12]], 2)?;
-        put_and_assert(lsm, fs, 92, 14, &[&[12]], 2)?;
-        put_and_assert(lsm, fs, 32, 15, &[&[12]], 2)?;
-        put_and_assert(lsm, fs, 21, 16, &[&[12]], 2)?;
-        put_and_assert(lsm, fs, 33, 17, &[&[], &[18]], 1)?;
+
+        {
+            put_and_assert(lsm, fs, 30, 0, &[], 0)?;
+            put_and_assert(lsm, fs, 10, 1, &[], 0)?;
+            put_and_assert(lsm, fs, 40, 2, &[], 0)?;
+            put_and_assert(lsm, fs, 11, 3, &[], 0)?;
+            put_and_assert(lsm, fs, 50, 4, &[], 0)?;
+            put_and_assert(lsm, fs, 90, 5, &[&[6]], 1)?;
+
+            put_and_assert(lsm, fs, 20, 6, &[&[6]], 1)?;
+            put_and_assert(lsm, fs, 60, 7, &[&[6]], 1)?;
+            put_and_assert(lsm, fs, 51, 8, &[&[6]], 1)?;
+            put_and_assert(lsm, fs, 31, 9, &[&[6]], 1)?;
+            put_and_assert(lsm, fs, 52, 10, &[&[6]], 1)?;
+            put_and_assert(lsm, fs, 80, 11, &[&[12]], 2)?;
+
+            put_and_assert(lsm, fs, 91, 12, &[&[12]], 2)?;
+            put_and_assert(lsm, fs, 70, 13, &[&[12]], 2)?;
+            put_and_assert(lsm, fs, 92, 14, &[&[12]], 2)?;
+            put_and_assert(lsm, fs, 32, 15, &[&[12]], 2)?;
+            put_and_assert(lsm, fs, 21, 16, &[&[12]], 2)?;
+            put_and_assert(lsm, fs, 33, 17, &[&[], &[18]], 1)?;
+        }
+
+        {
+            delete_and_assert(lsm, fs, 81, &[&[], &[18]], 1)?;
+            put_and_assert(lsm, fs, 41, 19, &[&[], &[18]], 1)?;
+            put_and_assert(lsm, fs, 61, 20, &[&[], &[18]], 1)?;
+            delete_and_assert(lsm, fs, 21, &[&[], &[18]], 1)?;
+            put_and_assert(lsm, fs, 62, 22, &[&[], &[18]], 1)?;
+            put_and_assert(lsm, fs, 42, 23, &[&[6], &[18]], 1)?;
+
+            delete_and_assert(lsm, fs, 31, &[&[6], &[18]], 1)?;
+            put_and_assert(lsm, fs, 32, 25, &[&[6], &[18]], 1)?;
+            put_and_assert(lsm, fs, 82, 26, &[&[6], &[18]], 1)?;
+            delete_and_assert(lsm, fs, 33, &[&[6], &[18]], 1)?;
+            put_and_assert(lsm, fs, 22, 28, &[&[6], &[18]], 1)?;
+            put_and_assert(lsm, fs, 71, 29, &[&[6, 6], &[18]], 1)?;
+
+            delete_and_assert(lsm, fs, 91, &[&[6, 6], &[18]], 1)?;
+            put_and_assert(lsm, fs, 51, 31, &[&[6, 6], &[18]], 1)?;
+            put_and_assert(lsm, fs, 1, 32, &[&[6, 6], &[18]], 1)?;
+            delete_and_assert(lsm, fs, 23, &[&[6, 6], &[18]], 1)?;
+            put_and_assert(lsm, fs, 83, 34, &[&[6, 6], &[18]], 1)?;
+            put_and_assert(lsm, fs, 84, 35, &[&[], &[24]], 2)?;
+        }
+
+        {
+            delete_and_assert(lsm, fs, 42, &[&[], &[24]], 2)?;
+            put_and_assert(lsm, fs, 12, 37, &[&[], &[24]], 2)?;
+            put_and_assert(lsm, fs, 92, 38, &[&[], &[24]], 2)?;
+            delete_and_assert(lsm, fs, 72, &[&[], &[24]], 2)?;
+            put_and_assert(lsm, fs, 13, 40, &[&[], &[24]], 2)?;
+            put_and_assert(lsm, fs, 62, 41, &[&[6], &[24]], 2)?;
+
+            delete_and_assert(lsm, fs, 93, &[&[6], &[24]], 2)?;
+            put_and_assert(lsm, fs, 32, 43, &[&[6], &[24]], 2)?;
+            put_and_assert(lsm, fs, 94, 44, &[&[6], &[24]], 2)?;
+            delete_and_assert(lsm, fs, 95, &[&[6], &[24]], 2)?;
+            put_and_assert(lsm, fs, 33, 46, &[&[6], &[24]], 2)?;
+            put_and_assert(lsm, fs, 73, 47, &[&[6, 6], &[24]], 2)?;
+
+            delete_and_assert(lsm, fs, 52, &[&[6, 6], &[24]], 2)?;
+            put_and_assert(lsm, fs, 14, 49, &[&[6, 6], &[24]], 2)?;
+            put_and_assert(lsm, fs, 2, 50, &[&[6, 6], &[24]], 2)?;
+            delete_and_assert(lsm, fs, 53, &[&[6, 6], &[24]], 2)?;
+            put_and_assert(lsm, fs, 82, 52, &[&[6, 6], &[24]], 2)?;
+            put_and_assert(lsm, fs, 22, 53, &[&[], &[], &[29]], 1)?;
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_full_delete() -> Result<()> {
+        let fs = &test_fs("full_delete");
+        let lsm = &mut empty_lsm(fs)?;
+
+        for i in 0..18 {
+            lsm.put(i, i, fs)?;
+        }
+
+        for i in 0..18 {
+            lsm.delete(i, fs)?;
+        }
+
+        // See the "Hacky workaround:" comment.
+        assert_state(lsm, &[&[], &[1]], 2);
+
         Ok(())
     }
 }
