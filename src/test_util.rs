@@ -60,7 +60,7 @@ pub fn assert_panics(mut f: impl FnMut()) {
 
 pub struct TestFs {
     // Used for dropping
-    pub path: TestPath,
+    _path: TestPath,
     fs: FileSystem,
 }
 impl TestFs {
@@ -68,7 +68,7 @@ impl TestFs {
         let path = TestPath::create(base, name);
         fs::create_dir_all(&path).unwrap();
         let fs = FileSystem::new(&path, 16, 1).unwrap();
-        Self { path, fs }
+        Self { _path: path, fs }
     }
 }
 
