@@ -214,6 +214,13 @@ mod tests {
         Ok(())
     }
 
+    fn delete_many(db: &mut Database, keys: &[u64]) -> Result<()> {
+        for &k in keys {
+            db.delete(k)?;
+        }
+        Ok(())
+    }
+
     fn assert_pairs(db: &Database, pairs: &[(u64, Option<u64>)]) -> Result<()> {
         for &(k, v) in pairs {
             assert_eq!(db.get(k)?, v, "key {k}");
@@ -252,18 +259,20 @@ mod tests {
             ],
         )?;
 
+        delete_many(&mut db, &[9, 8, 84, 8, 90])?;
+
         assert_pairs(
             &db,
             &[
                 (3, Some(1)),
                 (4, Some(1)),
-                (9, Some(5)),
+                (9, None),
                 (2, Some(6)),
                 (5, Some(3)),
-                (8, Some(5)),
+                (8, None),
                 (97, Some(9)),
                 (32, Some(3)),
-                (84, Some(6)),
+                (84, None),
                 (1, None),
                 (10, None),
                 (90, None),
@@ -271,8 +280,8 @@ mod tests {
         )?;
 
         assert_eq!(
-            db.scan(4..=84)?.collect::<Result<Vec<_>, _>>()?,
-            vec![(4, 1), (5, 3), (8, 5), (9, 5), (32, 3), (84, 6)]
+            db.scan(4..=32)?.collect::<Result<Vec<_>, _>>()?,
+            vec![(4, 1), (5, 3), (32, 3)]
         );
 
         Ok(())
@@ -304,6 +313,7 @@ mod tests {
             put_many(&mut db, &[(13, 15), (14, 15), (1, 19)])?;
             db.flush()?;
             put_many(&mut db, &[(3, 1), (20, 5), (7, 15), (18, 25)])?;
+            delete_many(&mut db, &[3, 1, 4, 1, 5, 9])?;
             db.flush()?;
         }
 
@@ -315,9 +325,6 @@ mod tests {
                 &[
                     (13, Some(15)),
                     (14, Some(15)),
-                    (4, Some(19)),
-                    (1, Some(19)),
-                    (3, Some(1)),
                     (20, Some(5)),
                     (7, Some(15)),
                     (18, Some(25)),
@@ -325,6 +332,7 @@ mod tests {
             )?;
 
             put_many(&mut db, &[(5, 14), (4, 15)])?;
+            delete_many(&mut db, &[7, 14])?;
             db.flush()?;
             put_many(&mut db, &[(6, 21), (14, 3), (20, 15), (18, 19)])?;
 
@@ -333,11 +341,7 @@ mod tests {
                 &[
                     (13, Some(15)),
                     (14, Some(3)),
-                    (4, Some(15)),
-                    (1, Some(19)),
-                    (3, Some(1)),
                     (20, Some(15)),
-                    (7, Some(15)),
                     (18, Some(19)),
                     (5, Some(14)),
                     (6, Some(21)),
@@ -346,9 +350,61 @@ mod tests {
 
             assert_eq!(
                 db.scan(5..=15)?.collect::<Result<Vec<_>, _>>()?,
-                vec![(5, 14), (6, 21), (7, 15), (13, 15), (14, 3)]
+                vec![(5, 14), (6, 21), (13, 15), (14, 3)]
             );
         }
+
+        Ok(())
+    }
+
+    fn create_db(
+        name: &str,
+        size_ratio: usize,
+        memtable_capacity: usize,
+        bloom_filter_bits: usize,
+        buffer_pool_capacity: usize,
+        write_buffering: usize,
+    ) -> Result<Database, DbError> {
+        Database::create(
+            test_path(name),
+            DbConfiguration {
+                lsm_configuration: LsmConfiguration {
+                    size_ratio,
+                    memtable_capacity,
+                    bloom_filter_bits,
+                },
+                buffer_pool_capacity,
+                write_buffering,
+            },
+        )
+    }
+
+    #[test]
+    fn test_errors() -> Result<()> {
+        let mut db = create_db("errors", 2, 1, 0, 16, 1)?;
+
+        assert_eq!(
+            create_db("errors_bad_size_ratio", 1, 1, 0, 16, 1).err(),
+            Some(DbError::InvalidConfiguration)
+        );
+        assert_eq!(
+            create_db("errors_no_memtable_capacity", 2, 0, 0, 16, 1).err(),
+            Some(DbError::InvalidConfiguration)
+        );
+        assert_eq!(
+            create_db("errors_small_buffer_pool_capacity", 2, 1, 0, 15, 1).err(),
+            Some(DbError::InvalidConfiguration)
+        );
+        assert_eq!(
+            create_db("errors_no_write_buffering", 2, 1, 0, 16, 0).err(),
+            Some(DbError::InvalidConfiguration)
+        );
+
+        assert_eq!(db.put(0, TOMBSTONE), Err(DbError::InvalidValue));
+
+        #[allow(clippy::reversed_empty_ranges)]
+        let r = 1..=0;
+        assert_eq!(db.scan(r).err(), Some(DbError::InvalidScanRange));
 
         Ok(())
     }
