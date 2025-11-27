@@ -153,7 +153,12 @@ impl LsmTree {
         self.levels.len().checked_sub(1)
     }
 
-    #[cfg(feature = "monkey")]
+    #[cfg(feature = "uniform_bits")]
+    fn monkey(&self, _level: usize) -> usize {
+        self.configuration.bloom_filter_bits
+    }
+
+    #[cfg(not(feature = "uniform_bits"))]
     fn monkey(&self, level: usize) -> usize {
         let t = self.configuration.size_ratio as f64;
         let m_0 = self.configuration.bloom_filter_bits as f64;
@@ -171,11 +176,6 @@ impl LsmTree {
         //           M_0 =  M_k + k log2(T) / ln 2
         //           M_k =  M_0 - k log2(T) / ln 2
         f64::max(m_0 - (level as f64) * t.log2() / 2_f64.ln(), 0.0).ceil() as usize
-    }
-
-    #[cfg(not(feature = "monkey"))]
-    fn monkey(&self, _level: usize) -> usize {
-        self.configuration.bloom_filter_bits
     }
 
     pub fn flush_memtable(&mut self, file_system: &FileSystem) -> Result<(), DbError> {

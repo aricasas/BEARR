@@ -22,12 +22,12 @@ name = "experiments"
 path = "src/experiments.rs"
 
 [features]
-default = []
+default = ["keep_test_files"]
 mock = []
 mock_hash = []
 binary_search = []
-delete_test_files = []
-monkey = []
+keep_test_files = []
+uniform_bits = []
 
 [dev-dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }

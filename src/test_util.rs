@@ -43,7 +43,7 @@ impl AsRef<Path> for TestPath {
 
 impl Drop for TestPath {
     fn drop(&mut self) {
-        if cfg!(feature = "delete_test_files") {
+        if !cfg!(feature = "keep_test_files") {
             delete_path(&self.inner);
         }
     }
@@ -60,18 +60,15 @@ pub fn assert_panics(mut f: impl FnMut()) {
 
 pub struct TestFs {
     // Used for dropping
-    _prefix: TestPath,
+    pub path: TestPath,
     fs: FileSystem,
 }
 impl TestFs {
     pub fn create(base: &str, name: &str) -> Self {
-        let prefix = TestPath::create(base, name);
-        fs::create_dir_all(&prefix).unwrap();
-        let fs = FileSystem::new(&prefix, 16, 1).unwrap();
-        Self {
-            _prefix: prefix,
-            fs,
-        }
+        let path = TestPath::create(base, name);
+        fs::create_dir_all(&path).unwrap();
+        let fs = FileSystem::new(&path, 16, 1).unwrap();
+        Self { path, fs }
     }
 }
 
