@@ -268,6 +268,12 @@ mod tests {
     }
 
     #[test]
+    fn test_fail() -> Result<()> {
+        assert!(false);
+        Ok(())
+    }
+
+    #[test]
     fn test_update_file_names() -> Result<()> {
         let fs = test_fs("update_file_names");
 
