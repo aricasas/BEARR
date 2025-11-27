@@ -18,3 +18,41 @@ jobs:
       run: |
         docker build -t bearr-tests .
         docker run bearr-tests
+
+  memory-profile:
+      runs-on: ubuntu-latest
+      
+      steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y time
+      
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      
+      - name: Build tests
+        run: cargo build --tests --release
+      
+      - name: Run tests with memory tracking
+        run: |
+          /usr/bin/time -v cargo test --release --no-fail-fast 2>&1 | tee memory_report.txt
+          
+          # Extract peak memory usage
+          echo "=== Memory Usage Summary ===" | tee -a $GITHUB_STEP_SUMMARY
+          grep "Maximum resident set size" memory_report.txt | tee -a $GITHUB_STEP_SUMMARY
+          grep "Average resident set size" memory_report.txt | tee -a $GITHUB_STEP_SUMMARY
+          grep "Page faults" memory_report.txt | tee -a $GITHUB_STEP_SUMMARY
+          
+          # Extract the peak memory value in KB
+          PEAK_MEM=$(grep "Maximum resident set size" memory_report.txt | awk '{print $6}')
+          PEAK_MEM_MB=$((PEAK_MEM / 1024))
+          echo "**Peak Memory Usage: ${PEAK_MEM_MB} MB**" | tee -a $GITHUB_STEP_SUMMARY
+      
+      - name: Upload memory report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-report
+          path: memory_report.txt
