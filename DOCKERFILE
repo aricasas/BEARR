@@ -14,9 +14,6 @@ RUN cargo fetch
 # Copy the source code
 COPY src ./src
 
-RUN mkdir db 
-RUN mkdir database_test_files
-
 # Run tests
-CMD ["cargo", "test"]
+CMD ["cargo", "test", "--release"]
 
