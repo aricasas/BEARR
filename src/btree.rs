@@ -392,6 +392,7 @@ impl BTree {
 
         let root_page = file_system.get(sst.file_id.page(nodes_offset as usize))?;
         let root_node: Arc<Node> = bytemuck::cast_arc(root_page);
+        assert_ne!(root_node.length, 0);
         if root_node.pairs[(root_node.length - 1) as usize][0] < key {
             return Ok(None);
         }

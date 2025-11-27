@@ -271,7 +271,7 @@ impl LsmTree {
                 scans.push(sst_scan);
                 n_entries_hint += sst.num_entries();
             }
-            let key_values = MergedIterator::new(scans, false)?;
+            let key_values = MergedIterator::new(scans, true)?;
 
             // Pick some file ID that doesn't exist, to avoid overwriting files that we're reading
             // Rename into the correct position after fully writing everything, if needed
@@ -280,13 +280,30 @@ impl LsmTree {
                 sst_number: 0,
             };
 
-            let mut new_sst = Sst::create(
+            let new_sst = Sst::create(
                 key_values,
                 n_entries_hint,
                 bottom_bits_per_entry,
                 file_id,
                 file_system,
             )?;
+
+            // Hacky workaround: if the bottom level initially entirely of tombstones,
+            // then merging while deleting tombstones will cause it to be empty,
+            // which works poorly with the rest of the codebase.
+            // Have it instead consist of a single tombstone.
+            let mut new_sst = if new_sst.num_entries() == 0 {
+                new_sst.destroy(file_system)?;
+                Sst::create(
+                    [Ok((0, TOMBSTONE))],
+                    1,
+                    bottom_bits_per_entry,
+                    file_id,
+                    file_system,
+                )?
+            } else {
+                new_sst
+            };
 
             for sst in bottom_level.drain(..) {
                 sst.destroy(file_system)?;
@@ -348,7 +365,7 @@ mod tests {
             LsmMetadata::empty(),
             LsmConfiguration {
                 size_ratio: 3,
-                memtable_capacity: 4,
+                memtable_capacity: 6,
                 bloom_filter_bits: 5,
             },
             fs,
@@ -356,10 +373,60 @@ mod tests {
         Ok(lsm)
     }
 
+    fn assert_state(
+        lsm: &LsmTree,
+        expected_sst_sizes: &[&[usize]],
+        expected_bottom_leveling: usize,
+    ) {
+        let expected_sst_sizes: Vec<Vec<usize>> = expected_sst_sizes
+            .iter()
+            .map(|level| level.to_vec())
+            .collect();
+        let actual_sst_sizes: Vec<Vec<usize>> = lsm
+            .levels
+            .iter()
+            .map(|level| level.iter().map(|sst| sst.num_entries()).collect())
+            .collect();
+        assert_eq!(actual_sst_sizes, expected_sst_sizes);
+        assert_eq!(lsm.bottom_leveling, expected_bottom_leveling);
+    }
+
+    fn put_and_assert(
+        lsm: &mut LsmTree,
+        fs: &TestFs,
+        key: u64,
+        value: u64,
+        expected_sst_sizes: &[&[usize]],
+        expected_bottom_leveling: usize,
+    ) -> Result<()> {
+        lsm.put(key, value, fs)?;
+        assert_state(lsm, expected_sst_sizes, expected_bottom_leveling);
+        Ok(())
+    }
+
     #[test]
     fn test_basic() -> Result<()> {
-        let fs = test_fs("basic");
-        let lsm = empty_lsm(&fs);
+        let fs = &test_fs("basic");
+        let lsm = &mut empty_lsm(fs)?;
+        assert_state(lsm, &[], 0);
+        put_and_assert(lsm, fs, 30, 0, &[], 0)?;
+        put_and_assert(lsm, fs, 10, 1, &[], 0)?;
+        put_and_assert(lsm, fs, 40, 2, &[], 0)?;
+        put_and_assert(lsm, fs, 11, 3, &[], 0)?;
+        put_and_assert(lsm, fs, 50, 4, &[], 0)?;
+        put_and_assert(lsm, fs, 90, 5, &[&[6]], 1)?;
+        put_and_assert(lsm, fs, 20, 6, &[&[6]], 1)?;
+        put_and_assert(lsm, fs, 60, 7, &[&[6]], 1)?;
+        put_and_assert(lsm, fs, 51, 8, &[&[6]], 1)?;
+        put_and_assert(lsm, fs, 31, 9, &[&[6]], 1)?;
+        put_and_assert(lsm, fs, 52, 10, &[&[6]], 1)?;
+        put_and_assert(lsm, fs, 80, 11, &[&[12]], 2)?;
+        put_and_assert(lsm, fs, 91, 12, &[&[12]], 2)?;
+        put_and_assert(lsm, fs, 70, 13, &[&[12]], 2)?;
+        put_and_assert(lsm, fs, 92, 14, &[&[12]], 2)?;
+        put_and_assert(lsm, fs, 32, 15, &[&[12]], 2)?;
+        put_and_assert(lsm, fs, 21, 16, &[&[12]], 2)?;
+        put_and_assert(lsm, fs, 33, 17, &[&[], &[18]], 1)?;
         Ok(())
     }
 }
