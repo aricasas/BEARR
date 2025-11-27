@@ -336,17 +336,14 @@ impl LsmTree {
 mod tests {
     use anyhow::Result;
 
-    use crate::test_util::{TestFs, TestPath};
-
     use super::*;
+    use crate::test_util::TestFs;
 
-    fn test_path(name: &str) -> TestPath {
-        TestPath::new("lsm", name)
+    fn test_fs(name: &str) -> TestFs {
+        TestFs::create("lsm", name)
     }
 
-    fn empty_lsm(prefix: &TestPath) -> Result<LsmTree> {
-        let prefix = &test_path("monkey");
-        let fs = FileSystem::new(prefix, 16, 1)?;
+    fn empty_lsm(fs: &TestFs) -> Result<LsmTree> {
         let lsm = LsmTree::open(
             LsmMetadata::empty(),
             LsmConfiguration {
@@ -354,15 +351,15 @@ mod tests {
                 memtable_capacity: 4,
                 bloom_filter_bits: 5,
             },
-            &fs,
+            fs,
         )?;
         Ok(lsm)
     }
 
     #[test]
-    fn test_monkey() -> Result<()> {
-        let prefix = &test_path("monkey");
-        let lsm = empty_lsm(prefix);
+    fn test_basic() -> Result<()> {
+        let fs = test_fs("basic");
+        let lsm = empty_lsm(&fs);
         Ok(())
     }
 }

@@ -112,10 +112,14 @@ mod tests {
         }
     }
 
+    fn test_fs(name: &str) -> TestFs {
+        TestFs::create("sst", name)
+    }
+
     /* Create an SST and then open it up to see if sane */
     #[test]
     fn test_create_open_sst() -> Result<()> {
-        let fs = TestFs::new("./db/2/");
+        let fs = test_fs("create_open");
 
         let path = test_file_id(2);
 
@@ -129,7 +133,7 @@ mod tests {
     /* Write contents to SST and read them afterwards */
     #[test]
     fn test_read_write_to_sst() -> Result<()> {
-        let fs = TestFs::new("./db/3/");
+        let fs = test_fs("read_write");
 
         let path = test_file_id(3);
 
@@ -169,7 +173,7 @@ mod tests {
 
     #[test]
     fn test_scan_sst() -> Result<()> {
-        let fs = TestFs::new("./db/4/");
+        let fs = test_fs("scan");
 
         let path = test_file_id(4);
 
@@ -211,7 +215,7 @@ mod tests {
      * */
     #[test]
     fn test_huge_test() -> Result<()> {
-        let fs = TestFs::new("./db/5/");
+        let fs = test_fs("huge_test");
 
         let path = test_file_id(5);
 

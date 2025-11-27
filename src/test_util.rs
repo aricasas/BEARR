@@ -10,8 +10,12 @@ pub struct TestPath {
     inner: PathBuf,
 }
 
+fn get_path_base(base: &str) -> PathBuf {
+    Path::new("test_files").join(base)
+}
+
 fn get_path(base: &str, name: &str) -> PathBuf {
-    Path::new("test_files").join(base).join(name)
+    get_path_base(base).join(name)
 }
 
 fn delete_path(path: &Path) {
@@ -23,9 +27,10 @@ fn delete_path(path: &Path) {
 }
 
 impl TestPath {
-    pub fn new(base: &str, name: &str) -> Self {
+    pub fn create(base: &str, name: &str) -> Self {
         let path = get_path(base, name);
         delete_path(&path);
+        fs::create_dir_all(get_path_base(base)).unwrap();
         Self { inner: path }
     }
 }
@@ -54,15 +59,18 @@ pub fn assert_panics(mut f: impl FnMut()) {
 }
 
 pub struct TestFs {
-    prefix: PathBuf,
+    // Used for dropping
+    _prefix: TestPath,
     fs: FileSystem,
 }
 impl TestFs {
-    pub fn new(prefix: impl AsRef<Path>) -> Self {
-        let _ = fs::create_dir_all(&prefix);
+    pub fn create(base: &str, name: &str) -> Self {
+        let prefix = TestPath::create(base, name);
+        fs::create_dir_all(&prefix).unwrap();
+        let fs = FileSystem::new(&prefix, 16, 1).unwrap();
         Self {
-            prefix: prefix.as_ref().to_owned(),
-            fs: FileSystem::new(prefix, 16, 1).unwrap(),
+            _prefix: prefix,
+            fs,
         }
     }
 }
@@ -78,13 +86,5 @@ impl Deref for TestFs {
 impl DerefMut for TestFs {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.fs
-    }
-}
-
-impl Drop for TestFs {
-    fn drop(&mut self) {
-        if cfg!(feature = "delete_test_files") {
-            delete_path(&self.prefix);
-        }
     }
 }

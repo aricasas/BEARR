@@ -384,7 +384,7 @@ mod tests {
     use super::*;
 
     fn test_path(name: &str) -> TestPath {
-        TestPath::new("file_system", name)
+        TestPath::create("file_system", name)
     }
 
     fn page_id(lsm_level: usize, sst_number: usize, page_number: usize) -> PageId {
