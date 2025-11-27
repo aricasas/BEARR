@@ -57,6 +57,10 @@ pub struct TestFs {
     prefix: PathBuf,
     fs: FileSystem,
 }
+
+/*
+ * Should create directories before starting each test
+ * */
 impl TestFs {
     pub fn new(prefix: impl AsRef<Path>) -> Self {
         let _ = fs::create_dir_all(&prefix);
@@ -81,6 +85,9 @@ impl DerefMut for TestFs {
     }
 }
 
+/*
+ * Everything should be deleted after the tests are done
+ * */
 impl Drop for TestFs {
     fn drop(&mut self) {
         if cfg!(feature = "delete_test_files") {

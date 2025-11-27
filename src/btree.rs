@@ -18,6 +18,9 @@ use crate::mock::FileSystem;
 
 #[repr(C, align(4096))]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
+/// The smallest granuallity of storage we use in our system
+/// It has a length, it has a bunch of pairs and since it is aligned to PAGE_SIZE,
+/// the rest is a padding
 struct Page {
     /// Number of pairs stored in this page
     length: u64,
@@ -35,26 +38,30 @@ impl Default for Page {
     }
 }
 
+/// Making sure our page is the size of PAGE_SIZE
 const _: () = assert!(size_of::<Page>() == PAGE_SIZE);
 
+/// A magic number that is used to check the validity of an SST
 pub const BEAR_MAGIC: u64 = 0xBEA22;
 
 #[repr(C)]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug)]
+/// Metadata struct for each sst
 pub struct BTreeMetadata {
-    pub magic: u64, // This is used to check the validity of the metadata
-    pub leafs_offset: u64,
-    pub nodes_offset: u64,
-    pub bloom_offset: u64,
-    pub tree_depth: u64, // Number of layers in the internal nodes
-    pub size: u64,       // Entire file size in pages
-    pub bloom_size: u64, // Bloom filter(including hash functions and bitmap) size in bytes
-    pub num_hashes: u64,
-    pub n_entries: u64,
+    pub magic: u64,        // This is used to check the validity of the metadata
+    pub leafs_offset: u64, // Where the leafs start from
+    pub nodes_offset: u64, // Where the nodes start from
+    pub bloom_offset: u64, // Where the bloom filter starts from
+    pub tree_depth: u64,   // Number of layers in the internal nodes
+    pub size: u64,         // Entire file size in pages
+    pub bloom_size: u64,   // Bloom filter(including hash functions and bitmap) size in bytes
+    pub num_hashes: u64,   // Number of hash functions for the bloom filter
+    pub n_entries: u64,    // Number of entries in the SST
 }
 
 #[repr(C, align(4096))]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug)]
+/// The struct that points to the actuall metadata
 struct MetadataPage {
     metadata: BTreeMetadata,
     padding: [u8; PAGE_SIZE - size_of::<BTreeMetadata>()],
@@ -79,6 +86,7 @@ impl Default for MetadataPage {
     }
 }
 
+/// Making sure the Metadata page is of size PAGE_SIZE
 const _: () = assert!(size_of::<MetadataPage>() == PAGE_SIZE);
 
 const LEAF_OFFSET: u64 = 1;
@@ -96,6 +104,7 @@ const KEYS_PER_NODE: usize = (PAGE_SIZE - 8) / 16;
 type Node = Page;
 type Leaf = Page;
 
+/// Btree iterator used to iterate pages of the SST
 pub struct BTreeIter<'a, 'b> {
     sst: &'a Sst,
     file_system: &'b FileSystem,
@@ -114,8 +123,11 @@ impl<'a, 'b> Iterator for BTreeIter<'a, 'b> {
     }
 }
 
-// BTree iterator
+// BTree iterator functions
 impl<'a, 'b> BTreeIter<'a, 'b> {
+    /// Check the validity of our interator range, if there exsits
+    /// any tree in that range, return the page number and the item number inside it
+    /// that corresponds to the smallest element bigger that the start of the range
     pub fn new(
         sst: &'a Sst,
         range: RangeInclusive<u64>,
@@ -150,6 +162,7 @@ impl<'a, 'b> BTreeIter<'a, 'b> {
         }
     }
 
+    /// Get the next element and if needed go to the next page
     fn go_to_next(&mut self) -> Option<Result<(u64, u64), DbError>> {
         if self.ended {
             return None;
@@ -202,8 +215,40 @@ type SearchResult = Result<(usize, usize), (usize, usize)>;
 pub struct BTree {}
 
 impl BTree {
-    /// Creates a static B tree in a
-    /// Returns a Vec containing the paths to all the levels
+    /// Creates a static B-tree SST (Sorted String Table) file with the following layout:
+    ///
+    /// ```text
+    /// SST File Layout:
+    /// ┌─────────────────────────────────────────────────────────────┐
+    /// │ Page 0: METADATA                                            │
+    /// │  - Magic number, offsets, tree depth, sizes                 │
+    /// ├─────────────────────────────────────────────────────────────┤
+    /// │ Pages 1..nodes_offset: LEAF NODES                           │
+    /// │  - Sorted key-value pairs (actual data)                     │
+    /// │  - Each leaf contains up to KEYS_PER_NODE pairs             │
+    /// ├─────────────────────────────────────────────────────────────┤
+    /// │ Pages nodes_offset..bloom_offset: INTERNAL NODES            │
+    /// │  - Tree structure for navigation                            │
+    /// │  - Each node contains (largest_key, page_number) pairs      │
+    /// │  - Bottom internal nodes point to leaf pages                │
+    /// │  - Upper nodes point to lower internal nodes                │
+    /// ├─────────────────────────────────────────────────────────────┤
+    /// │ Pages bloom_offset..end: BLOOM FILTER                       │
+    /// │  - Probabilistic membership test for keys                   │
+    /// │  - Multiple hash functions for low false positive rate      │
+    /// └─────────────────────────────────────────────────────────────┘
+    /// ```
+    ///
+    /// # Arguments
+    /// * `file_id` - Identifier for the SST file
+    /// * `pairs` - Iterator of (key, value) pairs (must be sorted by key)
+    /// * `n_entries_hint` - Estimated number of entries for bloom filter sizing
+    /// * `bits_per_entry` - Bloom filter bits per entry (affects false positive rate)
+    /// * `file_system` - File system to write pages to
+    ///
+    /// # Returns
+    /// * `BTreeMetadata` - Metadata describing the tree structure and offsets
+    /// * `BloomFilter` - The constructed bloom filter for quick negative lookups
     pub fn write(
         file_id: FileId,
         mut pairs: impl Iterator<Item = Result<(u64, u64), DbError>>,
@@ -220,7 +265,9 @@ impl BTree {
         let mut filter = BloomFilter::empty(n_entries_hint, bits_per_entry);
         let mut n_entries = 0;
 
-        // leaf write closure trait
+        // Closure to write leaf pages containing actual key-value pairs.
+        // Each leaf is filled with pairs from the iterator until full.
+        // Tracks the largest key in each leaf for building the index structure.
         let write_next_leaf = |page_bytes: &mut Aligned| {
             let leaf: &mut Leaf = bytemuck::cast_mut(page_bytes);
             leaf.length = 0;
@@ -246,22 +293,20 @@ impl BTree {
             Ok(leaf.length > 0)
         };
 
+        // Write all leaf pages starting at LEAF_OFFSET
         nodes_offset =
             file_system.write_file(file_id.page(LEAF_OFFSET as usize), write_next_leaf)? as u64;
         nodes_offset += LEAF_OFFSET;
 
-        // Construct the Btree in Memory
+        // Construct the B-tree index structure in memory from the largest keys.
+        // This creates a hierarchical index where each level helps navigate to the correct page.
         let btree = create_tree(largest_keys, largest_pages, KEYS_PER_NODE);
         let tree_depth = btree.len() as u64;
 
-        /*
-         *
-         * iterator([3:1 6:2 8:3] [1:1 2:2 3:8] [4:3 5:6 6:9] [7:10 8:11])
-         * */
-
         let mut btree_itter = btree.into_iter().flatten();
 
-        // btree write closure trait
+        // Closure to write internal node pages.
+        // Each node contains (key, page_number) pairs for navigation.
         let write_next_btree_page = |page_bytes: &mut Aligned| {
             let node: &mut Node = bytemuck::cast_mut(page_bytes);
             node.length = 0;
@@ -276,8 +321,7 @@ impl BTree {
             Ok(node.length > 0)
         };
 
-        /* leafs --> nodes --> filter --> metadata */
-
+        // Write internal nodes after the leaf pages
         let nodes_written = file_system
             .write_file(file_id.page(nodes_offset as usize), write_next_btree_page)?
             as u64;
@@ -287,7 +331,9 @@ impl BTree {
 
         let bloom_offset = nodes_written + nodes_offset;
         let mut bloom_size = 0;
-        // Bloom filter write closure trait
+
+        // Closure to write bloom filter pages.
+        // The bloom filter allows quick negative lookups (if a key is definitely not present).
         let write_next_bloom_page = |page_bytes: &mut Aligned| {
             let mut page_length: u64 = 0;
             for (dest, src) in page_bytes.0.iter_mut().zip(&mut bloom_bytes_iter) {
@@ -298,9 +344,11 @@ impl BTree {
             Ok(page_length > 0)
         };
 
+        // Write bloom filter after the internal nodes
         file_system.write_file(file_id.page(bloom_offset as usize), write_next_bloom_page)?;
         let file_size = bloom_offset + bloom_size;
 
+        // Create metadata structure with all offsets and sizes
         let btree_metadata = BTreeMetadata {
             magic: BEAR_MAGIC,
             leafs_offset: LEAF_OFFSET,
@@ -322,22 +370,44 @@ impl BTree {
             Ok(write_metadata == 1)
         };
 
+        // Write metadata at page 0 (METADATA_OFFSET)
         file_system.write_file(file_id.page(METADATA_OFFSET as usize), write_metadata)?;
 
         Ok((btree_metadata, filter))
     }
 
+    /// Opens an existing SST file and loads its metadata and bloom filter.
+    ///
+    /// # Process
+    /// 1. Reads and validates metadata from page 0
+    /// 2. Validates magic number and basic sanity checks
+    /// 3. Loads bloom filter from the pages specified in metadata
+    /// 4. Reconstructs the BloomFilter object from raw bytes
+    ///
+    /// # Arguments
+    /// * `file_id` - Identifier for the SST file to open
+    /// * `file_system` - File system to read pages from
+    ///
+    /// # Returns
+    /// * `BTreeMetadata` - The tree's metadata (offsets, sizes, depth)
+    /// * `BloomFilter` - The reconstructed bloom filter
+    ///
+    /// # Errors
+    /// * `DbError::CorruptSst` - If magic number is wrong or offsets are invalid
     pub fn open(
         file_id: FileId,
         file_system: &FileSystem,
     ) -> Result<(BTreeMetadata, BloomFilter), DbError> {
+        // Read metadata from page 0
         let metadata_page = file_system.get(file_id.page(METADATA_OFFSET as usize))?;
         let metadata_page: Arc<MetadataPage> = bytemuck::cast_arc(metadata_page);
         let metadata = metadata_page.metadata;
 
+        // Validate magic number
         if metadata.magic != BEAR_MAGIC {
             return Err(DbError::CorruptSst);
         }
+        // Sanity check: nodes must come after leafs
         if metadata.nodes_offset <= metadata.leafs_offset {
             return Err(DbError::CorruptSst);
         }
@@ -348,9 +418,11 @@ impl BTree {
 
         let bloom_pages_num = bloom_size.div_ceil(PAGE_SIZE as u64);
 
+        // Read bloom filter bytes from all its pages
         let mut bloom_vec: Vec<u8> = vec![];
         for page in 0..bloom_pages_num {
             let bloom_page = file_system.get(file_id.page((bloom_offset + page) as usize))?;
+            // Handle partial last page
             let end = if page == bloom_pages_num - 1 {
                 (bloom_size % (PAGE_SIZE as u64)) as usize
             } else {
@@ -360,11 +432,27 @@ impl BTree {
             bloom_vec.extend_from_slice(&bloom_page.0[0..end]);
         }
 
+        // Reconstruct bloom filter from bytes
         let filter = BloomFilter::from_bytes(&bloom_vec, num_hashes as usize);
 
         Ok((metadata, filter))
     }
 
+    /// Retrieves the value associated with a key from the SST.
+    ///
+    /// # Process
+    /// 1. Uses `search()` to locate the key in the B-tree structure
+    /// 2. If found, reads the leaf page and extracts the value
+    /// 3. Returns None if key doesn't exist
+    ///
+    /// # Arguments
+    /// * `sst` - The SST metadata and identifiers
+    /// * `key` - The key to look up
+    /// * `file_system` - File system to read pages from
+    ///
+    /// # Returns
+    /// * `Some(value)` if the key exists
+    /// * `None` if the key doesn't exist
     pub fn get(sst: &Sst, key: u64, file_system: &FileSystem) -> Result<Option<u64>, DbError> {
         let res = BTree::search(sst, key, file_system)?;
         let Some(res) = res else { return Ok(None) };
@@ -373,12 +461,30 @@ impl BTree {
             return Ok(None);
         };
 
+        // Read the leaf page and extract the value
         let leaf_page = file_system.get(sst.file_id.page(page_number))?;
         let leaf_node: Arc<Leaf> = bytemuck::cast_arc(leaf_page);
 
         Ok(Some(leaf_node.pairs[item_number][1]))
     }
 
+    /// Searches for a key in the B-tree using tree navigation (non-binary search version).
+    ///
+    /// # Algorithm
+    /// 1. Start at root node
+    /// 2. Binary search within the node to find which child to follow
+    /// 3. Repeat until reaching a leaf page
+    /// 4. Binary search within the leaf to find the exact key
+    ///
+    /// # Arguments
+    /// * `sst` - The SST metadata and identifiers
+    /// * `key` - The key to search for
+    /// * `file_system` - File system to read pages from
+    ///
+    /// # Returns
+    /// * `None` - Key is outside the range of this SST
+    /// * `Some(Ok((page, index)))` - Exact match found at this position
+    /// * `Some(Err((page, index)))` - Key not found, but this is where it would be inserted
     #[cfg(not(feature = "binary_search"))]
     fn search(
         sst: &Sst,
@@ -389,6 +495,7 @@ impl BTree {
         let leafs_offset = sst.btree_metadata.leafs_offset;
         let tree_depth = sst.btree_metadata.tree_depth;
 
+        // Check if key is beyond the maximum key in the tree
         let root_page = file_system.get(sst.file_id.page(nodes_offset as usize))?;
         let root_node: Arc<Node> = bytemuck::cast_arc(root_page);
         if root_node.pairs[(root_node.length - 1) as usize][0] < key {
@@ -400,10 +507,13 @@ impl BTree {
         let mut node_number: u64 = 0;
         let mut page_number: u64;
         let mut idx: usize;
+
+        // Navigate through internal nodes to find the correct leaf
         for level in 0..tree_depth {
             let sub_vec: &[[u64; 2]] =
                 &current_node.as_ref().pairs[0..current_node.length as usize];
 
+            // Binary search finds the first key >= search key
             let (Ok(i) | Err(i)) = sub_vec.binary_search_by_key(&key, |x| x[0]);
             idx = i;
             node_number = current_node.pairs[idx][1];
@@ -412,11 +522,13 @@ impl BTree {
                 break;
             }
 
+            // Load next level node
             page_number = node_number + nodes_offset;
             let current_page = file_system.get(sst.file_id.page(page_number as usize))?;
             current_node = bytemuck::cast_arc(current_page);
         }
 
+        // Search within the target leaf page
         page_number = leafs_offset + node_number;
         let leaf_page = file_system.get(sst.file_id.page(page_number as usize))?;
         let leaf: Arc<Leaf> = bytemuck::cast_arc(leaf_page);
@@ -444,6 +556,25 @@ impl BTree {
         }
     }
 
+    /// Searches for a key using binary search over leaf pages (alternative implementation).
+    ///
+    /// # Algorithm
+    /// Instead of traversing the tree structure, this performs a binary search
+    /// directly over the leaf pages, which can be more efficient when the tree
+    /// is shallow or when doing random access patterns.
+    ///
+    /// 1. Binary search over leaf page numbers to find the page that could contain the key
+    /// 2. Binary search within that leaf page to find the exact key
+    ///
+    /// # Arguments
+    /// * `sst` - The SST metadata and identifiers
+    /// * `key` - The key to search for
+    /// * `file_system` - File system to read pages from
+    ///
+    /// # Returns
+    /// * `None` - Key is outside the range of this SST
+    /// * `Some(Ok((page, index)))` - Exact match found at this position
+    /// * `Some(Err((page, index)))` - Key not found, but this is where it would be inserted
     #[cfg(feature = "binary_search")]
     fn search(
         sst: &Sst,
@@ -453,6 +584,7 @@ impl BTree {
         let nodes_offset = sst.btree_metadata.nodes_offset;
         let leafs_offset = sst.btree_metadata.leafs_offset;
 
+        // Check if key is beyond the maximum key in the tree
         let root_page = file_system.get(sst.file_id.page(nodes_offset as usize))?;
         let root_node: Arc<Node> = bytemuck::cast_arc(root_page);
         if root_node.pairs[(root_node.length - 1) as usize][0] < key {
@@ -463,6 +595,7 @@ impl BTree {
         let mut end_page_num = nodes_offset - 1;
         let mut page_number: usize;
 
+        // Binary search over leaf pages to find the right page
         loop {
             page_number = (start_page_num + end_page_num) as usize / 2;
             if page_number == start_page_num as usize {
@@ -471,15 +604,21 @@ impl BTree {
             let middle_page = file_system.get(sst.file_id.page(page_number))?;
             let leaf: Arc<Leaf> = bytemuck::cast_arc(middle_page);
 
+            // Check if key is before this page's range
             if key < leaf.pairs[0][0] {
                 end_page_num = page_number as u64;
-            } else if key > leaf.pairs[(leaf.length - 1) as usize][0] {
+            }
+            // Check if key is after this page's range
+            else if key > leaf.pairs[(leaf.length - 1) as usize][0] {
                 start_page_num = page_number as u64;
-            } else {
+            }
+            // Key is within this page's range
+            else {
                 break;
             }
         }
 
+        // Search within the target leaf page
         let leaf_page = file_system.get(sst.file_id.page(page_number))?;
         let leaf: Arc<Leaf> = bytemuck::cast_arc(leaf_page);
         let found_exact;
@@ -503,6 +642,16 @@ impl BTree {
         }
     }
 
+    /// Pretty prints the entire SST structure for debugging.
+    ///
+    /// Displays:
+    /// - Metadata (magic number, offsets, tree depth)
+    /// - All leaf pages with their key-value pairs
+    /// - All internal nodes with their navigation keys
+    ///
+    /// # Arguments
+    /// * `file_id` - The SST file to print
+    /// * `file_system` - File system to read pages from
     #[allow(dead_code)]
     fn pretty_print_pages(file_id: FileId, file_system: &FileSystem) -> Result<(), DbError> {
         let metadata_page = file_system.get(file_id.page(METADATA_OFFSET as usize))?;
@@ -559,11 +708,36 @@ impl BTree {
     }
 }
 
-/// Helper function that gets the largest leaf keys and their corresponding pages and
-/// constructs the btree in memory
+/// Helper function that constructs an in-memory B-tree index structure.
+///
+/// # Algorithm
+/// Given the largest keys from each leaf page, builds a hierarchical index:
+///
+/// ```text
+/// Example with keys [3, 6, 8, 10, 13, 15] and KEYS_PER_NODE=3:
+///
+/// Level 0 (Root):     [8:1, 15:2]
+///                       /        \
+/// Level 1:        [3:0, 6:1, 8:2]  [10:3, 13:4, 15:5]
+///                    |   |   |       |    |    |
+/// Leafs:          [1,2,3][4,5,6][7,8] [9,10][11,12,13][14,15]
+/// ```
+///
+/// Each entry is (largest_key_in_subtree, page_number).
+/// The tree is built bottom-up by repeatedly grouping nodes into parents.
+///
+/// # Arguments
+/// * `btree_keys` - Largest key from each leaf page (sorted)
+/// * `leaf_pages` - Page number for each leaf (corresponds to btree_keys)
+/// * `n` - Maximum entries per node (KEYS_PER_NODE)
+///
+/// # Returns
+/// A Vec of levels, where each level is a Vec of pages, and each page
+/// contains (key, page_number) pairs. Ordered from root to leaves.
 fn create_tree(btree_keys: Vec<u64>, leaf_pages: Vec<u64>, n: usize) -> Vec<Vec<Vec<(u64, u64)>>> {
     assert_eq!(btree_keys.len(), leaf_pages.len());
-    // First build forward pyramid and track mappings
+
+    // Build forward pyramid: group keys into chunks, taking largest from each chunk
     let mut forward = vec![];
     let mut current = btree_keys.clone();
     loop {
@@ -575,10 +749,11 @@ fn create_tree(btree_keys: Vec<u64>, leaf_pages: Vec<u64>, n: usize) -> Vec<Vec<
         }
 
         forward.push(chunks.clone());
+        // Next level uses the largest key from each chunk
         current = chunks.iter().map(|chunk| *chunk.last().unwrap()).collect();
     }
 
-    // Reverse and assign new pages
+    // Reverse to go from root to leaves
     forward.reverse();
 
     let mut result = vec![];
@@ -586,7 +761,7 @@ fn create_tree(btree_keys: Vec<u64>, leaf_pages: Vec<u64>, n: usize) -> Vec<Vec<
 
     for (level_idx, level) in forward.iter().enumerate() {
         if level_idx == forward.len() - 1 {
-            // Bottom level: use original indices
+            // Bottom level: map keys to actual leaf page numbers
             let leaf_chunks: Vec<Vec<u64>> =
                 leaf_pages.chunks(n).map(|chunk| chunk.to_vec()).collect();
             let bottom: Vec<Vec<(u64, u64)>> = level
@@ -602,7 +777,7 @@ fn create_tree(btree_keys: Vec<u64>, leaf_pages: Vec<u64>, n: usize) -> Vec<Vec<
                 .collect();
             result.push(bottom);
         } else {
-            // Other levels: assign new pages
+            // Internal levels: assign sequential page IDs
             let with_ids: Vec<Vec<(u64, u64)>> = level
                 .iter()
                 .map(|chunk| {
