@@ -1,0 +1,20 @@
+name: Run Tests
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Build and run tests in Docker
+      run: |
+        docker build -t bearr-tests .
+        docker run bearr-tests
