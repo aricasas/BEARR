@@ -12,6 +12,7 @@ fastrand = "2.3.0"
 bit-vec = "0.8.0"
 csv = "1.4.0"
 aligned-vec = "0.6.4"
+indicatif = "0.18.3"
 
 [[bin]]
 name = "tests"
@@ -22,7 +23,7 @@ name = "experiments"
 path = "src/experiments.rs"
 
 [features]
-default = ["keep_test_files"]
+default = []
 mock = []
 mock_hash = []
 binary_search = []

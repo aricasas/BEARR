@@ -7,6 +7,7 @@ use std::{
 };
 
 use bearr::{Database, DbConfiguration, LsmConfiguration};
+use indicatif::ProgressStyle;
 use serde::{Deserialize, Serialize};
 
 fn main() {
@@ -17,24 +18,53 @@ fn main() {
         lsm_configuration: LsmConfiguration {
             size_ratio: 4,
             memtable_capacity: 655_360, // 655,360 rows = 10 MiB
-            bloom_filter_bits: 11,
+
+            // On 1 GiB database with size ratio 4 and memtable capacity 655,360,
+            // using Monkey with 13 bits per entry at the highest LSM tree level uses approx
+            // the same total memory as having 8 bits per entry across all levels uniformly.
+            bloom_filter_bits: if cfg!(feature = "uniform_bits") {
+                8
+            } else {
+                13
+            },
         },
     };
 
     let total_entries = 64 * 1024 * 1024; // 64M rows = 1 GiB
     let sample_spacing = 1024 * 1024; // Sample every 1M rows inserted = every 16 MiB
 
-    bench_put(BenchPutConfig {
-        out_path: "bench_put.csv",
-        total_entries,
-        key_range: ..,
-        sample_spacing,
-        db_config,
-    });
-
     let mut keys: Vec<u64> = vec![0; total_entries];
     let buffer: &mut [u8] = bytemuck::cast_slice_mut(&mut keys);
     fastrand::fill(buffer);
+
+    if cfg!(feature = "binary_search") {
+        bench_get(BenchGetConfig {
+            out_path: "bench_get_binary.csv",
+            total_entries,
+            key_list: &keys,
+            percentage_from_key_list: 1.0,
+            get_key_range: ..,
+            sample_spacing,
+            gets_per_sample: 1000,
+            db_config,
+        });
+
+        return;
+    }
+
+    for size_ratio in [2, 4, 8] {
+        bench_put(BenchPutConfig {
+            out_path: format!("bench_put_{}.csv", size_ratio),
+            total_entries,
+            key_range: ..,
+            sample_spacing,
+            db_config: {
+                let mut new_config = db_config;
+                new_config.lsm_configuration.size_ratio = size_ratio;
+                new_config
+            },
+        });
+    }
 
     bench_get(BenchGetConfig {
         out_path: if cfg!(feature = "binary_search") {
@@ -99,6 +129,8 @@ fn main() {
     });
 }
 
+const PROGRESS_BAR_TEMPLATE: &str = "[{elapsed_precise}] {bar:64} {pos}/{len} samples";
+
 #[derive(Serialize, Deserialize, Debug)]
 struct BenchPutSample {
     elapsed_time: f64,
@@ -126,13 +158,22 @@ fn bench_put<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(bench_config: BenchPut
 
     let _ = std::fs::remove_dir_all("bench_put_db");
 
-    eprintln!("Running put benchmark: N={total_entries}");
+    eprintln!(
+        "Running put benchmark with size ratio {}: N={total_entries}",
+        db_config.lsm_configuration.size_ratio
+    );
     let bench_start = Instant::now();
 
     let mut db = Database::create("bench_put_db", db_config).unwrap();
     let mut rng = fastrand::Rng::new();
 
-    let mut data = Vec::with_capacity(total_entries.div_ceil(sample_spacing));
+    let num_samples = total_entries / sample_spacing;
+    let mut data = Vec::with_capacity(num_samples);
+
+    let progress_bar = indicatif::ProgressBar::new(num_samples as u64)
+        .with_style(ProgressStyle::with_template(PROGRESS_BAR_TEMPLATE).unwrap());
+    progress_bar.inc(0);
+    progress_bar.enable_steady_tick(Duration::from_millis(500));
 
     let start = Instant::now();
     let mut puts_duration = Duration::ZERO;
@@ -159,10 +200,14 @@ fn bench_put<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(bench_config: BenchPut
             });
 
             puts_duration = Duration::ZERO;
+
+            progress_bar.inc(1);
         }
     }
 
     drop(db);
+
+    progress_bar.finish_and_clear();
 
     let mut csv_writer = csv::Writer::from_path(out_path).unwrap();
     for record in data.iter() {
@@ -176,7 +221,8 @@ fn bench_put<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(bench_config: BenchPut
 
     let bench_elapsed = bench_start.elapsed();
     eprintln!(
-        "Finished put benchmark: time={:.3} secs",
+        "Finished put benchmark with size ratio {}: time={:.3} secs",
+        db_config.lsm_configuration.size_ratio,
         bench_elapsed.as_secs_f64()
     );
 }
@@ -220,7 +266,13 @@ fn bench_get<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(bench_config: BenchGet
     let mut db = Database::create("bench_get_db", db_config).unwrap();
     let mut rng = fastrand::Rng::new();
 
-    let mut data = Vec::with_capacity(total_entries.div_ceil(sample_spacing));
+    let num_samples = total_entries / sample_spacing;
+    let mut data = Vec::with_capacity(num_samples);
+
+    let progress_bar = indicatif::ProgressBar::new(num_samples as u64)
+        .with_style(ProgressStyle::with_template(PROGRESS_BAR_TEMPLATE).unwrap());
+    progress_bar.inc(0);
+    progress_bar.enable_steady_tick(Duration::from_millis(500));
 
     for n_entries in 1..=total_entries {
         let key = key_list[n_entries - 1];
@@ -261,10 +313,13 @@ fn bench_get<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(bench_config: BenchGet
                 throughput_per_sec,
                 percentage_successful_gets,
             });
+
+            progress_bar.inc(1);
         }
     }
 
     drop(db);
+    progress_bar.finish_and_clear();
 
     let mut csv_writer = csv::Writer::from_path(out_path).unwrap();
     for record in data {
@@ -317,7 +372,13 @@ fn bench_concurrent_get<P: AsRef<Path>, R: RangeBounds<u64> + Clone + Send + Syn
     let mut db = Database::create("bench_concurrent_get_db", db_config).unwrap();
     let mut rng = fastrand::Rng::new();
 
-    let mut data = Vec::with_capacity(total_entries.div_ceil(sample_spacing));
+    let num_samples = total_entries / sample_spacing;
+    let mut data = Vec::with_capacity(num_samples);
+
+    let progress_bar = indicatif::ProgressBar::new(num_samples as u64)
+        .with_style(ProgressStyle::with_template(PROGRESS_BAR_TEMPLATE).unwrap());
+    progress_bar.inc(0);
+    progress_bar.enable_steady_tick(Duration::from_millis(500));
 
     for n_entries in 1..=total_entries {
         let key = key_list[n_entries - 1];
@@ -369,10 +430,13 @@ fn bench_concurrent_get<P: AsRef<Path>, R: RangeBounds<u64> + Clone + Send + Syn
                 throughput_per_sec,
                 percentage_successful_gets,
             });
+
+            progress_bar.inc(1);
         }
     }
 
     drop(db);
+    progress_bar.finish_and_clear();
 
     let mut csv_writer = csv::Writer::from_path(out_path).unwrap();
     for record in data {
@@ -432,7 +496,13 @@ fn bench_scan<P: AsRef<Path>, R1: RangeBounds<u64> + Clone, R2: RangeBounds<u64>
     let mut db = Database::create("bench_scan_db", db_config).unwrap();
     let mut rng = fastrand::Rng::new();
 
-    let mut data = Vec::with_capacity(total_entries.div_ceil(sample_spacing));
+    let num_samples = total_entries / sample_spacing;
+    let mut data = Vec::with_capacity(num_samples);
+
+    let progress_bar = indicatif::ProgressBar::new(num_samples as u64)
+        .with_style(ProgressStyle::with_template(PROGRESS_BAR_TEMPLATE).unwrap());
+    progress_bar.inc(0);
+    progress_bar.enable_steady_tick(Duration::from_millis(500));
 
     for n_entries in 1..=total_entries {
         let key = rng.u64(key_range.clone());
@@ -464,10 +534,13 @@ fn bench_scan<P: AsRef<Path>, R1: RangeBounds<u64> + Clone, R2: RangeBounds<u64>
                 scans_time: scan_time,
                 throughput_per_sec,
             });
+
+            progress_bar.inc(1);
         }
     }
 
     drop(db);
+    progress_bar.finish_and_clear();
 
     let mut csv_writer = csv::Writer::from_path(out_path).unwrap();
     for record in data {
@@ -529,7 +602,13 @@ fn bench_concurrent_scan<
     let mut db = Database::create("bench_concurrent_scan_db", db_config).unwrap();
     let mut rng = fastrand::Rng::new();
 
-    let mut data = Vec::with_capacity(total_entries.div_ceil(sample_spacing));
+    let num_samples = total_entries / sample_spacing;
+    let mut data = Vec::with_capacity(num_samples);
+
+    let progress_bar = indicatif::ProgressBar::new(num_samples as u64)
+        .with_style(ProgressStyle::with_template(PROGRESS_BAR_TEMPLATE).unwrap());
+    progress_bar.inc(0);
+    progress_bar.enable_steady_tick(Duration::from_millis(500));
 
     for n_entries in 1..=total_entries {
         let key = rng.u64(key_range.clone());
@@ -574,10 +653,13 @@ fn bench_concurrent_scan<
                 scans_time,
                 throughput_per_sec,
             });
+
+            progress_bar.inc(1);
         }
     }
 
     drop(db);
+    progress_bar.finish_and_clear();
 
     let mut csv_writer = csv::Writer::from_path(out_path).unwrap();
     for record in data {
@@ -623,7 +705,13 @@ fn bench_full_scan<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(
     let mut db = Database::create("bench_full_scan_db", db_config).unwrap();
     let mut rng = fastrand::Rng::new();
 
-    let mut data = Vec::with_capacity(total_entries.div_ceil(sample_spacing));
+    let num_samples = total_entries / sample_spacing;
+    let mut data = Vec::with_capacity(num_samples);
+
+    let progress_bar = indicatif::ProgressBar::new(num_samples as u64)
+        .with_style(ProgressStyle::with_template(PROGRESS_BAR_TEMPLATE).unwrap());
+    progress_bar.inc(0);
+    progress_bar.enable_steady_tick(Duration::from_millis(500));
 
     for n_entries in 1..=total_entries {
         let key = rng.u64(key_range.clone());
@@ -646,10 +734,13 @@ fn bench_full_scan<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(
                 scans_time: scan_time,
                 throughput_per_sec,
             });
+
+            progress_bar.inc(1);
         }
     }
 
     drop(db);
+    progress_bar.finish_and_clear();
 
     let mut csv_writer = csv::Writer::from_path(out_path).unwrap();
     for record in data {
