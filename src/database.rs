@@ -17,18 +17,24 @@ use crate::file_system::FileSystem;
 #[cfg(feature = "mock")]
 use crate::mock::FileSystem;
 
-/// An open connection to a database
+/// An open connection to a database.
 pub struct Database {
     name: PathBuf,
     lsm: LsmTree,
     file_system: FileSystem,
 }
 
-/// Configuration options for a database
+/// Configuration options for a database.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub struct DbConfiguration {
+    /// Configuration options for the LSM tree.
     pub lsm_configuration: LsmConfiguration,
+    /// Number of pages that the buffer pool can hold.
+    /// Must be at least 16.
     pub buffer_pool_capacity: usize,
+    /// When writing multiple pages to a file,
+    /// the number of pages to buffer before issuing an I/O call.
+    /// Must be nonzero.
     pub write_buffering: usize,
     pub readahead_buffering: usize,
 }
