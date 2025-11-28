@@ -299,8 +299,9 @@ impl BTree {
             Ok(page_length > 0)
         };
 
-        file_system.write_file(file_id.page(bloom_offset as usize), write_next_bloom_page)?;
-        let file_size = bloom_offset + bloom_size;
+        let file_size = bloom_offset
+            + file_system.write_file(file_id.page(bloom_offset as usize), write_next_bloom_page)?
+                as u64;
 
         let btree_metadata = BTreeMetadata {
             magic: BEAR_MAGIC,
