@@ -156,9 +156,10 @@ impl<'a, 'b> BTreeIter<'a, 'b> {
         }
 
         if self.buffered_page.is_none() {
-            let page_bytes = self
-                .file_system
-                .get(self.sst.file_id.page(self.page_number));
+            let page_bytes = self.file_system.get_sequential(
+                self.sst.file_id.page(self.page_number),
+                self.sst.btree_metadata.size as usize,
+            );
 
             let buffered_page: Arc<Page> = match page_bytes {
                 Ok(bytes) => bytemuck::cast_arc(bytes),
