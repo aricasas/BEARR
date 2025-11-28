@@ -148,6 +148,8 @@ impl FileSystem {
     /// Returns a reference to the bytes of the page, or an error.
     pub fn get(&self, page_id: PageId) -> Result<Arc<Aligned>, DbError> {
         let buffer_page_id;
+
+        // Hold lock to check if page is in buffer pool
         {
             let mut inner_lock = self.inner.lock().unwrap(); // If lock is poisoned, this is unrecoverable
             let inner = inner_lock.deref_mut();
@@ -159,6 +161,11 @@ impl FileSystem {
                 return Ok(Arc::clone(&entry.page));
             }
         }
+
+        // If page is not in buffer pool, fetch it from disk
+        // We don't hold the lock here so other threads can do work while we wait for I/O to complete.
+        // It's okay to relinquish exclusive access, because higher levels of the database ensure that
+        // no other thread is modifying files while our thread is reading files.
 
         let PageId {
             file_id,
@@ -173,15 +180,23 @@ impl FileSystem {
         let page_offset = page_number * PAGE_SIZE;
         file.read_exact_at(page.inner_mut().unwrap(), page_offset as u64)?;
 
+        // Obtain lock again to put page in buffer pool
         {
             let mut inner_lock = self.inner.lock().unwrap();
             let inner = inner_lock.deref_mut();
 
+            // Another thread could have inserted this page while we weren't holding the lock
+            // but our implementation assumes we never try to insert a page twice.
+            // So we check again whether the page is in the buffer pool.
             if let Some(entry) = inner.buffer_pool.get(buffer_page_id) {
                 inner.eviction_handler.touch(entry.eviction_id);
                 return Ok(Arc::clone(&entry.page));
             }
 
+            // Our implementation never overfills the buffer pool
+            assert!(inner.buffer_pool.len() <= self.capacity);
+
+            // Evict to make room the new page
             if inner.buffer_pool.len() == self.capacity {
                 inner.evict_page()?;
             }
@@ -192,12 +207,24 @@ impl FileSystem {
         }
     }
 
+    /// Gets the page with the given ID.
+    ///
+    /// If it is stored in the buffer pool, it gets it from there, otherwise it will read it from disk
+    /// and might evict another page from the buffer pool to make space.
+    ///
+    /// While performing the read, it will also read pages ahead of the one that is returned and load them
+    /// to the buffer pool. This is so subsequent sequential accesses will not have to perform I/O again.
+    ///
+    /// The amount of readahead done is configured by the user in the `readahead_buffering` config option.
+    ///
+    /// Returns a reference to the bytes of the page, or an error.
     pub fn get_sequential(
         &self,
         page_id: PageId,
-        // in pages
+        // File size in pages
         file_size: usize,
     ) -> Result<Arc<Aligned>, DbError> {
+        // Hold lock while checking buffer pool
         {
             let mut inner_lock = self.inner.lock().unwrap(); // If lock is poisoned, this is unrecoverable
             let inner = inner_lock.deref_mut();
@@ -211,6 +238,9 @@ impl FileSystem {
             }
         }
 
+        // If page not in buffer pool, release lock and performing file read
+        // See reasons in FileSystem::get
+
         let PageId {
             file_id,
             page_number,
@@ -221,8 +251,11 @@ impl FileSystem {
             .custom_flags(libc::O_DIRECT | libc::O_SYNC)
             .open(path)?;
 
+        // Read several pages ahead of what was asked
         let page_start = page_number;
-        let page_end = (page_number + 1 + self.readahead_buffering).min(file_size);
+        let page_end = (page_number + self.readahead_buffering).min(file_size);
+
+        assert!(page_start < page_end);
 
         let num_pages_to_read = page_end - page_start;
 
@@ -232,10 +265,13 @@ impl FileSystem {
 
         file.read_exact_at(bytemuck::cast_slice_mut(&mut buffer), pages_offset as u64)?;
 
+        // Obtain lock again to modify buffer pool
         {
             let mut inner_lock = self.inner.lock().unwrap();
             let inner = inner_lock.deref_mut();
 
+            // Add pages we just read to buffer pool from farthest to closest to wanted page
+            // In reverse so we don't accidentally evict the pages that we'll need sooner
             for i in (0..num_pages_to_read).rev() {
                 let page_id = PageId {
                     file_id,
@@ -247,6 +283,7 @@ impl FileSystem {
                     .get(inner.file_map.get_or_assign_page(page_id))
                     .is_none()
                 {
+                    // Only add to buffer pool if not already there
                     if inner.buffer_pool.len() == self.capacity {
                         inner.evict_page()?;
                     }
@@ -258,6 +295,8 @@ impl FileSystem {
                 }
             }
 
+            // Get wanted page from buffer pool
+            // We know it's there since it's the latest one we just added
             let page_entry = inner
                 .buffer_pool
                 .get(inner.file_map.get_or_assign_page(page_id))

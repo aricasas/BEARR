@@ -43,7 +43,10 @@ pub struct DbConfiguration {
 impl DbConfiguration {
     fn validate(&self) -> Result<(), DbError> {
         self.lsm_configuration.validate()?;
-        if self.buffer_pool_capacity >= 16 && self.write_buffering > 0 {
+        if self.buffer_pool_capacity >= 16
+            && self.write_buffering > 0
+            && self.readahead_buffering > 0
+        {
             Ok(())
         } else {
             Err(DbError::InvalidConfiguration)
@@ -394,22 +397,26 @@ mod tests {
 
     #[test]
     fn test_errors() -> Result<()> {
-        let mut db = create_db("errors", 2, 1, 0, 16, 1, 0)?;
+        let mut db = create_db("errors", 2, 1, 0, 16, 1, 1)?;
 
         assert_eq!(
-            create_db("errors_bad_size_ratio", 1, 1, 0, 16, 1, 0).err(),
+            create_db("errors_bad_size_ratio", 1, 1, 0, 16, 1, 1).err(),
             Some(DbError::InvalidConfiguration)
         );
         assert_eq!(
-            create_db("errors_no_memtable_capacity", 2, 0, 0, 16, 1, 0).err(),
+            create_db("errors_no_memtable_capacity", 2, 0, 0, 16, 1, 1).err(),
             Some(DbError::InvalidConfiguration)
         );
         assert_eq!(
-            create_db("errors_small_buffer_pool_capacity", 2, 1, 0, 15, 1, 0).err(),
+            create_db("errors_small_buffer_pool_capacity", 2, 1, 0, 15, 1, 1).err(),
             Some(DbError::InvalidConfiguration)
         );
         assert_eq!(
-            create_db("errors_no_write_buffering", 2, 1, 0, 16, 0, 0).err(),
+            create_db("errors_no_write_buffering", 2, 1, 0, 16, 0, 1).err(),
+            Some(DbError::InvalidConfiguration)
+        );
+        assert_eq!(
+            create_db("errors_no_readahead_buffering", 2, 1, 0, 16, 1, 0).err(),
             Some(DbError::InvalidConfiguration)
         );
 
