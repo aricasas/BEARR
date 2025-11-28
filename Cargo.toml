@@ -22,7 +22,7 @@ name = "experiments"
 path = "src/experiments.rs"
 
 [features]
-default = ["keep_test_files"]
+default = []
 mock = []
 mock_hash = []
 binary_search = []

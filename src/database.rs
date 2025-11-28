@@ -204,7 +204,7 @@ impl Drop for Database {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, ops::Range};
+    use std::{collections::HashMap, ops::Range, thread};
 
     use anyhow::Result;
 
@@ -432,11 +432,11 @@ mod tests {
         Restart,
     }
 
+    const KEY_RANGE: Range<u64> = 0..65536;
+    const VALUE_RANGE: Range<u64> = 0..65536;
+
     #[test]
     fn test_chaotic() -> Result<()> {
-        const KEY_RANGE: Range<u64> = 0..65536;
-        const VALUE_RANGE: Range<u64> = 0..65536;
-
         let name = &test_path("chaotic");
         let mut db = Some(Database::create(
             name,
@@ -452,6 +452,7 @@ mod tests {
             },
         )?);
         let mut oracle = HashMap::new();
+
         for i in 0..4096 {
             let command = fastrand::choice([
                 Command::Get,
@@ -463,6 +464,7 @@ mod tests {
             ])
             .unwrap();
             let command_description;
+
             match command {
                 Command::Get => {
                     let db = db.as_ref().unwrap();
@@ -530,6 +532,7 @@ mod tests {
                     db = Some(Database::open(name)?);
                 }
             }
+
             let state = db
                 .as_ref()
                 .unwrap()
@@ -539,6 +542,90 @@ mod tests {
                 println!("{i}. {command_description}; {state:?}");
             }
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_concurrency() -> Result<()> {
+        let name = &test_path("concurrency");
+        let mut db = Database::create(
+            name,
+            DbConfiguration {
+                buffer_pool_capacity: 64,
+                write_buffering: 8,
+                readahead_buffering: 8,
+                lsm_configuration: LsmConfiguration {
+                    size_ratio: 3,
+                    memtable_capacity: 256,
+                    bloom_filter_bits: 4,
+                },
+            },
+        )?;
+        let mut oracle = HashMap::new();
+
+        while oracle.len() < 65536 {
+            let key = fastrand::u64(KEY_RANGE);
+            let value = fastrand::u64(VALUE_RANGE);
+            db.put(key, value)?;
+            oracle.insert(key, value);
+        }
+
+        let db = &db;
+        let oracle = &oracle;
+        thread::scope(|scope| {
+            for i in 0..16 {
+                scope.spawn(move || {
+                    for j in 0..4096 {
+                        let command = fastrand::choice([Command::Get, Command::Scan]).unwrap();
+
+                        let command_description = match command {
+                            Command::Get => {
+                                let key = if fastrand::f64() < 0.9
+                                    && let Some(&k) = fastrand::choice(oracle.keys())
+                                {
+                                    k
+                                } else {
+                                    fastrand::u64(KEY_RANGE)
+                                };
+                                let value = db
+                                    .get(key)
+                                    .unwrap_or_else(|e| panic!("get fail {i}::{j} {key}: {e}"));
+                                assert_eq!(value, oracle.get(&key).copied());
+                                format!("get {key} ==> {value:?}")
+                            }
+                            Command::Scan => {
+                                let a = fastrand::u64(KEY_RANGE);
+                                let b = fastrand::u64(KEY_RANGE);
+                                let start = u64::min(a, b);
+                                let end = u64::max(a, b);
+                                let scan = db
+                                    .scan(start..=end)
+                                    .unwrap_or_else(|e| {
+                                        panic!("scan fail {i}::{j} {start}..={end}: {e}")
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()
+                                    .unwrap_or_else(|e| {
+                                        panic!("collect fail {i}::{j} {start}..={end}: {e}")
+                                    });
+                                let mut oracle_scan: Vec<_> = (start..=end)
+                                    .filter_map(|key| oracle.get(&key).map(|&value| (key, value)))
+                                    .collect();
+                                oracle_scan.sort_unstable();
+                                assert_eq!(scan, oracle_scan);
+                                format!("scan {start}..={end} ==> # = {}", scan.len())
+                            }
+                            _ => unreachable!(),
+                        };
+
+                        if j % 256 == 0 {
+                            println!("{i}::{j}. {command_description}");
+                        }
+                    }
+                });
+            }
+        });
+
         Ok(())
     }
 }

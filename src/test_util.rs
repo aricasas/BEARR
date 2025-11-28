@@ -19,11 +19,7 @@ fn get_path(base: &str, name: &str) -> PathBuf {
 }
 
 fn delete_path(path: &Path) {
-    if path.is_dir() {
-        _ = fs::remove_dir_all(path);
-    } else {
-        _ = fs::remove_file(path);
-    }
+    _ = fs::remove_dir_all(path);
 }
 
 impl TestPath {
@@ -67,7 +63,7 @@ impl TestFs {
     pub fn create(base: &str, name: &str) -> Self {
         let path = TestPath::create(base, name);
         fs::create_dir_all(&path).unwrap();
-        let fs = FileSystem::new(&path, 16, 1, 1).unwrap();
+        let fs = FileSystem::new(&path, 16, 1, 0).unwrap();
         Self { _path: path, fs }
     }
 }
