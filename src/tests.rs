@@ -9,7 +9,7 @@ fn main() {
             lsm_level: 0,
             sst_number: 0,
         },
-        &FileSystem::new("test_files/database/basic", 16, 16).unwrap(),
+        &FileSystem::new("test_files/database/basic", 16, 16, 16).unwrap(),
     )
     .unwrap();
 }

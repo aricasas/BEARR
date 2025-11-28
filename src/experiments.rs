@@ -13,6 +13,7 @@ fn main() {
     let db_config = DbConfiguration {
         buffer_pool_capacity: 65_536, // (256 Mib) / (4KiB per page)
         write_buffering: 32,
+        readahead_buffering: 32,
         lsm_configuration: LsmConfiguration {
             size_ratio: 5,
             memtable_capacity: 655_360, // (10 MiB) / (16 B per row)
@@ -58,6 +59,17 @@ fn main() {
         db_config,
     });
 
+    bench_scan(BenchScanConfig {
+        out_path: "bench_scan.csv",
+        total_entries,
+        key_range: ..,
+        scan_start_key_range: ..,
+        scans_per_sample: 30,
+        entries_per_scan: 400,
+        sample_spacing,
+        db_config,
+    });
+
     bench_full_scan(BenchFullScanConfig {
         out_path: "bench_full_scan.csv",
         total_entries,
@@ -97,6 +109,8 @@ fn bench_get<P: AsRef<Path>, R1: RangeBounds<u64> + Clone, R2: RangeBounds<u64> 
         gets_per_sample,
         db_config,
     } = bench_config;
+
+    let _ = std::fs::remove_dir_all("bench_get_db");
 
     eprintln!("Running get benchmark: N={total_entries}");
     let bench_start = Instant::now();
@@ -188,6 +202,8 @@ fn bench_concurrent_get<
         gets_per_sample_per_thread,
         db_config,
     } = bench_config;
+
+    let _ = std::fs::remove_dir_all("bench_concurrent_get_db");
 
     eprintln!("Running concurrent get benchmark with {num_threads} threads: N={total_entries}");
     let bench_start = Instant::now();
@@ -284,6 +300,8 @@ fn bench_put<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(bench_config: BenchPut
         db_config,
     } = bench_config;
 
+    let _ = std::fs::remove_dir_all("bench_put_db");
+
     eprintln!("Running put benchmark: N={total_entries}");
     let bench_start = Instant::now();
 
@@ -339,9 +357,96 @@ fn bench_put<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(bench_config: BenchPut
 #[derive(Serialize, Deserialize, Debug)]
 struct BenchScanSample {
     n_entries: usize,
-    n_unique_rows: usize,
+    n_scanned_rows: usize,
     scan_time: f64,
     throughput_per_sec: f64,
+}
+
+struct BenchScanConfig<P: AsRef<Path>, R1: RangeBounds<u64> + Clone, R2: RangeBounds<u64> + Clone> {
+    out_path: P,
+    total_entries: usize,
+    key_range: R1,
+    scan_start_key_range: R2,
+    scans_per_sample: usize,
+    entries_per_scan: usize,
+    sample_spacing: usize,
+    db_config: DbConfiguration,
+}
+
+fn bench_scan<P: AsRef<Path>, R1: RangeBounds<u64> + Clone, R2: RangeBounds<u64> + Clone>(
+    bench_config: BenchScanConfig<P, R1, R2>,
+) {
+    let BenchScanConfig {
+        out_path,
+        total_entries,
+        key_range,
+        scan_start_key_range,
+        scans_per_sample,
+        entries_per_scan,
+        sample_spacing,
+        db_config,
+    } = bench_config;
+
+    let _ = std::fs::remove_dir_all("bench_scan_db");
+
+    eprintln!("Running scan benchmark: N={total_entries}");
+    let bench_start = Instant::now();
+
+    let mut db = Database::create("bench_scan_db", db_config).unwrap();
+    let mut rng = fastrand::Rng::new();
+
+    let mut data = Vec::with_capacity(total_entries.div_ceil(sample_spacing));
+
+    for n_entries in 1..=total_entries {
+        let key = rng.u64(key_range.clone());
+        let val = rng.u64(..);
+
+        db.put(key, val).unwrap();
+
+        if n_entries % sample_spacing == 0 {
+            let now = Instant::now();
+
+            let mut n_scanned_rows = 0;
+
+            for _ in 0..scans_per_sample {
+                let scan_start = rng.u64(scan_start_key_range.clone());
+
+                let scan = db
+                    .scan(scan_start..=u64::MAX)
+                    .unwrap()
+                    .take(entries_per_scan);
+                n_scanned_rows += scan.inspect(|row| assert!(row.is_ok())).count();
+            }
+
+            let scan_time = now.elapsed().as_secs_f64();
+            let throughput_per_sec = n_scanned_rows as f64 / scan_time;
+
+            data.push(BenchScanSample {
+                n_entries,
+                n_scanned_rows,
+                scan_time,
+                throughput_per_sec,
+            });
+        }
+    }
+
+    drop(db);
+
+    let mut csv_writer = csv::Writer::from_path(out_path).unwrap();
+    for record in data {
+        csv_writer.serialize(record).unwrap();
+    }
+    csv_writer.flush().unwrap();
+
+    if !cfg!(feature = "keep_test_files") {
+        std::fs::remove_dir_all("bench_scan_db").unwrap();
+    }
+
+    let bench_elapsed = bench_start.elapsed();
+    eprintln!(
+        "Finished scan benchmark: time={:.3} secs",
+        bench_elapsed.as_secs_f64()
+    );
 }
 
 struct BenchFullScanConfig<P: AsRef<Path>, R: RangeBounds<u64> + Clone> {
@@ -363,6 +468,8 @@ fn bench_full_scan<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(
         db_config,
     } = bench_config;
 
+    let _ = std::fs::remove_dir_all("bench_full_scan_db");
+
     eprintln!("Running full scan benchmark: N={total_entries}");
     let bench_start = Instant::now();
 
@@ -381,14 +488,14 @@ fn bench_full_scan<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(
             let now = Instant::now();
 
             let full_scan = db.scan(0..=u64::MAX).unwrap();
-            let n_unique_rows = full_scan.inspect(|row| assert!(row.is_ok())).count();
+            let n_scanned_rows = full_scan.inspect(|row| assert!(row.is_ok())).count();
 
             let scan_time = now.elapsed().as_secs_f64();
-            let throughput_per_sec = n_unique_rows as f64 / scan_time;
+            let throughput_per_sec = n_scanned_rows as f64 / scan_time;
 
             data.push(BenchScanSample {
                 n_entries,
-                n_unique_rows,
+                n_scanned_rows,
                 scan_time,
                 throughput_per_sec,
             });

@@ -87,6 +87,7 @@ pub struct FileSystem {
     prefix: PathBuf,
     capacity: usize,
     write_buffering: usize,
+    readahead_buffering: usize,
 }
 
 struct InnerFs {
@@ -116,6 +117,7 @@ impl FileSystem {
         prefix: impl AsRef<Path>,
         capacity: usize,
         write_buffering: usize,
+        readahead_buffering: usize,
     ) -> Result<Self, DbError> {
         let buffer_pool = HashTable::new(capacity)?;
         let eviction_handler = Eviction::new(capacity)?;
@@ -130,6 +132,7 @@ impl FileSystem {
             prefix: prefix.as_ref().to_path_buf(),
             capacity,
             write_buffering,
+            readahead_buffering,
         })
     }
 
@@ -186,6 +189,84 @@ impl FileSystem {
             inner.add_new_page(Arc::clone(&page), page_id);
 
             Ok(page)
+        }
+    }
+
+    pub fn get_sequential(
+        &self,
+        page_id: PageId,
+        // in pages
+        file_size: usize,
+    ) -> Result<Arc<Aligned>, DbError> {
+        {
+            let mut inner_lock = self.inner.lock().unwrap(); // If lock is poisoned, this is unrecoverable
+            let inner = inner_lock.deref_mut();
+
+            if let Some(entry) = inner
+                .buffer_pool
+                .get(inner.file_map.get_or_assign_page(page_id))
+            {
+                inner.eviction_handler.touch(entry.eviction_id);
+                return Ok(Arc::clone(&entry.page));
+            }
+        }
+
+        let PageId {
+            file_id,
+            page_number,
+        } = page_id;
+        let path = self.path(file_id);
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECT | libc::O_SYNC)
+            .open(path)?;
+
+        let page_start = page_number;
+        let page_end = (page_number + 1 + self.readahead_buffering).min(file_size);
+
+        let num_pages_to_read = page_end - page_start;
+
+        let pages_offset = page_number * PAGE_SIZE;
+
+        let mut buffer: Vec<u8> = vec![0u8; num_pages_to_read * PAGE_SIZE];
+
+        file.read_exact_at(&mut buffer, pages_offset as u64)?;
+
+        {
+            let mut inner_lock = self.inner.lock().unwrap();
+            let inner = inner_lock.deref_mut();
+
+            //
+            for i in (0..num_pages_to_read).rev() {
+                let page_id = PageId {
+                    file_id,
+                    page_number: page_number + i,
+                };
+
+                if inner
+                    .buffer_pool
+                    .get(inner.file_map.get_or_assign_page(page_id))
+                    .is_none()
+                {
+                    if inner.buffer_pool.len() == self.capacity {
+                        inner.evict_page()?;
+                    }
+
+                    let mut page = Aligned::new();
+                    page.inner_mut()
+                        .unwrap()
+                        .copy_from_slice(&buffer[i * PAGE_SIZE..(i + 1) * PAGE_SIZE]);
+
+                    inner.add_new_page(Arc::clone(&page), page_id);
+                }
+            }
+
+            let page_entry = inner
+                .buffer_pool
+                .get(inner.file_map.get_or_assign_page(page_id))
+                .unwrap();
+
+            Ok(Arc::clone(&page_entry.page))
         }
     }
 
@@ -430,7 +511,7 @@ mod tests {
     #[test]
     fn test_basic() -> Result<()> {
         let path = &test_path("monad");
-        let mut fs = FileSystem::new(path, 8, 4)?;
+        let mut fs = FileSystem::new(path, 8, 4, 4)?;
 
         // TODO
 

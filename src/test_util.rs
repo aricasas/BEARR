@@ -67,7 +67,7 @@ impl TestFs {
     pub fn create(base: &str, name: &str) -> Self {
         let path = TestPath::create(base, name);
         fs::create_dir_all(&path).unwrap();
-        let fs = FileSystem::new(&path, 16, 1).unwrap();
+        let fs = FileSystem::new(&path, 16, 1, 1).unwrap();
         Self { _path: path, fs }
     }
 }

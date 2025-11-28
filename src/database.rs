@@ -30,6 +30,7 @@ pub struct DbConfiguration {
     pub lsm_configuration: LsmConfiguration,
     pub buffer_pool_capacity: usize,
     pub write_buffering: usize,
+    pub readahead_buffering: usize,
 }
 
 impl DbConfiguration {
@@ -110,6 +111,7 @@ impl Database {
             name,
             configuration.buffer_pool_capacity,
             configuration.write_buffering,
+            configuration.readahead_buffering,
         )?;
 
         let lsm = LsmTree::open(
@@ -236,6 +238,7 @@ mod tests {
             DbConfiguration {
                 buffer_pool_capacity: 16,
                 write_buffering: 1,
+                readahead_buffering: 1,
                 lsm_configuration: LsmConfiguration {
                     size_ratio: 2,
                     memtable_capacity: 3,
@@ -297,6 +300,7 @@ mod tests {
                 DbConfiguration {
                     buffer_pool_capacity: 16,
                     write_buffering: 1,
+                    readahead_buffering: 1,
                     lsm_configuration: LsmConfiguration {
                         size_ratio: 2,
                         memtable_capacity: 10,
@@ -430,6 +434,7 @@ mod tests {
             DbConfiguration {
                 buffer_pool_capacity: 64,
                 write_buffering: 8,
+                readahead_buffering: 8,
                 lsm_configuration: LsmConfiguration {
                     size_ratio: 3,
                     memtable_capacity: 256,
