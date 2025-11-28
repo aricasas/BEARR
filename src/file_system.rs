@@ -246,15 +246,14 @@ impl FileSystem {
 
         let pages_offset = page_number * PAGE_SIZE;
 
-        let mut buffer: Vec<u8> = vec![0u8; num_pages_to_read * PAGE_SIZE];
+        let mut buffer: Vec<Aligned> = bytemuck::allocation::zeroed_vec(num_pages_to_read);
 
-        file.read_exact_at(&mut buffer, pages_offset as u64)?;
+        file.read_exact_at(bytemuck::cast_slice_mut(&mut buffer), pages_offset as u64)?;
 
         {
             let mut inner_lock = self.inner.lock().unwrap();
             let inner = inner_lock.deref_mut();
 
-            //
             for i in (0..num_pages_to_read).rev() {
                 let page_id = PageId {
                     file_id,
@@ -271,9 +270,7 @@ impl FileSystem {
                     }
 
                     let mut page = Aligned::new();
-                    page.inner_mut()
-                        .unwrap()
-                        .copy_from_slice(&buffer[i * PAGE_SIZE..(i + 1) * PAGE_SIZE]);
+                    page.inner_mut().unwrap().copy_from_slice(&buffer[i].0);
 
                     inner.add_new_page(Arc::clone(&page), page_id);
                 }
