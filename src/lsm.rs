@@ -10,9 +10,14 @@ use crate::{
     sst::Sst,
 };
 
+/// Configuration options for an LSM tree.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub struct LsmConfiguration {
+    /// The size ratio of the LSM tree.
+    /// Must be at least 2.
     pub size_ratio: usize,
+    /// The number of key-value pairs that the memtable can hold.
+    /// Must be nonzero.
     pub memtable_capacity: usize,
     /// The number of bits per entry for bloom filters at the topmost LSM level.
     pub bloom_filter_bits: usize,

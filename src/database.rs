@@ -17,19 +17,26 @@ use crate::file_system::FileSystem;
 #[cfg(feature = "mock")]
 use crate::mock::FileSystem;
 
-/// An open connection to a database
+/// An open connection to a database.
 pub struct Database {
     name: PathBuf,
     lsm: LsmTree,
     file_system: FileSystem,
 }
 
-/// Configuration options for a database
+/// Configuration options for a database.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub struct DbConfiguration {
+    /// Configuration options for the LSM tree.
     pub lsm_configuration: LsmConfiguration,
+    /// Number of pages that the buffer pool can hold.
+    /// Must be at least 16.
     pub buffer_pool_capacity: usize,
+    /// When writing multiple pages to a file,
+    /// the number of pages to buffer before issuing an I/O call.
+    /// Must be nonzero.
     pub write_buffering: usize,
+    /// The number of additional pages to buffer when reading from a file.
     pub readahead_buffering: usize,
 }
 
@@ -368,6 +375,7 @@ mod tests {
         bloom_filter_bits: usize,
         buffer_pool_capacity: usize,
         write_buffering: usize,
+        readahead_buffering: usize,
     ) -> Result<Database, DbError> {
         Database::create(
             test_path(name),
@@ -379,28 +387,29 @@ mod tests {
                 },
                 buffer_pool_capacity,
                 write_buffering,
+                readahead_buffering,
             },
         )
     }
 
     #[test]
     fn test_errors() -> Result<()> {
-        let mut db = create_db("errors", 2, 1, 0, 16, 1)?;
+        let mut db = create_db("errors", 2, 1, 0, 16, 1, 0)?;
 
         assert_eq!(
-            create_db("errors_bad_size_ratio", 1, 1, 0, 16, 1).err(),
+            create_db("errors_bad_size_ratio", 1, 1, 0, 16, 1, 0).err(),
             Some(DbError::InvalidConfiguration)
         );
         assert_eq!(
-            create_db("errors_no_memtable_capacity", 2, 0, 0, 16, 1).err(),
+            create_db("errors_no_memtable_capacity", 2, 0, 0, 16, 1, 0).err(),
             Some(DbError::InvalidConfiguration)
         );
         assert_eq!(
-            create_db("errors_small_buffer_pool_capacity", 2, 1, 0, 15, 1).err(),
+            create_db("errors_small_buffer_pool_capacity", 2, 1, 0, 15, 1, 0).err(),
             Some(DbError::InvalidConfiguration)
         );
         assert_eq!(
-            create_db("errors_no_write_buffering", 2, 1, 0, 16, 0).err(),
+            create_db("errors_no_write_buffering", 2, 1, 0, 16, 0, 0).err(),
             Some(DbError::InvalidConfiguration)
         );
 

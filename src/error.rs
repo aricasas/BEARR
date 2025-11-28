@@ -1,12 +1,20 @@
 use std::{collections, error::Error, fmt::Display, io};
 
+/// An error resulting from a database operation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DbError {
+    /// An attempt to allocate memory failed,
+    /// or the buffer pool is unable to evict a page and make space.
     Oom,
+    /// Tried to perform a scan with a range where start > end.
     InvalidScanRange,
+    /// An error involving I/O occurred.
     IoError(String),
+    /// Tried to create a database with an invalid configuration.
     InvalidConfiguration,
+    /// File corruption was detected for an SST.
     CorruptSst,
+    /// Tried to insert a key-value pair where the value is `u64::MAX` (reserved for tombstones).
     InvalidValue,
 }
 
