@@ -24,6 +24,14 @@ fn main() {
     let total_entries = 64 * 1024 * 1024; // 64M rows = 1 GiB
     let sample_spacing = 1024 * 1024; // Sample every 1M rows inserted = every 16 MiB
 
+    bench_put(BenchPutConfig {
+        out_path: "bench_put.csv",
+        total_entries,
+        key_range: ..,
+        sample_spacing,
+        db_config,
+    });
+
     let mut keys: Vec<u64> = vec![0; total_entries];
     let buffer: &mut [u8] = bytemuck::cast_slice_mut(&mut keys);
     fastrand::fill(buffer);
@@ -57,14 +65,6 @@ fn main() {
         });
     }
 
-    bench_put(BenchPutConfig {
-        out_path: "bench_put.csv",
-        total_entries,
-        key_range: ..,
-        sample_spacing,
-        db_config,
-    });
-
     bench_scan(BenchScanConfig {
         out_path: "bench_scan.csv",
         total_entries,
@@ -97,6 +97,88 @@ fn main() {
         sample_spacing,
         db_config,
     });
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct BenchPutSample {
+    elapsed_time: f64,
+    n_entries: usize,
+    puts_time: f64,
+    throughput_per_sec: f64,
+}
+
+struct BenchPutConfig<P: AsRef<Path>, R: RangeBounds<u64> + Clone> {
+    out_path: P,
+    total_entries: usize,
+    key_range: R,
+    sample_spacing: usize,
+    db_config: DbConfiguration,
+}
+
+fn bench_put<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(bench_config: BenchPutConfig<P, R>) {
+    let BenchPutConfig {
+        out_path,
+        total_entries,
+        key_range,
+        sample_spacing,
+        db_config,
+    } = bench_config;
+
+    let _ = std::fs::remove_dir_all("bench_put_db");
+
+    eprintln!("Running put benchmark: N={total_entries}");
+    let bench_start = Instant::now();
+
+    let mut db = Database::create("bench_put_db", db_config).unwrap();
+    let mut rng = fastrand::Rng::new();
+
+    let mut data = Vec::with_capacity(total_entries.div_ceil(sample_spacing));
+
+    let start = Instant::now();
+    let mut puts_duration = Duration::ZERO;
+
+    for n_entries in 1..=total_entries {
+        let key = rng.u64(key_range.clone());
+        let val = rng.u64(..);
+
+        let now = Instant::now();
+        db.put(key, val).unwrap();
+        puts_duration += now.elapsed();
+
+        if n_entries % sample_spacing == 0 {
+            let now = Instant::now();
+            let elapsed_time = (now - start).as_secs_f64();
+            let puts_time = puts_duration.as_secs_f64();
+            let throughput_per_sec = sample_spacing as f64 / puts_time;
+
+            data.push(BenchPutSample {
+                elapsed_time,
+                n_entries,
+                puts_time,
+                throughput_per_sec,
+            });
+
+            puts_duration = Duration::ZERO;
+        }
+    }
+
+    drop(db);
+
+    let mut csv_writer = csv::Writer::from_path(out_path).unwrap();
+    for record in data.iter() {
+        csv_writer.serialize(record).unwrap();
+    }
+    csv_writer.flush().unwrap();
+
+    if !cfg!(feature = "keep_test_files") {
+        std::fs::remove_dir_all("bench_put_db").unwrap();
+    }
+
+    let bench_elapsed = bench_start.elapsed();
+    eprintln!(
+        "Finished put benchmark: time={:.3} secs",
+        bench_elapsed.as_secs_f64()
+    );
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -305,88 +387,6 @@ fn bench_concurrent_get<P: AsRef<Path>, R: RangeBounds<u64> + Clone + Send + Syn
     let bench_elapsed = bench_start.elapsed();
     eprintln!(
         "Finished concurrent get benchmark with {num_threads} threads: time={:.3} secs",
-        bench_elapsed.as_secs_f64()
-    );
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct BenchPutSample {
-    elapsed_time: f64,
-    n_entries: usize,
-    puts_time: f64,
-    throughput_per_sec: f64,
-}
-
-struct BenchPutConfig<P: AsRef<Path>, R: RangeBounds<u64> + Clone> {
-    out_path: P,
-    total_entries: usize,
-    key_range: R,
-    sample_spacing: usize,
-    db_config: DbConfiguration,
-}
-
-fn bench_put<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(bench_config: BenchPutConfig<P, R>) {
-    let BenchPutConfig {
-        out_path,
-        total_entries,
-        key_range,
-        sample_spacing,
-        db_config,
-    } = bench_config;
-
-    let _ = std::fs::remove_dir_all("bench_put_db");
-
-    eprintln!("Running put benchmark: N={total_entries}");
-    let bench_start = Instant::now();
-
-    let mut db = Database::create("bench_put_db", db_config).unwrap();
-    let mut rng = fastrand::Rng::new();
-
-    let mut data = Vec::with_capacity(total_entries.div_ceil(sample_spacing));
-
-    let start = Instant::now();
-    let mut puts_duration = Duration::ZERO;
-
-    for n_entries in 1..=total_entries {
-        let key = rng.u64(key_range.clone());
-        let val = rng.u64(..);
-
-        let now = Instant::now();
-        db.put(key, val).unwrap();
-        puts_duration += now.elapsed();
-
-        if n_entries % sample_spacing == 0 {
-            let now = Instant::now();
-            let elapsed_time = (now - start).as_secs_f64();
-            let puts_time = puts_duration.as_secs_f64();
-            let throughput_per_sec = sample_spacing as f64 / puts_time;
-
-            data.push(BenchPutSample {
-                elapsed_time,
-                n_entries,
-                puts_time,
-                throughput_per_sec,
-            });
-
-            puts_duration = Duration::ZERO;
-        }
-    }
-
-    drop(db);
-
-    let mut csv_writer = csv::Writer::from_path(out_path).unwrap();
-    for record in data.iter() {
-        csv_writer.serialize(record).unwrap();
-    }
-    csv_writer.flush().unwrap();
-
-    if !cfg!(feature = "keep_test_files") {
-        std::fs::remove_dir_all("bench_put_db").unwrap();
-    }
-
-    let bench_elapsed = bench_start.elapsed();
-    eprintln!(
-        "Finished put benchmark: time={:.3} secs",
         bench_elapsed.as_secs_f64()
     );
 }
