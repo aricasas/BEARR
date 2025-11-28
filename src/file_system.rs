@@ -93,6 +93,17 @@ struct InnerFs {
     buffer_pool: HashTable<BufferPageId, BufferPoolEntry>,
     eviction_handler: Eviction,
     file_map: FileMap,
+    buffer_pool_hits: usize,
+    buffer_pool_accesses: usize,
+}
+
+impl Drop for InnerFs {
+    fn drop(&mut self) {
+        println!(
+            "buffer pool hit rate : {}",
+            self.buffer_pool_hits as f64 / (self.buffer_pool_accesses.max(1) as f64),
+        );
+    }
 }
 
 struct FileMap {
@@ -123,6 +134,8 @@ impl FileSystem {
             buffer_pool,
             eviction_handler,
             file_map: FileMap::new(),
+            buffer_pool_hits: 0,
+            buffer_pool_accesses: 0,
         };
 
         Ok(Self {
@@ -153,6 +166,8 @@ impl FileSystem {
 
             if let Some(entry) = inner.buffer_pool.get(buffer_page_id) {
                 inner.eviction_handler.touch(entry.eviction_id);
+                inner.buffer_pool_accesses += 1;
+                inner.buffer_pool_hits += 1;
                 return Ok(Arc::clone(&entry.page));
             }
         }
@@ -176,6 +191,8 @@ impl FileSystem {
 
             if let Some(entry) = inner.buffer_pool.get(buffer_page_id) {
                 inner.eviction_handler.touch(entry.eviction_id);
+                inner.buffer_pool_accesses += 1;
+                inner.buffer_pool_hits += 1;
                 return Ok(Arc::clone(&entry.page));
             }
 
@@ -185,6 +202,7 @@ impl FileSystem {
 
             inner.add_new_page(Arc::clone(&page), page_id);
 
+            inner.buffer_pool_accesses += 1;
             Ok(page)
         }
     }
