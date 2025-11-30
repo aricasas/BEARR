@@ -195,7 +195,6 @@ impl FileSystem {
         page_id: PageId,
         file_size: usize,
     ) -> Result<Arc<Aligned>, DbError> {
-        println!("{file_size}");
         let PageId {
             file_id,
             page_number: page_start,

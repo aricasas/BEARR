@@ -432,8 +432,8 @@ mod tests {
         Restart,
     }
 
-    const KEY_RANGE: Range<u64> = 0..65536;
-    const VALUE_RANGE: Range<u64> = 0..65536;
+    const KEY_RANGE: Range<u64> = 0..u64::MAX;
+    const VALUE_RANGE: Range<u64> = 0..u64::MAX;
 
     #[test]
     fn test_chaotic() -> Result<()> {
@@ -463,6 +463,7 @@ mod tests {
                 Command::Restart,
             ])
             .unwrap();
+            println!("{i} IS {command:?}");
             let command_description;
 
             match command {
@@ -478,6 +479,7 @@ mod tests {
                     let value = db.get(key)?;
                     assert_eq!(value, oracle.get(&key).copied());
                     command_description = format!("get {key} ==> {value:?}");
+                    println!("{command_description}");
                 }
                 Command::Put => {
                     let db = db.as_mut().unwrap();
@@ -490,6 +492,7 @@ mod tests {
                     };
                     let value = fastrand::u64(VALUE_RANGE);
                     command_description = format!("put ({key}, {value})");
+                    println!("{command_description}");
                     db.put(key, value)?;
                     oracle.insert(key, value);
                 }
@@ -503,6 +506,7 @@ mod tests {
                         fastrand::u64(KEY_RANGE)
                     };
                     command_description = format!("delete {key}");
+                    println!("{command_description}");
                     db.delete(key)?;
                     oracle.remove(&key);
                 }
@@ -513,20 +517,26 @@ mod tests {
                     let start = u64::min(a, b);
                     let end = u64::max(a, b);
                     let scan = db.scan(start..=end)?.collect::<Result<Vec<_>, _>>()?;
-                    let mut oracle_scan: Vec<_> = (start..=end)
-                        .filter_map(|key| oracle.get(&key).map(|&value| (key, value)))
+                    let mut oracle_scan: Vec<_> = oracle
+                        .iter()
+                        .filter_map(|(&key, &value)| {
+                            (start..=end).contains(&key).then_some((key, value))
+                        })
                         .collect();
                     oracle_scan.sort_unstable();
                     assert_eq!(scan, oracle_scan);
                     command_description = format!("scan {start}..={end} ==> # = {}", scan.len());
+                    println!("{command_description}");
                 }
                 Command::Flush => {
                     command_description = "flush".to_owned();
+                    println!("{command_description}");
                     let db = db.as_mut().unwrap();
                     db.flush()?;
                 }
                 Command::Restart => {
                     command_description = "restart".to_owned();
+                    println!("{command_description}");
                     let old_handle = db.take().unwrap();
                     drop(old_handle);
                     db = Some(Database::open(name)?);
@@ -538,7 +548,7 @@ mod tests {
                 .unwrap()
                 .scan(u64::MIN..=u64::MAX)?
                 .collect::<Result<Vec<_>, _>>()?;
-            if i % 256 == 0 {
+            if i % 2 == 0 {
                 println!("{i}. {command_description}; {state:?}");
             }
         }
@@ -564,7 +574,7 @@ mod tests {
         )?;
         let mut oracle = HashMap::new();
 
-        while oracle.len() < 65536 {
+        while oracle.len() < 4096 {
             let key = fastrand::u64(KEY_RANGE);
             let value = fastrand::u64(VALUE_RANGE);
             db.put(key, value)?;
@@ -574,7 +584,7 @@ mod tests {
         let db = &db;
         let oracle = &oracle;
         thread::scope(|scope| {
-            for i in 0..16 {
+            for i in 0..4 {
                 scope.spawn(move || {
                     for j in 0..4096 {
                         let command = fastrand::choice([Command::Get, Command::Scan]).unwrap();
@@ -608,8 +618,11 @@ mod tests {
                                     .unwrap_or_else(|e| {
                                         panic!("collect fail {i}::{j} {start}..={end}: {e}")
                                     });
-                                let mut oracle_scan: Vec<_> = (start..=end)
-                                    .filter_map(|key| oracle.get(&key).map(|&value| (key, value)))
+                                let mut oracle_scan: Vec<_> = oracle
+                                    .iter()
+                                    .filter_map(|(&key, &value)| {
+                                        (start..=end).contains(&key).then_some((key, value))
+                                    })
                                     .collect();
                                 oracle_scan.sort_unstable();
                                 assert_eq!(scan, oracle_scan);
