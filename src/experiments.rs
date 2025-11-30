@@ -38,18 +38,50 @@ fn main() {
     fastrand::fill(buffer);
 
     if cfg!(feature = "binary_search") {
+        for percentage in [0.0, 0.5, 1.0] {
+            bench_get(BenchGetConfig {
+                out_path: format!("bench_get_binary_{:.0}pct.csv", 100.0 * percentage),
+                total_entries,
+                key_list: &keys,
+                percentage_from_key_list: percentage,
+                get_key_range: ..,
+                sample_spacing,
+                gets_per_sample: 1000,
+                db_config,
+            });
+        }
+
+        return;
+    }
+
+    if cfg!(feature = "uniform_bits") {
+        for percentage in [0.0, 0.5, 1.0] {
+            bench_get(BenchGetConfig {
+                out_path: format!("bench_get_uniform_{:.0}pct.csv", 100.0 * percentage),
+                total_entries,
+                key_list: &keys,
+                percentage_from_key_list: percentage,
+                get_key_range: ..,
+                sample_spacing,
+                gets_per_sample: 1000,
+                db_config,
+            });
+        }
+
+        return;
+    }
+
+    for percentage in [0.0, 0.5, 1.0] {
         bench_get(BenchGetConfig {
-            out_path: "bench_get_binary.csv",
+            out_path: format!("bench_get_{:.0}pct.csv", 100.0 * percentage),
             total_entries,
             key_list: &keys,
-            percentage_from_key_list: 1.0,
+            percentage_from_key_list: percentage,
             get_key_range: ..,
             sample_spacing,
             gets_per_sample: 1000,
             db_config,
         });
-
-        return;
     }
 
     for size_ratio in [2, 4, 8] {
@@ -66,22 +98,7 @@ fn main() {
         });
     }
 
-    bench_get(BenchGetConfig {
-        out_path: if cfg!(feature = "binary_search") {
-            "bench_get_binary.csv"
-        } else {
-            "bench_get.csv"
-        },
-        total_entries,
-        key_list: &keys,
-        percentage_from_key_list: 1.0,
-        get_key_range: ..,
-        sample_spacing,
-        gets_per_sample: 1000,
-        db_config,
-    });
-
-    for num_threads in [4, 16, 64, 256] {
+    for num_threads in [1, 4, 16, 64, 256] {
         bench_concurrent_get(BenchConcurrentGetConfig {
             out_path: format!("bench_concurrent_get_{}.csv", num_threads),
             total_entries,
