@@ -22,6 +22,8 @@ pub struct Database {
     name: PathBuf,
     lsm: LsmTree,
     file_system: FileSystem,
+    wal_buffer: Vec<(u64, u64)>,
+    wal_file: File,
 }
 
 /// Configuration options for a database.
@@ -38,6 +40,8 @@ pub struct DbConfiguration {
     pub write_buffering: usize,
     /// The number of additional pages to buffer when reading from a file.
     pub readahead_buffering: usize,
+    /// Number of operations to buffer before flushing to WAL
+    pub wal_buffer_size: usize,
 }
 
 impl DbConfiguration {
@@ -59,6 +63,8 @@ struct DbMetadata {
 
 const CONFIG_FILENAME: &str = "config.json";
 const METADATA_FILENAME: &str = "metadata.json";
+const LOG_FILENAME: &str = "WAL.log";
+const WAL: bool = false;
 
 impl Database {
     /// Creates and returns an empty database, initializing a folder with the given path.
@@ -81,6 +87,8 @@ impl Database {
         };
         let metadata_file = File::create_new(name.join(METADATA_FILENAME))?;
         serde_json::to_writer_pretty(metadata_file, &metadata)?;
+
+        let log_file = File::create_new(name.join(LOG_FILENAME))?;
 
         Self::new(name, configuration, metadata)
     }
