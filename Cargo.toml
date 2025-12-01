@@ -31,4 +31,3 @@ uniform_bits = []
 
 [dev-dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }
-rstest = "0.26.1"
