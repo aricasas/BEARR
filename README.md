@@ -1,4 +1,7 @@
-# BEARR
+# BEARR - Better Efficient Alternative to RocksDB in Rust
+<p align="center">
+  <img src="img/bearr.png" width="500" />
+</p>
 
 BEARR is a key-value store written in Rust as our CSC443 course project.
 
