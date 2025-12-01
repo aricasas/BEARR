@@ -13,6 +13,7 @@ bit-vec = "0.8.0"
 csv = "1.4.0"
 aligned-vec = "0.6.4"
 indicatif = "0.18.3"
+clap = { version = "4.5.53", features = ["derive"] }
 
 [[bin]]
 name = "tests"

@@ -1,149 +1,181 @@
 use std::{
     ops::RangeBounds,
-    path::Path,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
     thread,
     time::{Duration, Instant},
 };
 
 use bearr::{Database, DbConfiguration, LsmConfiguration};
+use clap::Parser;
 use indicatif::ProgressStyle;
 use serde::{Deserialize, Serialize};
 
+#[derive(Parser)]
+struct Cli {
+    // 65,536 pages = 256 Mib
+    #[arg(long, default_value_t = 65_536)]
+    buffer_pool_capacity: usize,
+
+    #[arg(long, default_value_t = 96)]
+    write_buffering: usize,
+
+    #[arg(long, default_value_t = 128)]
+    readahead_buffering: usize,
+
+    #[arg(long, default_value_t = 4)]
+    size_ratio: usize,
+
+    // 655,360 rows = 10 MiB
+    #[arg(long, default_value_t = 65_536)]
+    memtable_capacity: usize,
+
+    // On 1 GiB database with size ratio 4 and memtable capacity 655,360,
+    // using Monkey with 13 bits per entry at the highest LSM tree level uses approx
+    // the same total memory as having 8 bits per entry across all levels uniformly.
+    #[arg(long, default_value_t = 13)]
+    bloom_filter_bits: usize,
+
+    // 64M rows = 1 GiB
+    #[arg(long, default_value_t = 64 * 1024 * 1024)]
+    total_entries: usize,
+
+    // Sample every 1M rows inserted = every 16 MiB
+    #[arg(long, default_value_t = 1024 * 1024)]
+    sample_spacing: usize,
+
+    #[arg(long, default_value_t = 1.0)]
+    get_success_percentage: f32,
+
+    #[arg(long, default_value_t = 1)]
+    num_threads: usize,
+
+    #[arg(long, default_value_t = 1000)]
+    ops_per_sample: usize,
+
+    #[arg(long, default_value_t = 1000)]
+    entries_per_scan: usize,
+
+    #[arg(long)]
+    get: Option<PathBuf>,
+
+    #[arg(long)]
+    concurrent_get: Option<PathBuf>,
+
+    #[arg(long)]
+    put: Option<PathBuf>,
+
+    #[arg(long)]
+    scan: Option<PathBuf>,
+
+    #[arg(long)]
+    concurrent_scan: Option<PathBuf>,
+
+    #[arg(long)]
+    full_scan: Option<PathBuf>,
+}
+
 fn main() {
+    let cli = Cli::parse();
+
     let db_config = DbConfiguration {
-        buffer_pool_capacity: 65_536, // 65,536 pages = 256 Mib
-        write_buffering: 96,
-        readahead_buffering: 128,
+        buffer_pool_capacity: cli.buffer_pool_capacity, // 65,536 pages = 256 Mib
+        write_buffering: cli.write_buffering,
+        readahead_buffering: cli.readahead_buffering,
         lsm_configuration: LsmConfiguration {
-            size_ratio: 4,
-            memtable_capacity: 655_360, // 655,360 rows = 10 MiB
+            size_ratio: cli.size_ratio,
+            memtable_capacity: cli.memtable_capacity, // 655,360 rows = 10 MiB
 
             // On 1 GiB database with size ratio 4 and memtable capacity 655,360,
             // using Monkey with 13 bits per entry at the highest LSM tree level uses approx
             // the same total memory as having 8 bits per entry across all levels uniformly.
-            bloom_filter_bits: if cfg!(feature = "uniform_bits") {
-                8
-            } else {
-                13
-            },
+            bloom_filter_bits: cli.bloom_filter_bits,
         },
     };
 
-    let total_entries = 64 * 1024 * 1024; // 64M rows = 1 GiB
-    let sample_spacing = 1024 * 1024; // Sample every 1M rows inserted = every 16 MiB
+    let total_entries = cli.total_entries; // 64M rows = 1 GiB
+    let sample_spacing = cli.sample_spacing; // Sample every 1M rows inserted = every 16 MiB
+    let ops_per_sample = cli.ops_per_sample;
+    let num_threads = cli.num_threads;
+    let entries_per_scan = cli.entries_per_scan;
 
     let mut keys: Vec<u64> = vec![0; total_entries];
     let buffer: &mut [u8] = bytemuck::cast_slice_mut(&mut keys);
     fastrand::fill(buffer);
 
-    if cfg!(feature = "binary_search") {
-        for percentage in [0.0, 0.5, 1.0] {
-            bench_get(BenchGetConfig {
-                out_path: format!("bench_get_binary_{:.0}pct.csv", 100.0 * percentage),
-                total_entries,
-                key_list: &keys,
-                percentage_from_key_list: percentage,
-                get_key_range: ..,
-                sample_spacing,
-                gets_per_sample: 1000,
-                db_config,
-            });
-        }
-
-        return;
-    }
-
-    if cfg!(feature = "uniform_bits") {
-        for percentage in [0.0, 0.5, 1.0] {
-            bench_get(BenchGetConfig {
-                out_path: format!("bench_get_uniform_{:.0}pct.csv", 100.0 * percentage),
-                total_entries,
-                key_list: &keys,
-                percentage_from_key_list: percentage,
-                get_key_range: ..,
-                sample_spacing,
-                gets_per_sample: 1000,
-                db_config,
-            });
-        }
-
-        return;
-    }
-
-    for percentage in [0.0, 0.5, 1.0] {
+    if let Some(out_path) = cli.get {
         bench_get(BenchGetConfig {
-            out_path: format!("bench_get_{:.0}pct.csv", 100.0 * percentage),
+            out_path,
             total_entries,
             key_list: &keys,
-            percentage_from_key_list: percentage,
+            percentage_from_key_list: cli.get_success_percentage,
             get_key_range: ..,
             sample_spacing,
-            gets_per_sample: 1000,
+            gets_per_sample: ops_per_sample,
             db_config,
         });
     }
 
-    for size_ratio in [2, 4, 8] {
-        bench_put(BenchPutConfig {
-            out_path: format!("bench_put_{}.csv", size_ratio),
-            total_entries,
-            key_range: ..,
-            sample_spacing,
-            db_config: {
-                let mut new_config = db_config;
-                new_config.lsm_configuration.size_ratio = size_ratio;
-                new_config
-            },
-        });
-    }
-
-    for num_threads in [1, 4, 16, 64, 256] {
+    if let Some(out_path) = cli.concurrent_get {
         bench_concurrent_get(BenchConcurrentGetConfig {
-            out_path: format!("bench_concurrent_get_{}.csv", num_threads),
+            out_path,
             total_entries,
             num_threads,
             key_list: &keys,
-            percentage_from_key_list: 1.0,
+            percentage_from_key_list: cli.get_success_percentage,
             get_key_range: ..,
             sample_spacing,
-            gets_per_sample_per_thread: if num_threads == 256 { 500 } else { 1000 },
+            gets_per_sample_per_thread: ops_per_sample,
             db_config,
         });
     }
 
-    bench_scan(BenchScanConfig {
-        out_path: "bench_scan.csv",
-        total_entries,
-        key_range: ..,
-        scan_start_key_range: ..,
-        scans_per_sample: 300,
-        entries_per_scan: 1000,
-        sample_spacing,
-        db_config,
-    });
+    if let Some(out_path) = cli.put {
+        bench_put(BenchPutConfig {
+            out_path,
+            total_entries,
+            key_range: ..,
+            sample_spacing,
+            db_config,
+        });
+    }
 
-    for num_threads in [4, 16, 64] {
+    if let Some(out_path) = cli.scan {
+        bench_scan(BenchScanConfig {
+            out_path,
+            total_entries,
+            key_range: ..,
+            scan_start_key_range: ..,
+            scans_per_sample: ops_per_sample,
+            entries_per_scan,
+            sample_spacing,
+            db_config,
+        });
+    }
+
+    if let Some(out_path) = cli.concurrent_scan {
         bench_concurrent_scan(BenchConcurrentScanConfig {
-            out_path: format!("bench_concurrent_scan_{}.csv", num_threads),
+            out_path,
             total_entries,
             num_threads,
             key_range: ..,
             scan_start_key_range: ..,
-            scans_per_sample_per_thread: 300,
-            entries_per_scan: 1000,
+            scans_per_sample_per_thread: ops_per_sample,
+            entries_per_scan,
             sample_spacing,
             db_config,
         });
     }
 
-    bench_full_scan(BenchFullScanConfig {
-        out_path: "bench_full_scan.csv",
-        total_entries,
-        key_range: ..,
-        sample_spacing,
-        db_config,
-    });
+    if let Some(out_path) = cli.full_scan {
+        bench_full_scan(BenchFullScanConfig {
+            out_path,
+            total_entries,
+            key_range: ..,
+            sample_spacing,
+            db_config,
+        });
+    }
 }
 
 const PROGRESS_BAR_TEMPLATE: &str = "[{elapsed_precise}] {bar:64} {pos}/{len} samples";
@@ -204,8 +236,7 @@ fn bench_put<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(bench_config: BenchPut
         puts_duration += now.elapsed();
 
         if n_entries % sample_spacing == 0 {
-            let now = Instant::now();
-            let elapsed_time = (now - start).as_secs_f64();
+            let elapsed_time = start.elapsed().as_secs_f64();
             let puts_time = puts_duration.as_secs_f64();
             let throughput_per_sec = sample_spacing as f64 / puts_time;
 
@@ -277,7 +308,12 @@ fn bench_get<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(bench_config: BenchGet
 
     let _ = std::fs::remove_dir_all("bench_get_db");
 
-    eprintln!("Running get benchmark: N={total_entries}");
+    eprintln!(
+        "Running get benchmark with {}% successful gets and size ratio {}: N={}",
+        100.0 * percentage_from_key_list,
+        db_config.lsm_configuration.size_ratio,
+        total_entries
+    );
     let bench_start = Instant::now();
 
     let mut db = Database::create("bench_get_db", db_config).unwrap();
@@ -383,7 +419,13 @@ fn bench_concurrent_get<P: AsRef<Path>, R: RangeBounds<u64> + Clone + Send + Syn
 
     let _ = std::fs::remove_dir_all("bench_concurrent_get_db");
 
-    eprintln!("Running concurrent get benchmark with {num_threads} threads: N={total_entries}");
+    eprintln!(
+        "Running concurrent get benchmark with {} threads, {}% successful gets, and size ratio {}: N={}",
+        num_threads,
+        100.0 * percentage_from_key_list,
+        db_config.lsm_configuration.size_ratio,
+        total_entries
+    );
     let bench_start = Instant::now();
 
     let mut db = Database::create("bench_concurrent_get_db", db_config).unwrap();
