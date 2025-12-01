@@ -8,14 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     DbError,
+    file_system::FileSystem,
     lsm::{LsmConfiguration, LsmMetadata, LsmTree, TOMBSTONE},
 };
-
-#[cfg(not(feature = "mock"))]
-use crate::file_system::FileSystem;
-
-#[cfg(feature = "mock")]
-use crate::mock::FileSystem;
 
 /// An open connection to a database.
 pub struct Database {

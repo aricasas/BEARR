@@ -72,13 +72,7 @@ fn murmur3_32(key: &[u8], seed: u32) -> u32 {
     hash.0
 }
 
-#[cfg(not(feature = "mock_hash"))]
 use murmur3_32 as hash;
-
-#[cfg(feature = "mock_hash")]
-fn hash(key: &[u8], _seed: u32) -> u32 {
-    usize::from_ne_bytes(key[8..16].try_into().unwrap()) as u32
-}
 
 #[cfg(test)]
 mod tests {

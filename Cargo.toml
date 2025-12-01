@@ -24,8 +24,6 @@ path = "src/experiments.rs"
 
 [features]
 default = []
-mock = []
-mock_hash = []
 binary_search = []
 keep_test_files = []
 uniform_bits = []

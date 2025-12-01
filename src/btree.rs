@@ -3,18 +3,13 @@ use std::{ops::RangeInclusive, sync::Arc};
 use crate::{
     DbError, PAGE_SIZE,
     bloom_filter::BloomFilter,
+    file_system::FileSystem,
     file_system::{Aligned, FileId},
     sst::Sst,
 };
 
 const PAIRS_PER_CHUNK: usize = (PAGE_SIZE - 8) / 16;
 const PADDING: usize = PAGE_SIZE - 8 - PAIRS_PER_CHUNK * 16;
-
-#[cfg(not(feature = "mock"))]
-use crate::file_system::FileSystem;
-
-#[cfg(feature = "mock")]
-use crate::mock::FileSystem;
 
 #[repr(C, align(4096))]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]

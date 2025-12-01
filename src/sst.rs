@@ -4,14 +4,8 @@ use crate::{
     DbError,
     bloom_filter::BloomFilter,
     btree::{BTree, BTreeIter, BTreeMetadata},
-    file_system::FileId,
+    file_system::{FileId, FileSystem},
 };
-
-#[cfg(not(feature = "mock"))]
-use crate::file_system::FileSystem;
-
-#[cfg(feature = "mock")]
-use crate::mock::FileSystem;
 
 /// A handle to an SST of a database
 #[derive(Debug)]
