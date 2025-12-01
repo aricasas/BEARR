@@ -181,15 +181,19 @@ impl LsmTree {
     fn monkey(&self, level: usize) -> usize {
         let t = self.configuration.size_ratio as f64;
         let m_0 = self.configuration.bloom_filter_bits as f64;
-        // TODO: explain in more detail
-        // ep(M): false positive rate for M bits
-        // T: size ratio, k: level, M_k: bits for kth level
-        // ep(M) = 2^(-M ln 2)
-        // ep(M_0) = ep(M_k) / T^k
+        // Let T be the size ratio.
+        // Let M_k denote the number of bits per entry for the kth level.
+        // Let ep(M) be the false positive rate for M bits per entry.
+        // We have ep(M) = 2^(-M ln 2).
+        // We want ep(M_0) = ep(M_1) / T, ep(M_1) = ep(M_2) / T, etc. --
+        // in general, ep(M_0) = ep(M_k) / T^k.
+        // This expands to:
         // 2^(-M_0 ln 2) = 2^(-M_k ln 2) / T^k
         //               = 2^(-M_k ln 2) / 2^(k log2(T))
         //               = 2^(-M_k ln 2 - k log2(T))
-        //               = 2^(-M_k ln 2 - k (log2(T) / ln 2) ln 2) ==>
+        //               = 2^(-M_k ln 2 - k (log2(T) / ln 2) ln 2).
+        // Solving for M_k:
+        // 2^(-M_0 ln 2) = 2^(-M_k ln 2 - k (log2(T) / ln 2) ln 2)
         //     -M_0 ln 2 = -M_k ln 2 - k (log2(T) / ln 2) ln 2
         //          -M_0 = -M_k - k log2(T) / ln 2
         //           M_0 =  M_k + k log2(T) / ln 2
