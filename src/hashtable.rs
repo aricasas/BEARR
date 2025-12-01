@@ -182,7 +182,6 @@ mod tests {
 
     use crate::{
         file_system::{BufferFileId, BufferPageId},
-        hash::HashAlgorithm,
         test_util::assert_panics,
     };
 
@@ -242,12 +241,12 @@ mod tests {
 
     #[test]
     pub fn test_basic() -> Result<()> {
-        let mut table: HashTable<_, _, MockHash> = HashTable::new(32)?;
+        let table: &mut HashTable<_, _, MockHash> = &mut HashTable::new(32)?;
         let n = table.num_buckets();
         let [a, b, c, d, e, f] = [10, 12, 14, n - 2, 0, n - 4];
 
         insert_many(
-            &mut table,
+            table,
             &[
                 (0, b, 3),
                 (0, a, 1),
@@ -263,10 +262,10 @@ mod tests {
                 (2, e, 8),
             ],
         );
-        inspect(&table);
+        inspect(table);
 
         assert_pairs(
-            &table,
+            table,
             [
                 (0, b, Some(3)),
                 (0, a, Some(1)),
@@ -288,7 +287,7 @@ mod tests {
         assert_eq!(table.len(), 12);
 
         insert_many(
-            &mut table,
+            table,
             &[
                 (0, c, 9),
                 (3, a, 7),
@@ -304,10 +303,10 @@ mod tests {
                 (4, e, 4),
             ],
         );
-        inspect(&table);
+        inspect(table);
 
         assert_pairs(
-            &table,
+            table,
             [
                 (0, b, Some(6)),
                 (0, a, Some(1)),
@@ -339,7 +338,7 @@ mod tests {
 
     #[test]
     fn test_remove() -> Result<()> {
-        let mut table: HashTable<_, _, MockHash> = HashTable::new(32)?;
+        let table: &mut HashTable<_, _, MockHash> = &mut HashTable::new(32)?;
         let n = table.num_buckets();
         let [a, b, c, d, e, f] = [10, 12, 14, n - 2, 0, n - 4];
 
@@ -373,17 +372,17 @@ mod tests {
         reference.insert((4, a), None);
         reference.insert((2, c), None);
 
-        insert_many(&mut table, &pairs);
+        insert_many(table, &pairs);
         assert_eq!(table.len(), 18);
-        inspect(&table);
+        inspect(table);
 
         let mut assert_remove = |file_id, page_number, expected_value, expected_new_len| {
             *reference.get_mut(&(file_id, page_number)).unwrap() = None;
             assert_eq!(table.remove(page_id(file_id, page_number)), expected_value);
             assert_eq!(table.len(), expected_new_len);
-            inspect(&table);
+            inspect(table);
             assert_pairs(
-                &table,
+                table,
                 reference
                     .iter()
                     .map(|(&(file_id, page_number), &value)| (file_id, page_number, value)),

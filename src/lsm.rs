@@ -374,8 +374,9 @@ impl LsmTree {
 mod tests {
     use anyhow::Result;
 
-    use super::*;
     use crate::test_util::TestFs;
+
+    use super::*;
 
     fn test_fs(name: &str) -> TestFs {
         TestFs::create("lsm", name)

@@ -2,7 +2,7 @@ use bit_vec::BitVec;
 
 use crate::hash::HashFunction;
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct BloomFilter {
     pub hash_functions: Vec<HashFunction>, // Bloom filter's hash functions
     bits: BitVec,                          // Bloom filter's bitmap

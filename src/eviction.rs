@@ -5,7 +5,7 @@ use crate::{
     list::{EntryId, List},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EvictionId {
     AIn(EntryId),
     AM(EntryId),
@@ -193,7 +193,7 @@ impl<'a> Iterator for VictimChooser<'a> {
 mod tests {
     use anyhow::Result;
 
-    use crate::file_system::{BufferFileId, BufferPageId};
+    use crate::file_system::BufferFileId;
 
     use super::*;
 

@@ -33,7 +33,7 @@ pub struct MergedIterator<I: Iterator<Item = Result<(u64, u64), DbError>>> {
     ended: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Entry {
     key: u64,
     level: usize,

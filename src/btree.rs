@@ -12,7 +12,7 @@ const PAIRS_PER_CHUNK: usize = (PAGE_SIZE - 8) / 16;
 const PADDING: usize = PAGE_SIZE - 8 - PAIRS_PER_CHUNK * 16;
 
 #[repr(C, align(4096))]
-#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug)]
 struct Page {
     /// Number of pairs stored in this page
     length: u64,

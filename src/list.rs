@@ -2,7 +2,7 @@ use crate::DbError;
 
 const NULL: usize = usize::MAX;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EntryId(usize);
 
 #[derive(Clone, Debug)]

@@ -20,7 +20,7 @@ pub struct Database {
 }
 
 /// Configuration options for a database.
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub struct DbConfiguration {
     /// Configuration options for the LSM tree.
     pub lsm_configuration: LsmConfiguration,
@@ -51,7 +51,7 @@ impl DbConfiguration {
 }
 
 /// Metadata for a database
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct DbMetadata {
     lsm_metadata: LsmMetadata,
 }

@@ -110,16 +110,16 @@ mod tests {
     /* Create an SST and then open it up to see if sane */
     #[test]
     fn test_create_open_sst() -> Result<()> {
-        let fs = test_fs("create_open");
+        let fs = &test_fs("create_open");
 
         let file_id = FileId {
             lsm_level: 3,
             sst_number: 14,
         };
 
-        Sst::create(vec![], 1, 1, file_id, &fs)?;
+        Sst::create(vec![], 1, 1, file_id, fs)?;
 
-        assert!(matches!(Sst::open(file_id, &fs), Err(DbError::CorruptSst)));
+        assert!(matches!(Sst::open(file_id, fs), Err(DbError::CorruptSst)));
 
         Ok(())
     }
@@ -127,7 +127,7 @@ mod tests {
     /* Write contents to SST and read them afterwards */
     #[test]
     fn test_read_write_to_sst() -> Result<()> {
-        let fs = test_fs("read_write");
+        let fs = &test_fs("read_write");
 
         let file_id = FileId {
             lsm_level: 1,
@@ -150,18 +150,18 @@ mod tests {
             8,
             8,
             file_id,
-            &fs,
+            fs,
         )?;
 
-        let sst = Sst::open(file_id, &fs)?;
+        let sst = Sst::open(file_id, fs)?;
         assert_eq!(sst.num_entries(), 8);
 
-        let scan = sst.scan(11..=12, &fs)?;
+        let scan = sst.scan(11..=12, fs)?;
         println!("{} {}", scan.page_number, scan.item_number);
         assert_eq!(scan.page_number, 1);
         assert_eq!(scan.item_number, 5);
 
-        let scan = sst.scan(2..=12, &fs)?;
+        let scan = sst.scan(2..=12, fs)?;
         println!("{} {}", scan.page_number, scan.item_number);
         assert_eq!(scan.page_number, 1);
         assert_eq!(scan.item_number, 1);
@@ -171,7 +171,7 @@ mod tests {
 
     #[test]
     fn test_get_scan_sst() -> Result<()> {
-        let fs = test_fs("get_scan");
+        let fs = &test_fs("get_scan");
 
         let file_id = FileId {
             lsm_level: 2,
@@ -194,23 +194,23 @@ mod tests {
             8,
             8,
             file_id,
-            &fs,
+            fs,
         )?;
 
-        let sst = Sst::open(file_id, &fs)?;
+        let sst = Sst::open(file_id, fs)?;
         assert_eq!(sst.num_entries(), 8);
 
-        assert_eq!(sst.get(1, &fs)?, Some(2));
-        assert_eq!(sst.get(3, &fs)?, Some(4));
-        assert_eq!(sst.get(5, &fs)?, Some(6));
-        assert_eq!(sst.get(7, &fs)?, Some(8));
-        assert_eq!(sst.get(9, &fs)?, Some(10));
-        assert_eq!(sst.get(11, &fs)?, Some(12));
-        assert_eq!(sst.get(13, &fs)?, Some(14));
-        assert_eq!(sst.get(15, &fs)?, Some(16));
-        assert_eq!(sst.get(17, &fs)?, None);
+        assert_eq!(sst.get(1, fs)?, Some(2));
+        assert_eq!(sst.get(3, fs)?, Some(4));
+        assert_eq!(sst.get(5, fs)?, Some(6));
+        assert_eq!(sst.get(7, fs)?, Some(8));
+        assert_eq!(sst.get(9, fs)?, Some(10));
+        assert_eq!(sst.get(11, fs)?, Some(12));
+        assert_eq!(sst.get(13, fs)?, Some(14));
+        assert_eq!(sst.get(15, fs)?, Some(16));
+        assert_eq!(sst.get(17, fs)?, None);
 
-        let mut scan = sst.scan(2..=12, &fs)?;
+        let mut scan = sst.scan(2..=12, fs)?;
         assert_eq!(scan.next().unwrap()?, (3, 4));
         assert_eq!(scan.next().unwrap()?, (5, 6));
         assert_eq!(scan.next().unwrap()?, (7, 8));
@@ -227,7 +227,7 @@ mod tests {
      * */
     #[test]
     fn test_huge_test() -> Result<()> {
-        let fs = test_fs("huge_test");
+        let fs = &test_fs("huge_test");
 
         let file_id = FileId {
             lsm_level: 3,
@@ -239,9 +239,9 @@ mod tests {
             test_vec.push((i, i));
         }
 
-        Sst::create(test_vec.into_iter().map(Ok), 400_000, 8, file_id, &fs)?;
+        Sst::create(test_vec.into_iter().map(Ok), 400_000, 8, file_id, fs)?;
 
-        let sst = Sst::open(file_id, &fs)?;
+        let sst = Sst::open(file_id, fs)?;
         assert_eq!(sst.num_entries(), (1..400_000).len());
 
         // let file_size = sst.num_pages * PAGE_SIZE;
@@ -250,7 +250,7 @@ mod tests {
         let range_start = 1;
         let range_end = 4000;
 
-        let mut scan = sst.scan(range_start..=range_end, &fs)?;
+        let mut scan = sst.scan(range_start..=range_end, fs)?;
 
         let mut page_number = 0;
         for i in range_start..range_end {
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_update_file_names() -> Result<()> {
-        let fs = test_fs("update_file_names");
+        let fs = &test_fs("update_file_names");
 
         let file_id_a = FileId {
             lsm_level: 9,
@@ -282,7 +282,7 @@ mod tests {
             sst_number: 46,
         };
 
-        let mut sst_0 = Sst::create([(1, 14), (4, 19), (13, 15)].map(Ok), 64, 0, file_id_a, &fs)?;
+        let mut sst_0 = Sst::create([(1, 14), (4, 19), (13, 15)].map(Ok), 64, 0, file_id_a, fs)?;
         assert_eq!(sst_0.num_entries(), 3);
 
         let mut sst_1 = Sst::create(
@@ -290,27 +290,27 @@ mod tests {
             256,
             3,
             file_id_b,
-            &fs,
+            fs,
         )?;
         assert_eq!(sst_1.num_entries(), 5);
 
-        assert_eq!(sst_1.get(12, &fs)?, Some(25));
-        sst_1.rename(file_id_c, &fs)?;
-        assert_eq!(sst_1.get(12, &fs)?, Some(25));
+        assert_eq!(sst_1.get(12, fs)?, Some(25));
+        sst_1.rename(file_id_c, fs)?;
+        assert_eq!(sst_1.get(12, fs)?, Some(25));
         drop(sst_1);
 
-        assert_eq!(sst_0.get(1, &fs)?, Some(14));
-        sst_0.rename(file_id_b, &fs)?;
-        assert_eq!(sst_0.get(1, &fs)?, Some(14));
+        assert_eq!(sst_0.get(1, fs)?, Some(14));
+        sst_0.rename(file_id_b, fs)?;
+        assert_eq!(sst_0.get(1, fs)?, Some(14));
         drop(sst_0);
 
-        let sst_0 = Sst::open(file_id_b, &fs)?;
+        let sst_0 = Sst::open(file_id_b, fs)?;
         assert_eq!(sst_0.num_entries(), 3);
-        sst_0.destroy(&fs)?;
+        sst_0.destroy(fs)?;
 
-        let sst_1 = Sst::open(file_id_c, &fs)?;
+        let sst_1 = Sst::open(file_id_c, fs)?;
         assert_eq!(sst_1.num_entries(), 5);
-        sst_1.destroy(&fs)?;
+        sst_1.destroy(fs)?;
 
         Ok(())
     }
