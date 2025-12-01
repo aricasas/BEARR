@@ -27,7 +27,7 @@ struct Cli {
     size_ratio: usize,
 
     // 655,360 rows = 10 MiB
-    #[arg(long, default_value_t = 65_536)]
+    #[arg(long, default_value_t = 655_360)]
     memtable_capacity: usize,
 
     // On 1 GiB database with size ratio 4 and memtable capacity 655,360,
