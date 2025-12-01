@@ -561,12 +561,12 @@ mod tests {
         ));
         // Create with non-existent parent path
         assert!(matches!(
-            Database::create(get_path("database", "monad"), ok_config),
+            Database::create(get_path("database", "monad").join("monoid"), ok_config),
             Err(DbError::IoError(_))
         ));
         // Open non-existent path
         assert!(matches!(
-            Database::open(get_path("database", "monoid")),
+            Database::open(get_path("database", "endofunctor")),
             Err(DbError::IoError(_))
         ));
 
