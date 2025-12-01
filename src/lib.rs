@@ -15,9 +15,6 @@ mod sst;
 #[cfg(test)]
 mod test_util;
 
-#[cfg(feature = "mock")]
-mod mock;
-
 pub use database::{Database, DbConfiguration};
 pub use error::DbError;
 pub use lsm::LsmConfiguration;

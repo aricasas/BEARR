@@ -3,6 +3,7 @@ use std::{ops::RangeInclusive, sync::Arc};
 use crate::{
     DbError, PAGE_SIZE,
     bloom_filter::BloomFilter,
+    file_system::FileSystem,
     file_system::{Aligned, FileId},
     sst::Sst,
 };
@@ -10,17 +11,11 @@ use crate::{
 const PAIRS_PER_CHUNK: usize = (PAGE_SIZE - 8) / 16;
 const PADDING: usize = PAGE_SIZE - 8 - PAIRS_PER_CHUNK * 16;
 
-#[cfg(not(feature = "mock"))]
-use crate::file_system::FileSystem;
-
-#[cfg(feature = "mock")]
-use crate::mock::FileSystem;
-
-#[repr(C, align(4096))]
-#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 /// The smallest granuallity of storage we use in our system
 /// It has a length, it has a bunch of pairs and since it is aligned to PAGE_SIZE,
 /// the rest is a padding
+#[repr(C, align(4096))]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug)]
 struct Page {
     /// Number of pairs stored in this page
     length: u64,
@@ -44,9 +39,9 @@ const _: () = assert!(size_of::<Page>() == PAGE_SIZE);
 /// A magic number that is used to check the validity of an SST
 pub const BEAR_MAGIC: u64 = 0xBEA22;
 
+/// Metadata struct for each sst
 #[repr(C)]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug)]
-/// Metadata struct for each sst
 pub struct BTreeMetadata {
     pub magic: u64,        // This is used to check the validity of the metadata
     pub leafs_offset: u64, // Where the leafs start from
@@ -59,9 +54,9 @@ pub struct BTreeMetadata {
     pub n_entries: u64,    // Number of entries in the SST
 }
 
+/// The struct that points to the actuall metadata
 #[repr(C, align(4096))]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug)]
-/// The struct that points to the actuall metadata
 struct MetadataPage {
     metadata: BTreeMetadata,
     padding: [u8; PAGE_SIZE - size_of::<BTreeMetadata>()],
@@ -169,9 +164,10 @@ impl<'a, 'b> BTreeIter<'a, 'b> {
         }
 
         if self.buffered_page.is_none() {
-            let page_bytes = self
-                .file_system
-                .get(self.sst.file_id.page(self.page_number));
+            let page_bytes = self.file_system.get_sequential(
+                self.sst.file_id.page(self.page_number),
+                self.sst.btree_metadata.size as usize,
+            );
 
             let buffered_page: Arc<Page> = match page_bytes {
                 Ok(bytes) => bytemuck::cast_arc(bytes),
@@ -254,7 +250,7 @@ impl BTree {
         mut pairs: impl Iterator<Item = Result<(u64, u64), DbError>>,
         n_entries_hint: usize,
         bits_per_entry: usize,
-        file_system: &mut FileSystem,
+        file_system: &FileSystem,
     ) -> Result<(BTreeMetadata, BloomFilter), DbError> {
         let mut nodes_offset: u64;
         let mut largest_keys: Vec<u64> = Vec::new();
@@ -344,9 +340,9 @@ impl BTree {
             Ok(page_length > 0)
         };
 
-        // Write bloom filter after the internal nodes
-        file_system.write_file(file_id.page(bloom_offset as usize), write_next_bloom_page)?;
-        let file_size = bloom_offset + bloom_size;
+        let file_size = bloom_offset
+            + file_system.write_file(file_id.page(bloom_offset as usize), write_next_bloom_page)?
+                as u64;
 
         // Create metadata structure with all offsets and sizes
         let btree_metadata = BTreeMetadata {
@@ -418,8 +414,8 @@ impl BTree {
 
         let bloom_pages_num = bloom_size.div_ceil(PAGE_SIZE as u64);
 
-        // Read bloom filter bytes from all its pages
-        let mut bloom_vec: Vec<u8> = vec![];
+        let mut bloom_vec: aligned_vec::AVec<u8, aligned_vec::ConstAlign<4>> =
+            aligned_vec::AVec::new(4);
         for page in 0..bloom_pages_num {
             let bloom_page = file_system.get(file_id.page((bloom_offset + page) as usize))?;
             // Handle partial last page
@@ -498,6 +494,7 @@ impl BTree {
         // Check if key is beyond the maximum key in the tree
         let root_page = file_system.get(sst.file_id.page(nodes_offset as usize))?;
         let root_node: Arc<Node> = bytemuck::cast_arc(root_page);
+        assert_ne!(root_node.length, 0);
         if root_node.pairs[(root_node.length - 1) as usize][0] < key {
             return Ok(None);
         }
@@ -598,18 +595,21 @@ impl BTree {
         // Binary search over leaf pages to find the right page
         loop {
             page_number = (start_page_num + end_page_num) as usize / 2;
-            if page_number == start_page_num as usize {
-                break;
-            }
             let middle_page = file_system.get(sst.file_id.page(page_number))?;
             let leaf: Arc<Leaf> = bytemuck::cast_arc(middle_page);
 
             // Check if key is before this page's range
             if key < leaf.pairs[0][0] {
+                if page_number == start_page_num as usize {
+                    page_number = start_page_num as usize;
+                    break;
+                }
                 end_page_num = page_number as u64;
-            }
-            // Check if key is after this page's range
-            else if key > leaf.pairs[(leaf.length - 1) as usize][0] {
+            } else if key > leaf.pairs[(leaf.length - 1) as usize][0] {
+                if page_number == start_page_num as usize {
+                    page_number = end_page_num as usize;
+                    break;
+                }
                 start_page_num = page_number as u64;
             }
             // Key is within this page's range

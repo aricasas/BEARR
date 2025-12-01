@@ -1,9 +1,9 @@
 use std::{
     cmp::{self, Ordering},
-    collections::BinaryHeap,
+    collections::{BinaryHeap, binary_heap::PeekMut},
 };
 
-use crate::{DbError, btree::BTreeIter, memtable::MemTableIter};
+use crate::{DbError, btree::BTreeIter, lsm::TOMBSTONE, memtable::MemTableIter};
 
 pub enum Sources<'a> {
     MemTable(MemTableIter<'a, u64, u64>),
@@ -28,12 +28,12 @@ pub struct MergedIterator<I: Iterator<Item = Result<(u64, u64), DbError>>> {
     /// Sorted by age, lower index means newer
     levels: Vec<I>,
     heap: BinaryHeap<cmp::Reverse<Entry>>,
-    last_key: Option<u64>,
+    last_entry: Option<Entry>,
     delete_tombstones: bool,
     ended: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Entry {
     key: u64,
     level: usize,
@@ -58,7 +58,7 @@ impl<I: Iterator<Item = Result<(u64, u64), DbError>>> MergedIterator<I> {
     /// For a key with several iterators returning it, only the value of the iterator at the highest level is
     /// returned and the others are skipped.
     ///
-    /// TODO: explain delete_tombstones
+    /// If `delete_tombstones` is set, it will also skip any values that are lsm::TOMBSTONE.
     ///
     /// `levels[0]`is the highest level and `levels[levels.len() - 1]` is the lowest level
     pub fn new(mut levels: Vec<I>, delete_tombstones: bool) -> Result<Self, DbError> {
@@ -77,7 +77,7 @@ impl<I: Iterator<Item = Result<(u64, u64), DbError>>> MergedIterator<I> {
         Ok(Self {
             levels,
             heap,
-            last_key: None,
+            last_entry: None,
             delete_tombstones,
             ended,
         })
@@ -100,8 +100,7 @@ impl<I: Iterator<Item = Result<(u64, u64), DbError>>> MergedIterator<I> {
             }
             None => {
                 // No replacement, have to actually remove the min
-                drop(min);
-                self.heap.pop();
+                PeekMut::pop(min);
             }
             Some(Err(e)) => return Err(e),
         }
@@ -132,20 +131,28 @@ impl<I: Iterator<Item = Result<(u64, u64), DbError>>> Iterator for MergedIterato
                 }
             };
 
-            // Skip entries with keys we've seen at a higher level already
+            // Need to skip entries with keys we've seen at a higher level already
+            // And skip entries that contain a tombstone if required
 
-            // TODO: check for tombstones when needed
-            if self.last_key.is_none_or(|last_key| min.key > last_key) {
-                break;
+            if self
+                .last_entry
+                .is_some_and(|last_entry| min.key <= last_entry.key)
+            {
+                continue;
             }
+            if self.delete_tombstones && min.value == TOMBSTONE {
+                self.last_entry = Some(min);
+                continue;
+            }
+
+            break;
         }
 
-        self.last_key = Some(min.key);
+        self.last_entry = Some(min);
         Some(Ok((min.key, min.value)))
     }
 }
 
-// TODO: add more tests
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +190,31 @@ mod tests {
         assert_eq!(merged.next(), Some(Ok((0, 0))));
         assert_eq!(merged.next(), Some(Ok((1, 1))));
         assert_eq!(merged.next(), Some(Ok((2, 4))));
+        assert_eq!(merged.next(), Some(Ok((3, 6))));
+        assert_eq!(merged.next(), Some(Ok((4, 8))));
+        assert_eq!(merged.next(), Some(Ok((5, 10))));
+        assert_eq!(merged.next(), None);
+    }
+
+    #[test]
+    fn test_delete_tombstones() {
+        let x = vec![Ok((0, 0)), Ok((1, 1)), Ok((2, 2)), Ok((3, TOMBSTONE))].into_iter();
+        let y = vec![Ok((2, TOMBSTONE)), Ok((3, 6)), Ok((4, 8)), Ok((5, 10))].into_iter();
+
+        let mut merged = MergedIterator::new(vec![x, y], true).unwrap();
+        assert_eq!(merged.next(), Some(Ok((0, 0))));
+        assert_eq!(merged.next(), Some(Ok((1, 1))));
+        assert_eq!(merged.next(), Some(Ok((2, 2))));
+        assert_eq!(merged.next(), Some(Ok((4, 8))));
+        assert_eq!(merged.next(), Some(Ok((5, 10))));
+        assert_eq!(merged.next(), None);
+
+        let x = vec![Ok((0, 0)), Ok((1, 1)), Ok((2, 2)), Ok((3, TOMBSTONE))].into_iter();
+        let y = vec![Ok((2, TOMBSTONE)), Ok((3, 6)), Ok((4, 8)), Ok((5, 10))].into_iter();
+
+        let mut merged = MergedIterator::new(vec![y, x], true).unwrap();
+        assert_eq!(merged.next(), Some(Ok((0, 0))));
+        assert_eq!(merged.next(), Some(Ok((1, 1))));
         assert_eq!(merged.next(), Some(Ok((3, 6))));
         assert_eq!(merged.next(), Some(Ok((4, 8))));
         assert_eq!(merged.next(), Some(Ok((5, 10))));

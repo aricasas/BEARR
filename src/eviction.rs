@@ -1,11 +1,11 @@
 use crate::{
     DbError,
-    file_system::PageId,
+    file_system::BufferPageId,
     hashtable::HashTable,
     list::{EntryId, List},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EvictionId {
     AIn(EntryId),
     AM(EntryId),
@@ -31,10 +31,10 @@ pub enum EvictionId {
 /// A_out only stores whether we've recently evicted a page, but not the actual page contents, so it is
 /// not too much memory.
 pub struct Eviction {
-    a_in: List<PageId>,
-    a_m: List<PageId>,
-    a_out: List<PageId>,
-    map_out: HashTable<EntryId>,
+    a_in: List<BufferPageId>,
+    a_m: List<BufferPageId>,
+    a_out: List<BufferPageId>,
+    map_out: HashTable<BufferPageId, EntryId>,
     k_in: usize,
     k_out: usize,
 }
@@ -86,7 +86,7 @@ impl Eviction {
 
     /// Inserts a new page into the eviction handler. Must be a page that hasn't been inserted before.
     /// Panics if inserting above capacity
-    pub fn insert_new(&mut self, page_id: PageId) -> EvictionId {
+    pub fn insert_new(&mut self, page_id: BufferPageId) -> EvictionId {
         if let Some(&idx_out) = self.map_out.get(page_id) {
             let removed = self.a_out.delete(idx_out);
             debug_assert_eq!(removed, page_id);
@@ -124,7 +124,7 @@ impl<'a> VictimChooser<'a> {
     }
 }
 impl<'a> Iterator for VictimChooser<'a> {
-    type Item = (EvictionId, PageId);
+    type Item = (EvictionId, BufferPageId);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.ended {
@@ -193,16 +193,12 @@ impl<'a> Iterator for VictimChooser<'a> {
 mod tests {
     use anyhow::Result;
 
-    use crate::file_system::FileId;
+    use crate::file_system::BufferFileId;
 
     use super::*;
 
-    fn make_page(id: usize) -> PageId {
-        FileId {
-            lsm_level: 0,
-            sst_number: 0,
-        }
-        .page(id)
+    fn make_page(id: usize) -> BufferPageId {
+        BufferFileId(0).page(id)
     }
 
     #[test]

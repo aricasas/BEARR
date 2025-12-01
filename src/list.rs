@@ -2,7 +2,7 @@ use crate::DbError;
 
 const NULL: usize = usize::MAX;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EntryId(usize);
 
 #[derive(Clone, Debug)]
@@ -87,9 +87,9 @@ impl<T: Clone> List<T> {
         self.get(front_id).map(|entry| (front_id, entry))
     }
 
-    #[cfg(test)]
     /// Gets the id and the entry of the back of the list, if the list is not empty.
     /// O(1) worst case.
+    #[cfg(test)]
     pub fn back(&self) -> Option<(EntryId, &T)> {
         let back_id = EntryId(self.back);
         self.get(back_id).map(|entry| (back_id, entry))

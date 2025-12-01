@@ -2,7 +2,7 @@ use bit_vec::BitVec;
 
 use crate::hash::HashFunction;
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct BloomFilter {
     pub hash_functions: Vec<HashFunction>, // Bloom filter's hash functions
     bits: BitVec,                          // Bloom filter's bitmap
@@ -12,7 +12,7 @@ impl BloomFilter {
     /// Create an empty bloom filter having the number of entries and bits per each entry
     pub fn empty(n_entries: usize, bits_per_entry: usize) -> Self {
         // Calculate how many hash functions it needs to be optimal: bits_per_entry * ln(2)
-        let bits = BitVec::from_elem(n_entries * bits_per_entry, false);
+        let bits = BitVec::from_elem((n_entries * bits_per_entry).next_multiple_of(8), false);
         let num_hashes = (bits_per_entry as f32 * f32::ln(2.0)).ceil() as usize;
 
         let hash_functions = (0..num_hashes).map(|_| HashFunction::new()).collect();
@@ -77,9 +77,9 @@ mod tests {
     use super::*;
     use std::iter::repeat_with;
 
-    #[test]
     /// Test to see if bloom filter works correctlly
     /// need to make sure it doesn't return any false negatives
+    #[test]
     pub fn bloom_filter_test() {
         let entries_num = 10;
         let bits_per_entry = 20;
