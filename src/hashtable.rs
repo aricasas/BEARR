@@ -1,4 +1,7 @@
-use crate::{DbError, hash::HashFunction};
+use crate::{
+    DbError,
+    hash::{HashAlgorithm, HashFunction, MurmurHash},
+};
 
 struct HashTableEntry<K, V> {
     key: K,
@@ -11,14 +14,14 @@ struct HashTableEntry<K, V> {
 /// A custom hash table.
 ///
 /// Uses MurmurHash with linear probing.
-pub struct HashTable<K, V> {
+pub struct HashTable<K, V, H = MurmurHash> {
     inner: Vec<Option<HashTableEntry<K, V>>>,
     capacity: usize,
     len: usize,
-    hash_function: HashFunction,
+    hash_function: HashFunction<H>,
 }
 
-impl<K: bytemuck::Pod + Eq, V> HashTable<K, V> {
+impl<K: bytemuck::Pod + Eq, V, H: HashAlgorithm> HashTable<K, V, H> {
     /// Creates and returns an empty hash table with the given capacity.
     ///
     /// Returns `DbError::Oom` if allocation fails.
@@ -45,6 +48,7 @@ impl<K: bytemuck::Pod + Eq, V> HashTable<K, V> {
         })
     }
 
+    /// Returns the bucket in the hash table that the given key hashes to.
     fn hash_to_bucket(&self, key: K) -> usize {
         self.hash_function.hash_to_index(key, self.num_buckets())
     }
@@ -159,6 +163,7 @@ impl<K: bytemuck::Pod + Eq, V> HashTable<K, V> {
         }
     }
 
+    /// Returns the number of buckets allocated for the hash table.
     fn num_buckets(&self) -> usize {
         self.inner.len()
     }
@@ -177,23 +182,38 @@ mod tests {
 
     use crate::{
         file_system::{BufferFileId, BufferPageId},
+        hash::HashAlgorithm,
         test_util::assert_panics,
     };
 
     use super::*;
 
+    #[repr(C)]
+    #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct MockHash;
+
+    impl HashAlgorithm for MockHash {
+        fn hash(key: &[u8], _seed: u32) -> u32 {
+            // Just returns the page number of a `BufferPageId`
+            usize::from_ne_bytes(key[8..16].try_into().unwrap()) as u32
+        }
+    }
+
     fn page_id(file_id: usize, page_number: usize) -> BufferPageId {
         BufferFileId(file_id).page(page_number)
     }
 
-    fn insert_many(table: &mut HashTable<BufferPageId, u64>, pairs: &[(usize, usize, u64)]) {
+    fn insert_many(
+        table: &mut HashTable<BufferPageId, u64, MockHash>,
+        pairs: &[(usize, usize, u64)],
+    ) {
         for &(file_id, page_number, value) in pairs {
             table.insert(page_id(file_id, page_number), value);
         }
     }
 
     fn assert_pairs(
-        table: &HashTable<BufferPageId, u64>,
+        table: &HashTable<BufferPageId, u64, MockHash>,
         pairs: impl IntoIterator<Item = (usize, usize, Option<u64>)>,
     ) {
         for (file_id, page_number, value) in pairs {
@@ -205,7 +225,7 @@ mod tests {
         }
     }
 
-    fn inspect(table: &HashTable<BufferPageId, u64>) {
+    fn inspect(table: &HashTable<BufferPageId, u64, MockHash>) {
         for (i, e) in table.inner.iter().enumerate() {
             if let Some(e) = e {
                 let BufferPageId {
@@ -222,7 +242,7 @@ mod tests {
 
     #[test]
     pub fn test_basic() -> Result<()> {
-        let mut table = HashTable::new(32)?;
+        let mut table: HashTable<_, _, MockHash> = HashTable::new(32)?;
         let n = table.num_buckets();
         let [a, b, c, d, e, f] = [10, 12, 14, n - 2, 0, n - 4];
 
@@ -319,7 +339,7 @@ mod tests {
 
     #[test]
     fn test_remove() -> Result<()> {
-        let mut table = HashTable::new(32)?;
+        let mut table: HashTable<_, _, MockHash> = HashTable::new(32)?;
         let n = table.num_buckets();
         let [a, b, c, d, e, f] = [10, 12, 14, n - 2, 0, n - 4];
 
@@ -392,7 +412,7 @@ mod tests {
 
     #[test]
     fn test_over_capacity() -> Result<()> {
-        let mut table = HashTable::new(128)?;
+        let mut table: HashTable<_, _, MockHash> = HashTable::new(128)?;
 
         for i in 0..128 {
             table.insert(page_id(0, i), i);

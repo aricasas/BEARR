@@ -1,78 +1,90 @@
-use std::{array, num::Wrapping as W};
+use std::{array, marker::PhantomData, num::Wrapping as W};
 
 /// A hash function with a specific seed to influence the output.
-#[repr(C)]
+#[repr(transparent)]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HashFunction {
+pub struct HashFunction<H = MurmurHash> {
     seed: u32,
+    _hash: PhantomData<H>,
 }
 
-impl HashFunction {
+/// An algorithm for hashing bytes.
+pub trait HashAlgorithm: bytemuck::Pod {
+    /// Hashes the given key to a `u32` with the given `u32` seed.
+    fn hash(key: &[u8], seed: u32) -> u32;
+}
+
+impl<H: HashAlgorithm> HashFunction<H> {
     /// Returns a new hash function with a random seed.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             seed: fastrand::u32(..),
+            _hash: PhantomData,
         }
     }
 
     /// Hashes the given key to an index into a container with the given length.
     pub fn hash_to_index(&self, key: impl bytemuck::Pod, length: usize) -> usize {
-        hash(bytemuck::bytes_of(&key), self.seed) as usize % length
+        H::hash(bytemuck::bytes_of(&key), self.seed) as usize % length
     }
 }
 
 /// Implementation of the 32-bit MurmurHash3 hash function.
-/// https://en.wikipedia.org/wiki/MurmurHash
-fn murmur3_32(key: &[u8], seed: u32) -> u32 {
-    let len = key.len();
+#[repr(C)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MurmurHash;
 
-    let c1 = W(0xcc9e2d51);
-    let c2 = W(0x1b873593);
-    let r1 = 15;
-    let r2 = 13;
-    let m = W(5);
-    let n = W(0xe6546b64);
+impl HashAlgorithm for MurmurHash {
+    /// https://en.wikipedia.org/wiki/MurmurHash
+    fn hash(key: &[u8], seed: u32) -> u32 {
+        let len = key.len();
 
-    let mut hash = W(seed);
+        let c1 = W(0xcc9e2d51);
+        let c2 = W(0x1b873593);
+        let r1 = 15;
+        let r2 = 13;
+        let m = W(5);
+        let n = W(0xe6546b64);
 
-    let (chunks, remainder) = key.as_chunks::<4>();
-    let remainder: [u8; 4] = array::from_fn(|i| remainder.get(i).copied().unwrap_or(0));
+        let mut hash = W(seed);
 
-    for &chunk in chunks {
-        let mut k = W(u32::from_le_bytes(chunk));
+        let (chunks, remainder) = key.as_chunks::<4>();
+        let remainder: [u8; 4] = array::from_fn(|i| remainder.get(i).copied().unwrap_or(0));
 
-        k *= c1;
-        k = W(k.0.rotate_left(r1));
-        k *= c2;
+        for &chunk in chunks {
+            let mut k = W(u32::from_le_bytes(chunk));
 
-        hash ^= k;
-        hash = W(hash.0.rotate_left(r2));
-        hash = (hash * m) + n;
+            k *= c1;
+            k = W(k.0.rotate_left(r1));
+            k *= c2;
+
+            hash ^= k;
+            hash = W(hash.0.rotate_left(r2));
+            hash = (hash * m) + n;
+        }
+
+        {
+            let mut remainder = W(u32::from_le_bytes(remainder));
+
+            remainder *= c1;
+            remainder = W(remainder.0.rotate_left(r1));
+            remainder *= c2;
+
+            hash ^= remainder;
+        }
+
+        hash ^= len as u32;
+
+        hash ^= hash >> 16;
+        hash *= 0x85ebca6b;
+        hash ^= hash >> 13;
+        hash *= 0xc2b2ae35;
+        hash ^= hash >> 16;
+
+        hash.0
     }
-
-    {
-        let mut remainder = W(u32::from_le_bytes(remainder));
-
-        remainder *= c1;
-        remainder = W(remainder.0.rotate_left(r1));
-        remainder *= c2;
-
-        hash ^= remainder;
-    }
-
-    hash ^= len as u32;
-
-    hash ^= hash >> 16;
-    hash *= 0x85ebca6b;
-    hash ^= hash >> 13;
-    hash *= 0xc2b2ae35;
-    hash ^= hash >> 16;
-
-    hash.0
 }
-
-use murmur3_32 as hash;
 
 #[cfg(test)]
 mod tests {
@@ -101,12 +113,12 @@ mod tests {
             ),
         ];
         for (seed, expected, key) in cases {
-            assert_eq!(murmur3_32(key.as_bytes(), seed), expected);
+            assert_eq!(MurmurHash::hash(key.as_bytes(), seed), expected);
         }
     }
 
     fn murmur_hash_to_index(key: &str, length: usize, seed: u32) -> usize {
-        murmur3_32(key.as_bytes(), seed) as usize % length
+        MurmurHash::hash(key.as_bytes(), seed) as usize % length
     }
 
     #[test]
