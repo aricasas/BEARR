@@ -156,10 +156,9 @@ impl<'a, 'b> BTreeIter<'a, 'b> {
         }
 
         if self.buffered_page.is_none() {
-            let page_bytes = self.file_system.get_sequential(
-                self.sst.file_id.page(self.page_number),
-                self.sst.btree_metadata.size as usize,
-            );
+            let page_bytes = self
+                .file_system
+                .get(self.sst.file_id.page(self.page_number));
 
             let buffered_page: Arc<Page> = match page_bytes {
                 Ok(bytes) => bytemuck::cast_arc(bytes),
@@ -299,9 +298,8 @@ impl BTree {
             Ok(page_length > 0)
         };
 
-        let file_size = bloom_offset
-            + file_system.write_file(file_id.page(bloom_offset as usize), write_next_bloom_page)?
-                as u64;
+        file_system.write_file(file_id.page(bloom_offset as usize), write_next_bloom_page)?;
+        let file_size = bloom_offset + bloom_size;
 
         let btree_metadata = BTreeMetadata {
             magic: BEAR_MAGIC,
@@ -469,15 +467,20 @@ impl BTree {
 
         loop {
             page_number = (start_page_num + end_page_num) as usize / 2;
-            if page_number == start_page_num as usize {
-                break;
-            }
             let middle_page = file_system.get(sst.file_id.page(page_number))?;
             let leaf: Arc<Leaf> = bytemuck::cast_arc(middle_page);
 
             if key < leaf.pairs[0][0] {
+                if page_number == start_page_num as usize {
+                    page_number = start_page_num as usize;
+                    break;
+                }
                 end_page_num = page_number as u64;
             } else if key > leaf.pairs[(leaf.length - 1) as usize][0] {
+                if page_number == start_page_num as usize {
+                    page_number = end_page_num as usize;
+                    break;
+                }
                 start_page_num = page_number as u64;
             } else {
                 break;
