@@ -108,8 +108,11 @@ impl Database {
 
         let metadata_file = File::open(name.join(METADATA_FILENAME))?;
         let metadata: DbMetadata = serde_json::from_reader(metadata_file)?;
+        let mut db = Self::new(name, configuration, metadata)?;
 
-        Self::new(name, configuration, metadata)
+        // Replay WAL
+        db.replay_wal()?;
+        Ok(db)
     }
 
     /// Returns a database from the given path, configuration, and metadata.
@@ -135,10 +138,17 @@ impl Database {
             &file_system,
         )?;
 
+        let wal_file = fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(name.join(LOG_FILENAME))?;
+
         Ok(Self {
             name: name.to_path_buf(),
             lsm,
             file_system,
+            wal_buffer: Vec::with_capacity(configuration.wal_buffer_size),
+            wal_file,
         })
     }
 
@@ -157,7 +167,13 @@ impl Database {
         if value == TOMBSTONE {
             return Err(DbError::InvalidValue);
         }
+        // Add to WAL buffer
+        self.wal_buffer.push((key, value));
 
+        // Flush WAL buffer if it's full
+        if self.wal_buffer.len() >= self.wal_buffer.capacity() {
+            self.flush_wal_buffer()?;
+        }
         self.lsm.put(key, value, &self.file_system)
     }
 
@@ -169,6 +185,13 @@ impl Database {
     ///
     /// Returns an error if deletion fails.
     pub fn delete(&mut self, key: u64) -> Result<(), DbError> {
+        // Add to WAL buffer with TOMBSTONE
+        self.wal_buffer.push((key, TOMBSTONE));
+
+        // Flush WAL buffer if it's full
+        if self.wal_buffer.len() >= self.wal_buffer.capacity() {
+            self.flush_wal_buffer()?;
+        }
         self.lsm.delete(key, &self.file_system)
     }
 
@@ -191,11 +214,75 @@ impl Database {
     /// - Creation of the new SST fails.
     /// - Creation of the new memtable fails.
     pub fn flush(&mut self) -> Result<(), DbError> {
+        // Flush any pending WAL entries
+        self.flush_wal_buffer()?;
+
         self.lsm.flush_memtable(&self.file_system)?;
+
+        // Checkpoint WAL after successful memtable flush
+        self.checkpoint_wal()?;
         let lsm_metadata = self.lsm.metadata();
         let metadata = DbMetadata { lsm_metadata };
         let metadata_file = File::create(self.name.join(METADATA_FILENAME))?;
         serde_json::to_writer_pretty(metadata_file, &metadata)?;
+
+        Ok(())
+    }
+
+    fn flush_wal_buffer(&mut self) -> Result<(), DbError> {
+        use std::io::Write;
+
+        if self.wal_buffer.is_empty() {
+            return Ok(());
+        }
+
+        for &(key, value) in &self.wal_buffer {
+            writeln!(&mut self.wal_file, "{},{}", key, value)?;
+        }
+        self.wal_file.flush()?;
+        self.wal_buffer.clear();
+
+        Ok(())
+    }
+
+    /// Replays WAL entries into memtable
+    fn replay_wal(&mut self) -> Result<(), DbError> {
+        use std::io::{BufRead, BufReader};
+
+        let wal_path = self.name.join(LOG_FILENAME);
+        let file = File::open(&wal_path)?;
+        let reader = BufReader::new(file);
+
+        for line in reader.lines() {
+            let line = line?;
+            if line.is_empty() {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() == 2 {
+                let key: u64 = parts[0]
+                    .parse()
+                    .map_err(|_| DbError::IoError("wrong Key".to_string()))?;
+                let value: u64 = parts[1]
+                    .parse()
+                    .map_err(|_| DbError::IoError("wrong Val".to_string()))?;
+
+                // Replay without WAL buffering to avoid infinite recursion
+                self.lsm.put(key, value, &self.file_system)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Checkpoints WAL by truncating it
+    fn checkpoint_wal(&mut self) -> Result<(), DbError> {
+        // Flush any pending entries first
+        self.flush_wal_buffer()?;
+
+        // Truncate WAL file
+        self.wal_file = File::create(self.name.join(LOG_FILENAME))?;
 
         Ok(())
     }
@@ -206,6 +293,7 @@ impl Database {
 /// Errors are ignored. To handle them, call `Database::flush` manually.
 impl Drop for Database {
     fn drop(&mut self) {
+        _ = self.flush_wal_buffer();
         _ = self.flush();
     }
 }
@@ -254,6 +342,7 @@ mod tests {
                 buffer_pool_capacity: 16,
                 write_buffering: 1,
                 readahead_buffering: 1,
+                wal_buffer_size: 10,
                 lsm_configuration: LsmConfiguration {
                     size_ratio: 2,
                     memtable_capacity: 3,
@@ -316,6 +405,7 @@ mod tests {
                     buffer_pool_capacity: 16,
                     write_buffering: 1,
                     readahead_buffering: 1,
+                    wal_buffer_size: 10,
                     lsm_configuration: LsmConfiguration {
                         size_ratio: 2,
                         memtable_capacity: 10,
@@ -384,6 +474,7 @@ mod tests {
         buffer_pool_capacity: usize,
         write_buffering: usize,
         readahead_buffering: usize,
+        wal_buffer_size: usize,
     ) -> Result<Database, DbError> {
         Database::create(
             test_path(name),
@@ -396,28 +487,29 @@ mod tests {
                 buffer_pool_capacity,
                 write_buffering,
                 readahead_buffering,
+                wal_buffer_size,
             },
         )
     }
 
     #[test]
     fn test_errors() -> Result<()> {
-        let mut db = create_db("errors", 2, 1, 0, 16, 1, 0)?;
+        let mut db = create_db("errors", 2, 1, 0, 16, 1, 0, 10)?;
 
         assert_eq!(
-            create_db("errors_bad_size_ratio", 1, 1, 0, 16, 1, 0).err(),
+            create_db("errors_bad_size_ratio", 1, 1, 0, 16, 1, 0, 10).err(),
             Some(DbError::InvalidConfiguration)
         );
         assert_eq!(
-            create_db("errors_no_memtable_capacity", 2, 0, 0, 16, 1, 0).err(),
+            create_db("errors_no_memtable_capacity", 2, 0, 0, 16, 1, 0, 10).err(),
             Some(DbError::InvalidConfiguration)
         );
         assert_eq!(
-            create_db("errors_small_buffer_pool_capacity", 2, 1, 0, 15, 1, 0).err(),
+            create_db("errors_small_buffer_pool_capacity", 2, 1, 0, 15, 1, 0, 10).err(),
             Some(DbError::InvalidConfiguration)
         );
         assert_eq!(
-            create_db("errors_no_write_buffering", 2, 1, 0, 16, 0, 0).err(),
+            create_db("errors_no_write_buffering", 2, 1, 0, 16, 0, 0, 10).err(),
             Some(DbError::InvalidConfiguration)
         );
 
@@ -452,6 +544,7 @@ mod tests {
                 buffer_pool_capacity: 64,
                 write_buffering: 8,
                 readahead_buffering: 8,
+                wal_buffer_size: 10,
                 lsm_configuration: LsmConfiguration {
                     size_ratio: 3,
                     memtable_capacity: 256,
