@@ -14,9 +14,41 @@ The following bonus features have also been implemented:
 
 In addition, our implementation can handle concurrent gets and scans from several threads.
 
+The public interface is fully tested, including an integration test that performs a large number of random database operations, comparing against a HashMap oracle.
+
+Most internal interfaces also have dedicated unit tests.
+
+[TODO: status of experiments]
+
 ## Interface
 
-[TODO]
+Our project is designed as a library. The main item of interest is the `Database` struct.
+
+Note that this project is Linux-exclusive.
+
+`Database::create(name, configuration)` - creates and returns a database at the given path with the given configuration. Configuration options (`DbConfiguration`) include:
+- Options for the LSM tree (`LsmConfiguration`):
+  - Size ratio
+  - Memtable capacity
+  - Number of bits for the bloom filter
+- Buffer pool capacity
+- Number of pages to buffer for file writes
+- Number of pages to buffer for sequential file reads
+- Number of operations to buffer for the write-ahead log
+
+`Database::open(name)` - opens and returns an existing database located at the given path.
+
+`database.get(key)` - Returns the value for the given key.
+
+`database.put(key, value)` - inserts the given key-value pair into the database.
+
+`database.delete(key)` - deletes the key-value pair with the given key from the database.
+
+`database.scan(start..=end)` - returns an iterator of key-value pairs where the key is in the given range (start to end inclusive).
+
+`database.flush()` - manually flushes the database, writing the memtable to an SST and writing LSM metadata to disk. The database automatically handles closing upon being dropped, but this function can optionally be called if you need to handle any errors arising from the closing process.
+
+For more detail on the interface, run `cargo doc --open`.
 
 ## How to run
 
