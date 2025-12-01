@@ -257,7 +257,9 @@ impl FileSystem {
 
             let buffer_file_id = inner.file_map.get_file(file_id).unwrap();
 
-            for i in (0..num_pages_to_read).rev() {
+            // Add readahead pages to buffer, but don't mark them as touched in the eviction handler
+            // if they happen to already be there since the application hasn't logically touched them yet
+            for i in (1..num_pages_to_read).rev() {
                 let buffer_page_id = buffer_file_id.page(page_start + i);
                 if inner.buffer_pool.get(buffer_page_id).is_none() {
                     if inner.buffer_pool.len() == self.capacity {
@@ -271,10 +273,21 @@ impl FileSystem {
                 }
             }
 
+            // Add the requested page to buffer pool and mark it as touched if it happens to be there already
             let buffer_page_id = buffer_file_id.page(page_start);
-            let page_entry = inner.buffer_pool.get(buffer_page_id).unwrap();
+            if let Some(page_entry) = inner.buffer_pool.get(buffer_page_id) {
+                Ok(Arc::clone(&page_entry.page))
+            } else {
+                if inner.buffer_pool.len() == self.capacity {
+                    inner.evict_page()?;
+                }
 
-            Ok(Arc::clone(&page_entry.page))
+                let mut page = Aligned::new();
+                page.inner_mut().unwrap().copy_from_slice(&buffer[0].0);
+
+                inner.add_new_page(Arc::clone(&page), buffer_page_id);
+                Ok(page)
+            }
         }
     }
 
