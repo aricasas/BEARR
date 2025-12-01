@@ -60,14 +60,18 @@ const CONFIG_FILENAME: &str = "config.json";
 const METADATA_FILENAME: &str = "metadata.json";
 
 impl Database {
-    /// Creates and returns an empty database, initializing a folder with the given path.
+    /// Creates and returns an empty database with the given configuration,
+    /// initializing a folder with the given path.
+    ///
+    /// Returns `DbError::InvalidConfiguration` if the given configuration
+    /// does not meet all of the documented requirements.
     ///
     /// Returns `DbError::IoError` if:
     /// - The path already exists.
     /// - A parent of the path does not exist.
     /// - There are problems with creating/writing to files.
     ///
-    /// May return other errors if creation of the memtable or SSTs fails.
+    /// Also returns errors if creation of the file system struct or LSM tree fails.
     pub fn create(name: impl AsRef<Path>, configuration: DbConfiguration) -> Result<Self, DbError> {
         let name = name.as_ref();
         fs::create_dir(name)?;
@@ -87,10 +91,10 @@ impl Database {
     /// Opens the database located at the given path.
     ///
     /// Returns `DbError::IoError` if:
-    /// - The path does not exist.
+    /// - The configuration and/or metadata files do not exist at the path.
     /// - There are problems with reading files.
     ///
-    /// May return other errors if creation of the memtable or SSTs fails.
+    /// Also returns errors if creation of the file system struct or LSM tree fails.
     pub fn open(name: impl AsRef<Path>) -> Result<Self, DbError> {
         let name = name.as_ref();
 
@@ -105,7 +109,7 @@ impl Database {
 
     /// Returns a database from the given path, configuration, and metadata.
     ///
-    /// Returns an error if creation of the memtable or SSTs fails.
+    /// Returns an error if creation of the file system struct or LSM tree fails.
     fn new(
         name: &Path,
         configuration: DbConfiguration,
@@ -143,7 +147,10 @@ impl Database {
     /// Inserts the given key-value pair into the database,
     /// flushing the memtable if it reaches capacity.
     ///
-    /// Returns an error if flushing fails. See `Database::flush` for more info.
+    /// Returns `DbError::InvalidValue` if the given value is `u64::MAX`
+    /// (which is reserved for tombstones).
+    ///
+    /// Returns an error if flushing fails.
     pub fn put(&mut self, key: u64, value: u64) -> Result<(), DbError> {
         if value == TOMBSTONE {
             return Err(DbError::InvalidValue);
@@ -165,6 +172,8 @@ impl Database {
 
     /// Returns a sorted list of all key-value pairs where the key is in the given range.
     ///
+    /// Returns `DbError::InvalidScanRange` if `range.start() > range.end()`.
+    ///
     /// Returns an error if scanning fails in the memtable or SSTs.
     pub fn scan(
         &self,
@@ -174,13 +183,14 @@ impl Database {
     }
 
     /// Transforms the current memtable into an SST, if the current memtable is nonempty.
-    ///
-    /// The new SST is saved to a file, and a new memtable is created to replace it.
+    /// The new SST is added to the top level of the LSM tree,
+    /// and then the levels of the LSM tree may be compacted.
+    /// Also saves the current metadata of the LSM tree to a file.
     ///
     /// Returns an error if:
     /// - Scanning the memtable fails.
-    /// - Creation of the new SST fails.
-    /// - Creation of the new memtable fails.
+    /// - Compaction fails in the LSM tree.
+    /// - Writing the LSM metadata fails.
     pub fn flush(&mut self) -> Result<(), DbError> {
         self.lsm.flush_memtable(&self.file_system)?;
         let lsm_metadata = self.lsm.metadata();

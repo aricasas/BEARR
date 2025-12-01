@@ -33,6 +33,7 @@ impl LsmConfiguration {
     }
 }
 
+/// Metadata for an LSM tree, persisted separately from the actual data.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LsmMetadata {
     pub ssts_per_level: Vec<usize>,
@@ -50,6 +51,11 @@ impl LsmMetadata {
 
 pub const TOMBSTONE: u64 = u64::MAX;
 
+/// An LSM tree, consisting of a memtable and several levels of SSTs.
+///
+/// Makes use of Monkey for assigning bloom filter bits
+/// (unless the `uniform_bits` feature is enabled)
+/// and Dostoevsky for compaction.
 pub struct LsmTree {
     memtable: MemTable<u64, u64>,
     /// levels[0] is top level
@@ -61,6 +67,9 @@ pub struct LsmTree {
 }
 
 impl LsmTree {
+    /// Opens an LSM tree in the given file system,
+    /// opening all of its component SSTs based on the given metadata
+    /// and storing the given configuration and bottom leveling.
     pub fn open(
         metadata: LsmMetadata,
         configuration: LsmConfiguration,
@@ -154,6 +163,7 @@ impl LsmTree {
         MergedIterator::new(scans, true)
     }
 
+    /// The index of the bottom level, or None if there are no levels.
     fn bottom_level_number(&self) -> Option<usize> {
         self.levels.len().checked_sub(1)
     }
@@ -163,6 +173,7 @@ impl LsmTree {
         self.configuration.bloom_filter_bits
     }
 
+    /// Returns the number of bits per entry for a bloom filter at the given level according to Monkey.
     #[cfg(not(feature = "uniform_bits"))]
     fn monkey(&self, level: usize) -> usize {
         let t = self.configuration.size_ratio as f64;
@@ -183,6 +194,7 @@ impl LsmTree {
         f64::max(m_0 - (level as f64) * t.log2() / 2_f64.ln(), 0.0).ceil() as usize
     }
 
+    /// Flushes the memtable into an SST, and merges SSTs as necessary
     pub fn flush_memtable(&mut self, file_system: &FileSystem) -> Result<(), DbError> {
         if self.memtable.size() == 0 {
             return Ok(());
@@ -226,6 +238,7 @@ impl LsmTree {
 
         let t = self.configuration.size_ratio;
 
+        // Merge non-bottom levels
         for i in 0..bottom_level_number {
             let bits_per_entry = self.monkey(i + 1);
 
@@ -263,6 +276,7 @@ impl LsmTree {
             }
         }
 
+        // Merge bottom level
         let bottom_bits_per_entry = self.monkey(bottom_level_number);
         let bottom_level = &mut self.levels[bottom_level_number];
         debug_assert_ne!(bottom_level.len(), 0);
@@ -322,6 +336,7 @@ impl LsmTree {
             bottom_level.push(new_sst);
         }
 
+        // Create a new bottom level if needed
         if self.bottom_leveling >= t {
             self.levels.push(Vec::new());
 
@@ -346,6 +361,7 @@ impl LsmTree {
         Ok(())
     }
 
+    /// Metadata for the LSM tree calculated from its fields.
     pub fn metadata(&self) -> LsmMetadata {
         LsmMetadata {
             ssts_per_level: self.levels.iter().map(|level| level.len()).collect(),

@@ -98,6 +98,13 @@ impl BufferFileId {
 
 /// An abstraction over a buffer pool
 /// that exposes functions for reading and writing pages to and from the file system.
+///
+/// CONCURRENCY CORRECTNESS:
+/// It is a logic error to modify a file in one thread
+/// while another thread is reading or modifying the same file.
+/// Gets and scans only read files,
+/// and puts, deletes, and flushes require a mutable (exclusive) reference to the database struct,
+/// so this should not happen.
 pub struct FileSystem {
     inner: Mutex<InnerFs>,
     prefix: PathBuf,
@@ -225,6 +232,7 @@ impl FileSystem {
         let page_start = page_range.start;
         let num_pages_to_read = page_range.len();
 
+        // Hold lock to check if page is in buffer pool
         {
             let mut inner_lock = self.inner.lock().unwrap(); // If lock is poisoned, this is unrecoverable
             let inner = inner_lock.deref_mut();
@@ -235,6 +243,10 @@ impl FileSystem {
                 return Ok(Arc::clone(&entry.page));
             }
         }
+
+        // If page is not in buffer pool, fetch it and following pages from disk.
+        // We don't hold the lock here so other threads can do work while we wait for I/O to complete.
+        // This is fine as long as other threads are only reading the same file.
 
         let path = self.path(file_id);
         let file = fs::OpenOptions::new()
@@ -251,6 +263,7 @@ impl FileSystem {
                 DbError::IoError(format!("failed exact read {file_id:?} {page_range:?}: {e}"))
             })?;
 
+        // Obtain lock again to put page in buffer pool
         {
             let mut inner_lock = self.inner.lock().unwrap();
             let inner = inner_lock.deref_mut();
@@ -274,8 +287,10 @@ impl FileSystem {
             }
 
             // Add the requested page to buffer pool and mark it as touched if it happens to be there already
+            // (another thread could have inserted this page while we weren't holding the lock)
             let buffer_page_id = buffer_file_id.page(page_start);
             if let Some(page_entry) = inner.buffer_pool.get(buffer_page_id) {
+                inner.eviction_handler.touch(page_entry.eviction_id);
                 Ok(Arc::clone(&page_entry.page))
             } else {
                 if inner.buffer_pool.len() == self.capacity {
