@@ -214,7 +214,7 @@ impl FileSystem {
         file_id: FileId,
         page_range: Range<usize>,
     ) -> Result<Arc<Aligned>, DbError> {
-        #[cfg(false)]
+        #[cfg(false)] // Replace with #[cfg(true)] for additional test output
         println!("get {file_id:?} {page_range:?}");
 
         assert!(
@@ -393,7 +393,7 @@ impl InnerFs {
     /// Returns `DbError::Oom` if no page can be evicted
     /// due to every page in the buffer pool being referenced by another `Arc`.
     pub fn evict_page(&mut self) -> Result<(), DbError> {
-        #[cfg(false)]
+        #[cfg(false)] // Replace with #[cfg(true)] for additional test output
         println!("evict");
 
         let chooser = self.eviction_handler.choose_victim();
@@ -411,7 +411,7 @@ impl InnerFs {
     /// Adds the given page to the buffer pool with the given page ID key,
     /// updating the eviction handler appropriately.
     pub fn add_new_page(&mut self, page: Arc<Aligned>, page_id: BufferPageId) {
-        #[cfg(false)]
+        #[cfg(false)] // Replace with #[cfg(true)] for additional test output
         println!("add {page_id:?}");
 
         let eviction_id = self.eviction_handler.insert_new(page_id);
