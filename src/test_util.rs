@@ -15,7 +15,7 @@ fn get_path_base(base: &str) -> PathBuf {
     Path::new("test_files").join(base)
 }
 
-fn get_path(base: &str, name: &str) -> PathBuf {
+pub fn get_path(base: &str, name: &str) -> PathBuf {
     get_path_base(base).join(name)
 }
 

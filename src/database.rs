@@ -217,7 +217,7 @@ mod tests {
 
     use anyhow::Result;
 
-    use crate::test_util::TestPath;
+    use crate::test_util::{TestPath, get_path};
 
     use super::*;
 
@@ -403,7 +403,34 @@ mod tests {
 
     #[test]
     fn test_errors() -> Result<()> {
-        let mut db = create_db("errors", 2, 1, 0, 16, 1, 1)?;
+        let ok_config = DbConfiguration {
+            lsm_configuration: LsmConfiguration {
+                size_ratio: 2,
+                memtable_capacity: 1,
+                bloom_filter_bits: 0,
+            },
+            buffer_pool_capacity: 16,
+            write_buffering: 1,
+            readahead_buffering: 1,
+        };
+
+        let path = &test_path("errors");
+        let mut db = Database::create(path, ok_config)?;
+        // DB already exists
+        assert!(matches!(
+            Database::create(path, ok_config),
+            Err(DbError::IoError(_))
+        ));
+        // Create with non-existent parent path
+        assert!(matches!(
+            Database::create(get_path("database", "monad"), ok_config),
+            Err(DbError::IoError(_))
+        ));
+        // Open non-existent path
+        assert!(matches!(
+            Database::open(get_path("database", "monoid")),
+            Err(DbError::IoError(_))
+        ));
 
         assert_eq!(
             create_db("errors_bad_size_ratio", 1, 1, 0, 16, 1, 1).err(),
