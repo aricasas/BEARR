@@ -193,15 +193,12 @@ impl<'a> Iterator for VictimChooser<'a> {
 mod tests {
     use anyhow::Result;
 
-    use crate::file_system::BufferFileId;
+    use crate::file_system::{BufferFileId, BufferPageId};
 
     use super::*;
 
     fn make_page(id: usize) -> BufferPageId {
-        BufferPageId {
-            file_id: BufferFileId(0),
-            page_number: id,
-        }
+        BufferFileId(0).page(id)
     }
 
     #[test]

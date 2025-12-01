@@ -19,11 +19,7 @@ fn get_path(base: &str, name: &str) -> PathBuf {
 }
 
 fn delete_path(path: &Path) {
-    if path.is_dir() {
-        _ = fs::remove_dir_all(path);
-    } else {
-        _ = fs::remove_file(path);
-    }
+    _ = fs::remove_dir_all(path);
 }
 
 impl TestPath {

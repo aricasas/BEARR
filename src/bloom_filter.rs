@@ -77,9 +77,9 @@ mod tests {
     use super::*;
     use std::iter::repeat_with;
 
-    #[test]
     /// Test to see if bloom filter works correctlly
     /// need to make sure it doesn't return any false negatives
+    #[test]
     pub fn bloom_filter_test() {
         let entries_num = 10;
         let bits_per_entry = 20;

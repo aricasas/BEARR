@@ -183,10 +183,7 @@ mod tests {
     use super::*;
 
     fn page_id(file_id: usize, page_number: usize) -> BufferPageId {
-        BufferPageId {
-            file_id: BufferFileId(file_id),
-            page_number,
-        }
+        BufferFileId(file_id).page(page_number)
     }
 
     fn insert_many(table: &mut HashTable<BufferPageId, u64>, pairs: &[(usize, usize, u64)]) {

@@ -82,22 +82,33 @@ fn hash(key: &[u8], _seed: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use rstest::rstest;
-
     use super::*;
 
-    #[rstest]
-    #[case(0x00000000, 0x00000000, "")]
-    #[case(0x00000001, 0x514e28b7, "")]
-    #[case(0xffffffff, 0x81f16f39, "")]
-    #[case(0x00000000, 0xba6bd213, "test")]
-    #[case(0x9747b28c, 0x704b81dc, "test")]
-    #[case(0x00000000, 0xc0363e43, "Hello, world!")]
-    #[case(0x9747b28c, 0x24884cba, "Hello, world!")]
-    #[case(0x00000000, 0x2e4ff723, "The quick brown fox jumps over the lazy dog")]
-    #[case(0x9747b28c, 0x2fa826cd, "The quick brown fox jumps over the lazy dog")]
-    fn test_murmur(#[case] seed: u32, #[case] expected: u32, #[case] key: &str) {
-        assert_eq!(murmur3_32(key.as_bytes(), seed), expected);
+    #[test]
+    fn test_murmur() {
+        // Also taken from https://en.wikipedia.org/wiki/MurmurHash
+        let cases = [
+            (0x00000000, 0x00000000, ""),
+            (0x00000001, 0x514e28b7, ""),
+            (0xffffffff, 0x81f16f39, ""),
+            (0x00000000, 0xba6bd213, "test"),
+            (0x9747b28c, 0x704b81dc, "test"),
+            (0x00000000, 0xc0363e43, "Hello, world!"),
+            (0x9747b28c, 0x24884cba, "Hello, world!"),
+            (
+                0x00000000,
+                0x2e4ff723,
+                "The quick brown fox jumps over the lazy dog",
+            ),
+            (
+                0x9747b28c,
+                0x2fa826cd,
+                "The quick brown fox jumps over the lazy dog",
+            ),
+        ];
+        for (seed, expected, key) in cases {
+            assert_eq!(murmur3_32(key.as_bytes(), seed), expected);
+        }
     }
 
     fn murmur_hash_to_index(key: &str, length: usize, seed: u32) -> usize {
