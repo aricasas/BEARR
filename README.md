@@ -4,7 +4,7 @@ BEARR is a key-value store written in Rust as our CSC443 course project.
 
 ## Status
 
-All core features, [TODO: tests], and experiments are complete.
+All core features are complete.
 
 The following bonus features have also been implemented:
 - Handling sequential flooding with 2Q algorithm
@@ -24,7 +24,19 @@ In addition, our implementation can handle concurrent gets and scans from severa
 
 ## Design
 
-[TODO: break into subcategories]
+### LSM tree
+
+#### Merging
+
+### SST and B-tree
+
+#### Bloom filter
+
+### File system and buffer pool
+
+#### Hashing and hash table
+
+#### Eviction policy
 
 ## Experiments
 
