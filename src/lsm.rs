@@ -120,17 +120,20 @@ impl LsmTree {
         Ok(None)
     }
 
-    pub fn put(&mut self, key: u64, value: u64, file_system: &FileSystem) -> Result<(), DbError> {
+    // Returns whether an SST flush happened
+    pub fn put(&mut self, key: u64, value: u64, file_system: &FileSystem) -> Result<bool, DbError> {
         self.memtable.put(key, value);
 
         if self.memtable.size() >= self.configuration.memtable_capacity {
             self.flush_memtable(file_system)?;
+            return Ok(true);
         }
 
-        Ok(())
+        Ok(false)
     }
 
-    pub fn delete(&mut self, key: u64, file_system: &FileSystem) -> Result<(), DbError> {
+    // Returns whether an SST flush happened
+    pub fn delete(&mut self, key: u64, file_system: &FileSystem) -> Result<bool, DbError> {
         self.put(key, TOMBSTONE, file_system)
     }
 

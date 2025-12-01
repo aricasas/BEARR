@@ -174,7 +174,14 @@ impl Database {
         if self.wal_buffer.len() >= self.wal_buffer.capacity() {
             self.flush_wal_buffer()?;
         }
-        self.lsm.put(key, value, &self.file_system)
+
+        let sst_flushed = self.lsm.put(key, value, &self.file_system)?;
+        if sst_flushed {
+            self.wal_buffer.clear();
+            self.checkpoint_wal()?
+        }
+
+        Ok(())
     }
 
     /// Removes the key-value pair with given key from the database, if one exists.
@@ -192,7 +199,15 @@ impl Database {
         if self.wal_buffer.len() >= self.wal_buffer.capacity() {
             self.flush_wal_buffer()?;
         }
-        self.lsm.delete(key, &self.file_system)
+
+        let sst_flushed = self.lsm.delete(key, &self.file_system)?;
+
+        if sst_flushed {
+            self.wal_buffer.clear();
+            self.checkpoint_wal()?
+        }
+
+        Ok(())
     }
 
     /// Returns a sorted list of all key-value pairs where the key is in the given range.
