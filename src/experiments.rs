@@ -14,7 +14,7 @@ fn main() {
         buffer_pool_capacity: 65_536, // (256 Mib) / (4KiB per page)
         write_buffering: 32,
         readahead_buffering: 32,
-        wal_buffer_size: 10,
+        wal_buffer_size: Some(10),
         lsm_configuration: LsmConfiguration {
             size_ratio: 5,
             memtable_capacity: 655_360, // (10 MiB) / (16 B per row)
