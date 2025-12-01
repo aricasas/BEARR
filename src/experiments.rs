@@ -36,6 +36,9 @@ struct Cli {
     #[arg(long, default_value_t = 13)]
     bloom_filter_bits: usize,
 
+    #[arg(long)]
+    wal_buffer_size: Option<usize>,
+
     // 64M rows = 1 GiB
     #[arg(long, default_value_t = 64 * 1024 * 1024)]
     total_entries: usize,
@@ -82,6 +85,7 @@ fn main() {
         buffer_pool_capacity: cli.buffer_pool_capacity, // 65,536 pages = 256 Mib
         write_buffering: cli.write_buffering,
         readahead_buffering: cli.readahead_buffering,
+        wal_buffer_size: cli.wal_buffer_size,
         lsm_configuration: LsmConfiguration {
             size_ratio: cli.size_ratio,
             memtable_capacity: cli.memtable_capacity, // 655,360 rows = 10 MiB

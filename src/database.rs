@@ -17,6 +17,9 @@ pub struct Database {
     name: PathBuf,
     lsm: LsmTree,
     file_system: FileSystem,
+    wal_buffer: Vec<(u64, u64)>,
+    wal_file: File,
+    wal_enabled: bool,
 }
 
 /// Configuration options for a database.
@@ -34,6 +37,8 @@ pub struct DbConfiguration {
     /// The number of pages to read sequentially from a file.
     /// Must be nonzero.
     pub readahead_buffering: usize,
+    /// Number of operations to buffer before flushing to WAL
+    pub wal_buffer_size: Option<usize>,
 }
 
 impl DbConfiguration {
@@ -42,6 +47,7 @@ impl DbConfiguration {
         if self.buffer_pool_capacity >= 16
             && self.write_buffering > 0
             && self.readahead_buffering > 0
+            && self.wal_buffer_size.is_none_or(|x| x > 0)
         {
             Ok(())
         } else {
@@ -58,6 +64,7 @@ struct DbMetadata {
 
 const CONFIG_FILENAME: &str = "config.json";
 const METADATA_FILENAME: &str = "metadata.json";
+const LOG_FILENAME: &str = "WAL.log";
 
 impl Database {
     /// Creates and returns an empty database with the given configuration,
@@ -85,6 +92,8 @@ impl Database {
         let metadata_file = File::create_new(name.join(METADATA_FILENAME))?;
         serde_json::to_writer_pretty(metadata_file, &metadata)?;
 
+        File::create_new(name.join(LOG_FILENAME))?;
+
         Self::new(name, configuration, metadata)
     }
 
@@ -103,8 +112,14 @@ impl Database {
 
         let metadata_file = File::open(name.join(METADATA_FILENAME))?;
         let metadata: DbMetadata = serde_json::from_reader(metadata_file)?;
+        let mut db = Self::new(name, configuration, metadata)?;
+        db.wal_enabled = configuration.wal_buffer_size.is_some();
 
-        Self::new(name, configuration, metadata)
+        if db.wal_enabled {
+            // Replay WAL
+            db.replay_wal()?;
+        }
+        Ok(db)
     }
 
     /// Returns a database from the given path, configuration, and metadata.
@@ -130,10 +145,18 @@ impl Database {
             &file_system,
         )?;
 
+        let wal_file = fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(name.join(LOG_FILENAME))?;
+
         Ok(Self {
             name: name.to_path_buf(),
             lsm,
             file_system,
+            wal_buffer: Vec::with_capacity(configuration.wal_buffer_size.unwrap_or(0)),
+            wal_file,
+            wal_enabled: configuration.wal_buffer_size.is_some(),
         })
     }
 
@@ -156,7 +179,23 @@ impl Database {
             return Err(DbError::InvalidValue);
         }
 
-        self.lsm.put(key, value, &self.file_system)
+        if self.wal_enabled {
+            // Add to WAL buffer
+            self.wal_buffer.push((key, value));
+
+            // Flush WAL buffer if it's full
+            if self.wal_buffer.len() >= self.wal_buffer.capacity() {
+                self.flush_wal_buffer()?;
+            }
+        }
+
+        let sst_flushed = self.lsm.put(key, value, &self.file_system)?;
+
+        if sst_flushed {
+            self.flush()?;
+        }
+
+        Ok(())
     }
 
     /// Removes the key-value pair with given key from the database, if one exists.
@@ -167,7 +206,21 @@ impl Database {
     ///
     /// Returns an error if deletion fails.
     pub fn delete(&mut self, key: u64) -> Result<(), DbError> {
-        self.lsm.delete(key, &self.file_system)
+        if self.wal_enabled {
+            // Add to WAL buffer with TOMBSTONE
+            self.wal_buffer.push((key, TOMBSTONE));
+            // Flush WAL buffer if it's full
+            if self.wal_buffer.len() >= self.wal_buffer.capacity() {
+                self.flush_wal_buffer()?;
+            }
+        }
+        let sst_flushed = self.lsm.delete(key, &self.file_system)?;
+
+        if sst_flushed {
+            self.flush()?;
+        }
+
+        Ok(())
     }
 
     /// Returns a sorted list of all key-value pairs where the key is in the given range.
@@ -192,11 +245,87 @@ impl Database {
     /// - Compaction fails in the LSM tree.
     /// - Writing the LSM metadata fails.
     pub fn flush(&mut self) -> Result<(), DbError> {
+        // Flush any pending WAL entries
+        if self.wal_enabled {
+            self.flush_wal_buffer()?;
+        }
+
         self.lsm.flush_memtable(&self.file_system)?;
+
         let lsm_metadata = self.lsm.metadata();
         let metadata = DbMetadata { lsm_metadata };
-        let metadata_file = File::create(self.name.join(METADATA_FILENAME))?;
-        serde_json::to_writer_pretty(metadata_file, &metadata)?;
+        let metadata_file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(self.name.join(METADATA_FILENAME))?;
+        serde_json::to_writer_pretty(&metadata_file, &metadata)?;
+        metadata_file.sync_all()?;
+        // Checkpoint WAL after successful memtable flush
+        if self.wal_enabled {
+            self.checkpoint_wal()?;
+        }
+        Ok(())
+    }
+
+    fn flush_wal_buffer(&mut self) -> Result<(), DbError> {
+        assert!(self.wal_enabled);
+        use std::io::Write;
+
+        if self.wal_buffer.is_empty() {
+            return Ok(());
+        }
+
+        for &(key, value) in &self.wal_buffer {
+            writeln!(&mut self.wal_file, "{},{}", key, value)?;
+        }
+        self.wal_file.flush()?;
+        self.wal_file.sync_all()?;
+        self.wal_buffer.clear();
+
+        Ok(())
+    }
+
+    /// Replays WAL entries into memtable
+    fn replay_wal(&mut self) -> Result<(), DbError> {
+        assert!(self.wal_enabled);
+        use std::io::{BufRead, BufReader};
+
+        let wal_path = self.name.join(LOG_FILENAME);
+        let file = File::open(&wal_path)?;
+        let reader = BufReader::new(file);
+
+        for line in reader.lines() {
+            let line = line?;
+            if line.is_empty() {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() == 2 {
+                let key: u64 = parts[0]
+                    .parse()
+                    .map_err(|_| DbError::IoError("wrong Key".to_string()))?;
+                let value: u64 = parts[1]
+                    .parse()
+                    .map_err(|_| DbError::IoError("wrong Val".to_string()))?;
+
+                // Replay without WAL buffering to avoid infinite recursion
+                self.lsm.put(key, value, &self.file_system)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Checkpoints WAL by truncating it
+    fn checkpoint_wal(&mut self) -> Result<(), DbError> {
+        assert!(self.wal_enabled);
+        // Flush any pending entries first
+        self.flush_wal_buffer()?;
+
+        // Truncate WAL file
+        self.wal_file = File::create(self.name.join(LOG_FILENAME))?;
 
         Ok(())
     }
@@ -207,6 +336,9 @@ impl Database {
 /// Errors are ignored. To handle them, call `Database::flush` manually.
 impl Drop for Database {
     fn drop(&mut self) {
+        if self.wal_enabled {
+            _ = self.flush_wal_buffer();
+        }
         _ = self.flush();
     }
 }
@@ -255,6 +387,7 @@ mod tests {
                 buffer_pool_capacity: 16,
                 write_buffering: 1,
                 readahead_buffering: 1,
+                wal_buffer_size: Some(10),
                 lsm_configuration: LsmConfiguration {
                     size_ratio: 2,
                     memtable_capacity: 3,
@@ -317,6 +450,7 @@ mod tests {
                     buffer_pool_capacity: 16,
                     write_buffering: 1,
                     readahead_buffering: 1,
+                    wal_buffer_size: Some(10),
                     lsm_configuration: LsmConfiguration {
                         size_ratio: 2,
                         memtable_capacity: 10,
@@ -377,6 +511,7 @@ mod tests {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_db(
         name: &str,
         size_ratio: usize,
@@ -385,6 +520,7 @@ mod tests {
         buffer_pool_capacity: usize,
         write_buffering: usize,
         readahead_buffering: usize,
+        wal_buffer_size: usize,
     ) -> Result<Database, DbError> {
         Database::create(
             test_path(name),
@@ -397,6 +533,7 @@ mod tests {
                 buffer_pool_capacity,
                 write_buffering,
                 readahead_buffering,
+                wal_buffer_size: Some(wal_buffer_size),
             },
         )
     }
@@ -412,6 +549,7 @@ mod tests {
             buffer_pool_capacity: 16,
             write_buffering: 1,
             readahead_buffering: 1,
+            wal_buffer_size: Some(10),
         };
 
         let path = &test_path("errors");
@@ -433,23 +571,27 @@ mod tests {
         ));
 
         assert_eq!(
-            create_db("errors_bad_size_ratio", 1, 1, 0, 16, 1, 1).err(),
+            create_db("errors_bad_size_ratio", 1, 1, 0, 16, 1, 1, 10).err(),
             Some(DbError::InvalidConfiguration)
         );
         assert_eq!(
-            create_db("errors_no_memtable_capacity", 2, 0, 0, 16, 1, 1).err(),
+            create_db("errors_no_memtable_capacity", 2, 0, 0, 16, 1, 1, 10).err(),
             Some(DbError::InvalidConfiguration)
         );
         assert_eq!(
-            create_db("errors_small_buffer_pool_capacity", 2, 1, 0, 15, 1, 1).err(),
+            create_db("errors_small_buffer_pool_capacity", 2, 1, 0, 15, 1, 1, 10).err(),
             Some(DbError::InvalidConfiguration)
         );
         assert_eq!(
-            create_db("errors_no_write_buffering", 2, 1, 0, 16, 0, 1).err(),
+            create_db("errors_no_write_buffering", 2, 1, 0, 16, 0, 1, 10).err(),
             Some(DbError::InvalidConfiguration)
         );
         assert_eq!(
-            create_db("errors_no_readahead_buffering", 2, 1, 0, 16, 1, 0).err(),
+            create_db("errors_no_readahead_buffering", 2, 1, 0, 16, 1, 0, 10).err(),
+            Some(DbError::InvalidConfiguration)
+        );
+        assert_eq!(
+            create_db("errors_zero_wal", 2, 1, 0, 16, 1, 1, 0).err(),
             Some(DbError::InvalidConfiguration)
         );
 
@@ -484,6 +626,7 @@ mod tests {
                 buffer_pool_capacity: 64,
                 write_buffering: 8,
                 readahead_buffering: 8,
+                wal_buffer_size: Some(64),
                 lsm_configuration: LsmConfiguration {
                     size_ratio: 3,
                     memtable_capacity: 256,
@@ -495,6 +638,22 @@ mod tests {
 
         for i in 0..4096 {
             let command = fastrand::choice([
+                Command::Get,
+                Command::Put,
+                Command::Delete,
+                Command::Scan,
+                Command::Get,
+                Command::Put,
+                Command::Delete,
+                Command::Scan,
+                Command::Get,
+                Command::Put,
+                Command::Delete,
+                Command::Scan,
+                Command::Get,
+                Command::Put,
+                Command::Delete,
+                Command::Scan,
                 Command::Get,
                 Command::Put,
                 Command::Delete,
@@ -598,6 +757,7 @@ mod tests {
                 buffer_pool_capacity: 64,
                 write_buffering: 8,
                 readahead_buffering: 8,
+                wal_buffer_size: Some(16),
                 lsm_configuration: LsmConfiguration {
                     size_ratio: 3,
                     memtable_capacity: 256,
@@ -667,5 +827,339 @@ mod tests {
         });
 
         Ok(())
+    }
+    mod wal_tests {
+        use super::*;
+        use crate::test_util::TestPath;
+        use std::io::{BufRead, BufReader};
+
+        fn test_path(name: &str) -> TestPath {
+            TestPath::create("database_wal", name)
+        }
+
+        fn count_wal_entries(db_path: &Path) -> Result<usize> {
+            let wal_path = db_path.join(LOG_FILENAME);
+            let file = File::open(wal_path)?;
+            let reader = BufReader::new(file);
+            let count = reader
+                .lines()
+                .filter(|l| l.as_ref().map(|s| !s.is_empty()).unwrap_or(false))
+                .count();
+            Ok(count)
+        }
+
+        #[test]
+        fn test_wal_buffering() -> Result<()> {
+            let name = &test_path("wal_buffering");
+            let mut db = Database::create(
+                name,
+                DbConfiguration {
+                    buffer_pool_capacity: 16,
+                    write_buffering: 1,
+                    readahead_buffering: 1,
+                    wal_buffer_size: Some(5), // Buffer 5 entries before flushing
+                    lsm_configuration: LsmConfiguration {
+                        size_ratio: 2,
+                        memtable_capacity: 100, // Large enough to not trigger memtable flush
+                        bloom_filter_bits: 1,
+                    },
+                },
+            )?;
+
+            db.put(1, 10)?;
+            db.put(2, 20)?;
+            db.put(3, 30)?;
+
+            // WAL file should still be empty (or very small if flushed)
+            assert_eq!(db.wal_buffer.len(), 3);
+
+            // Put 2 more entries - should trigger flush at 5
+            db.put(4, 40)?;
+            db.put(5, 50)?;
+
+            // Buffer should be flushed and empty
+            assert_eq!(db.wal_buffer.len(), 0);
+
+            // WAL file should have 5 entries
+            assert_eq!(count_wal_entries(name.as_ref())?, 5);
+
+            Ok(())
+        }
+
+        #[test]
+        fn test_wal_crash_recovery() -> Result<()> {
+            let name = &test_path("wal_crash_recovery");
+
+            // Phase 1: Create database and add entries
+            {
+                let mut db = Database::create(
+                    name,
+                    DbConfiguration {
+                        buffer_pool_capacity: 16,
+                        write_buffering: 1,
+                        readahead_buffering: 1,
+                        wal_buffer_size: Some(3),
+                        lsm_configuration: LsmConfiguration {
+                            size_ratio: 2,
+                            memtable_capacity: 100,
+                            bloom_filter_bits: 1,
+                        },
+                    },
+                )?;
+
+                // Add some entries that will be flushed to WAL
+                db.put(1, 100)?;
+                db.put(2, 200)?;
+                db.put(3, 300)?;
+                // Buffer flushed here (3 entries)
+
+                // These values should not exist !!!
+                db.put(4, 200)?;
+                db.put(5, 300)?;
+                // Simulate crash - drop without calling flush
+                std::mem::forget(db);
+            }
+
+            // Phase 2: Reopen database and verify recovery
+            {
+                let db = Database::open(name)?;
+
+                // All entries should be recovered
+                assert_eq!(db.get(1)?, Some(100));
+                assert_eq!(db.get(2)?, Some(200));
+                assert_eq!(db.get(3)?, Some(300));
+                assert_eq!(db.get(4)?, None);
+                assert_eq!(db.get(5)?, None);
+            }
+
+            Ok(())
+        }
+
+        #[test]
+        fn test_wal_checkpoint_on_flush() -> Result<()> {
+            let name = &test_path("wal_checkpoint");
+            let mut db = Database::create(
+                name,
+                DbConfiguration {
+                    buffer_pool_capacity: 16,
+                    write_buffering: 1,
+                    readahead_buffering: 1,
+                    wal_buffer_size: Some(2),
+                    lsm_configuration: LsmConfiguration {
+                        size_ratio: 2,
+                        memtable_capacity: 5,
+                        bloom_filter_bits: 1,
+                    },
+                },
+            )?;
+
+            // Add entries to WAL
+            db.put(1, 10)?;
+            db.put(2, 20)?;
+            // WAL buffer flushed
+
+            db.put(3, 30)?;
+            db.put(4, 40)?;
+            // WAL buffer flushed again
+
+            // WAL should have 4 entries
+            assert_eq!(count_wal_entries(name.as_ref())?, 4);
+
+            // Flush memtable - this should checkpoint (truncate) WAL
+            db.flush()?;
+
+            // WAL should be empty after checkpoint
+            assert_eq!(count_wal_entries(name.as_ref())?, 0);
+
+            // Data should still be accessible
+            assert_eq!(db.get(1)?, Some(10));
+            assert_eq!(db.get(2)?, Some(20));
+            assert_eq!(db.get(3)?, Some(30));
+            assert_eq!(db.get(4)?, Some(40));
+
+            Ok(())
+        }
+
+        #[test]
+        fn test_wal_with_deletes() -> Result<()> {
+            let name = &test_path("wal_deletes");
+
+            {
+                let mut db = Database::create(
+                    name,
+                    DbConfiguration {
+                        buffer_pool_capacity: 16,
+                        write_buffering: 1,
+                        readahead_buffering: 1,
+                        wal_buffer_size: Some(3),
+                        lsm_configuration: LsmConfiguration {
+                            size_ratio: 2,
+                            memtable_capacity: 100,
+                            bloom_filter_bits: 1,
+                        },
+                    },
+                )?;
+
+                // Add and delete entries
+                db.put(1, 100)?;
+                db.put(2, 200)?;
+                db.delete(2)?; // Delete key 2
+                // Buffer flushed
+
+                db.put(4, 400)?;
+                // Buffer not flushed
+
+                // Simulate crash
+                std::mem::forget(db);
+            }
+
+            // Recover and verify
+            {
+                let db = Database::open(name)?;
+
+                assert_eq!(db.get(1)?, Some(100));
+                assert_eq!(db.get(2)?, None); // Should not show anything
+                assert_eq!(db.get(4)?, None); // Doesnt Exist
+            }
+
+            Ok(())
+        }
+
+        #[test]
+        fn test_wal_recovery_with_memtable_flush() -> Result<()> {
+            let name = &test_path("wal_recovery_memtable_flush");
+
+            {
+                let mut db = Database::create(
+                    name,
+                    DbConfiguration {
+                        buffer_pool_capacity: 16,
+                        write_buffering: 1,
+                        readahead_buffering: 1,
+                        wal_buffer_size: Some(2),
+                        lsm_configuration: LsmConfiguration {
+                            size_ratio: 2,
+                            memtable_capacity: 3,
+                            bloom_filter_bits: 1,
+                        },
+                    },
+                )?;
+
+                // Add entries that will trigger memtable flush
+                db.put(1, 10)?;
+                db.put(2, 20)?;
+
+                assert_eq!(count_wal_entries(name.as_ref())?, 2);
+                println!("wal buffer contents {:?}", db.wal_buffer);
+                // WAL flushed
+
+                db.put(3, 30)?;
+
+                assert_eq!(count_wal_entries(name.as_ref())?, 0);
+                assert_eq!(db.get(1)?, Some(10));
+                assert_eq!(db.get(2)?, Some(20));
+                assert_eq!(db.get(3)?, Some(30));
+                // Memtable flushed to SST, WAL checkpointed
+
+                // Add more entries after checkpoint
+                db.put(4, 40)?;
+                db.put(5, 50)?;
+                // WAL flushed
+
+                db.put(6, 60)?;
+                // In buffer, not yet in WAL
+
+                // Simulate crash
+                std::mem::forget(db);
+            }
+
+            // Recover
+            {
+                let db = Database::open(name)?;
+
+                // All entries should be recovered
+                assert_eq!(db.get(1)?, Some(10));
+                assert_eq!(db.get(2)?, Some(20));
+                assert_eq!(db.get(3)?, Some(30));
+                assert_eq!(db.get(4)?, Some(40));
+                assert_eq!(db.get(5)?, Some(50));
+                assert_eq!(db.get(6)?, Some(60));
+            }
+
+            Ok(())
+        }
+
+        #[test]
+        fn test_wal_scan_after_recovery() -> Result<()> {
+            let name = &test_path("wal_scan_recovery");
+
+            {
+                let mut db = Database::create(
+                    name,
+                    DbConfiguration {
+                        buffer_pool_capacity: 16,
+                        write_buffering: 1,
+                        readahead_buffering: 1,
+                        wal_buffer_size: Some(3),
+                        lsm_configuration: LsmConfiguration {
+                            size_ratio: 2,
+                            memtable_capacity: 100,
+                            bloom_filter_bits: 1,
+                        },
+                    },
+                )?;
+
+                db.put(5, 50)?;
+                db.put(1, 10)?;
+                db.put(3, 30)?;
+                // Buffer flushed
+
+                db.put(2, 20)?;
+                db.put(4, 40)?;
+                // In buffer
+                // Simulate crash
+                std::mem::forget(db);
+            }
+
+            {
+                let db = Database::open(name)?;
+
+                // Scan should return sorted results
+                let results = db.scan(1..=5)?.collect::<Result<Vec<_>, _>>()?;
+                assert_eq!(results, vec![(1, 10), (3, 30), (5, 50)]);
+            }
+
+            Ok(())
+        }
+
+        #[test]
+        fn test_wal_buffer_size_one() -> Result<()> {
+            let name = &test_path("wal_buffer_one");
+            let mut db = Database::create(
+                name,
+                DbConfiguration {
+                    buffer_pool_capacity: 16,
+                    write_buffering: 1,
+                    readahead_buffering: 1,
+                    wal_buffer_size: Some(1), // Flush every single operation
+                    lsm_configuration: LsmConfiguration {
+                        size_ratio: 2,
+                        memtable_capacity: 100,
+                        bloom_filter_bits: 1,
+                    },
+                },
+            )?;
+
+            db.put(1, 10)?;
+            assert_eq!(count_wal_entries(name.as_ref())?, 1);
+
+            db.put(2, 20)?;
+            assert_eq!(count_wal_entries(name.as_ref())?, 2);
+
+            db.delete(1)?;
+            assert_eq!(count_wal_entries(name.as_ref())?, 3);
+
+            Ok(())
+        }
     }
 }

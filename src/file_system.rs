@@ -118,6 +118,17 @@ struct InnerFs {
     buffer_pool: HashTable<BufferPageId, BufferPoolEntry>,
     eviction_handler: Eviction,
     file_map: FileMap,
+    buffer_pool_hits: usize,
+    buffer_pool_accesses: usize,
+}
+
+impl Drop for InnerFs {
+    fn drop(&mut self) {
+        println!(
+            "buffer pool hit rate : {}",
+            self.buffer_pool_hits as f64 / (self.buffer_pool_accesses.max(1) as f64),
+        );
+    }
 }
 
 /// A lookup table for translating regular file IDs to buffer pool file IDs.
@@ -158,6 +169,8 @@ impl FileSystem {
             buffer_pool,
             eviction_handler,
             file_map: FileMap::new(),
+            buffer_pool_hits: 0,
+            buffer_pool_accesses: 0,
         };
 
         Ok(Self {
