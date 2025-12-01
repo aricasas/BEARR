@@ -6,6 +6,7 @@ use std::{
 
 use crate::file_system::FileSystem;
 
+/// A path used in testing, automatically creating and deleting files as needed.
 pub struct TestPath {
     inner: PathBuf,
 }
@@ -23,6 +24,9 @@ fn delete_path(path: &Path) {
 }
 
 impl TestPath {
+    /// Creates a test path located at `<current folder>/test_files/{base}/{name}`.
+    /// Any existing files at the path are deleted,
+    /// and a folder is created at `<current folder>/test_files/{base}` if it doesn't already exist.
     pub fn create(base: &str, name: &str) -> Self {
         let path = get_path(base, name);
         delete_path(&path);
@@ -37,6 +41,7 @@ impl AsRef<Path> for TestPath {
     }
 }
 
+/// Removes all files at the path, unless the `keep_test_files` feature is active.
 impl Drop for TestPath {
     fn drop(&mut self) {
         if !cfg!(feature = "keep_test_files") {
@@ -45,6 +50,7 @@ impl Drop for TestPath {
     }
 }
 
+/// Asserts that the given operation panics when executed.
 pub fn assert_panics(mut f: impl FnMut()) {
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -54,12 +60,17 @@ pub fn assert_panics(mut f: impl FnMut()) {
     );
 }
 
+/// A file system used in testing, automatically creating and deleting files as needed.
 pub struct TestFs {
     // Used for dropping
     _path: TestPath,
     fs: FileSystem,
 }
+
 impl TestFs {
+    /// Creates a test file system located at `<current folder>/test_files/{base}/{name}`.
+    /// Any existing files at the path are deleted,
+    /// and a folder is created at the path if it doesn't already exist.
     pub fn create(base: &str, name: &str) -> Self {
         let path = TestPath::create(base, name);
         fs::create_dir_all(&path).unwrap();

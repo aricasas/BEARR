@@ -74,15 +74,19 @@ impl Sst {
         BTreeIter::new(self, range, file_system)
     }
 
+    /// Returns the number of key-value pairs in the SST.
     pub fn num_entries(&self) -> usize {
         self.btree_metadata.n_entries as usize
     }
 
+    /// Destroys the SST and its associated file.
     pub fn destroy(self, file_system: &FileSystem) -> Result<(), DbError> {
         file_system.delete_file(self.file_id)?;
         Ok(())
     }
 
+    /// Changes the file ID of the SST to the given file ID
+    /// and renames the associated file accordingly.
     pub fn rename(&mut self, new_file_id: FileId, file_system: &FileSystem) -> Result<(), DbError> {
         file_system.rename_file(self.file_id, new_file_id)?;
         self.file_id = new_file_id;
