@@ -223,6 +223,11 @@ For hash functions, we have a common `HashFunction` struct in `hash.rs` that is 
 
 #### Eviction policy
 
+We implemented the 2Q algorithm as our buffer pool eviciton policy. This algorithm is good for our use case since it can handle large sequential reads without losing track of all the hot pages. It works by having two queues, one FIFO queue for new pages, and one LRU queue for hot pages. Thus, a large sequential scan could flush all the pages in the FIFO queue, but the hot pages will remain untouched in the LRU queue. For more details on the 2Q algorithm, [here](https://www.vldb.org/conf/1994/P439.PDF) is the paper that introduced the algorithm.
+
+In particular, we implement the full 2Q algorithm with parameters `Kin = 25%` and `Kout = 50%` as these were picked as good middle ground values in the paper.
+
+
 ### Write-Ahead Logging (WAL)
 
 The database implements a configurable write-ahead logging system to ensure durability and crash recovery. 
@@ -291,11 +296,12 @@ All the experiments insert unique uniformly random keys and values, and queries 
 ### LSM tree size ratio
 
 ![](img/put_rolling_avg_throughput.png)
-[TODO] other image of get throughput
+
+![](img/get_rolling_avg_throughput.png)
 
 In this experiment, we compare the put and get operations throughput as we vary the size ratio of the LSM tree. The data we get from the put operation throughput is really chaotic because compactions happen in some samples but not in others. To make the data easier to interpret and contrast, we calculated a running average of 5 samples, and this is what is displayed on the graph. The data from the get operations was left as is.
 
-As we increase the size ratio of the LSM tree, we expect the put throughput to increase and the get throughput to decrease, which indeed happens. This shows that our database can be tuned to prioritize put operation throughput if the workload is write-heavy or get operation throughput if the workload is read-heavy.
+As we increase the size ratio of the LSM tree, we expect the put throughput to increase and the get throughput to decrease. We see that the put throughput increases. This shows that our database can be tuned to prioritize put operation throughput if the workload is write-heavy. But the get throughput seems to be pretty similar for all three size ratios. This indicates that we could increase the put throughput at a low cost to the get throughput (at least for these low size ratio values). This was not what we initially expected and we plan to perform more experiments measuring this in the future.
 
 ### Binary search vs. B-tree search
 
@@ -324,7 +330,7 @@ In this experiment, we measure the throughput of concurrent reads from multiple 
 
 ![](img/full_scan_throughput.png)
 
-In this experiment, we measure the throughput of doing a full database scan as the database grows. Before the database grows to 256 MiB, the whole database can fit in the buffer pool, so the throughput has really high peaks when it has cached the SSTs and reads from memory. After 256 MiB, the throughput settles at ~140 MiB/sec. [TODO] change this number if new run changes
+In this experiment, we measure the throughput of doing a full database scan as the database grows. Before the database grows to 256 MiB, the whole database can fit in the buffer pool, so the throughput has really high peaks when it has cached the SSTs and reads from memory. After 256 MiB, the throughput settles at ~100 MiB/sec.
 
 ## Working process
 
