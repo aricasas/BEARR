@@ -187,6 +187,7 @@ For a 10GB database:
 The B-tree index provides approximately **5× faster lookups** compared to binary search. You can disable indexing and use binary search with the `--features binary_search` flag.
 
 **Trade-off:** The B-tree requires sufficient memory to construct the index during SST creation but not more is needed after the construction phase.
+
 ---
 
 #### Bloom Filter
