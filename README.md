@@ -326,7 +326,11 @@ In this experiment, we measure the throughput of concurrent reads from multiple 
 
 In this experiment, we measure the throughput of doing a full database scan as the database grows. Before the database grows to 256 MiB, the whole database can fit in the buffer pool, so the throughput has really high peaks when it has cached the SSTs and reads from memory. After 256 MiB, the throughput settles at ~140 MiB/sec. [TODO] change this number if new run changes
 
+## Working process
 
+This library was created by Ari, Bonan, and Hooman as a group programming project for the CSC443 Database System Technology course at U of T. We used a combination of asynchronous collaboration via Discord and synchronous collaboration via weekly meetings.
+
+Our synchronous work led to a somewhat unusual Git workflow that relied on heavy communication to coordinate pushes and resolve merge conflicts. Note that our Git history is not necessarily the most reliable way to assess how we divided our work, given the workflow for merging branches and the non-visible work we all contributed.
 
 ## Contributing
 
