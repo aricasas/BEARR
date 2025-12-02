@@ -28,9 +28,9 @@ We have a set of 25 benchmarks that are used to measure and compare database thr
 ## How to run
 
 ### Tests
-You can view the latest test results in github actions via our workflow and the time each test takes plus the maximium memory usage of all tests. 
+You can view the latest test results in GitHub Actions via our workflow and the time each test takes, plus the maximum memory usage of all tests. 
 #### Docker 
-To run across all platforms you can use **docker** to run the project. 
+To run across all platforms, you can use **docker** to run the project. 
 ```bash
 git clone https://github.com/aricasas/BEARR.git
 cd BEARR 
@@ -49,13 +49,13 @@ There are three conditional compilation options in the form of Cargo features:
 - `uniform_bits`: assign the same number of bits per entry for each LSM level instead of using Monkey.
 - `keep_test_files`: do not delete any test files created as a result of running tests.
 
-As an example, to run all the tests in `database.rs` in release mode with `binary_search` and `keep_test_files` active, run the command
+As an example, to run all the tests in `database.rs` in release mode with `binary_search` and `keep_test_files` active, run the command:
 
 ```
 cargo test --release database --features binary_search,keep_test_files
 ```
 
-To run the `test_concurrency` test in `database.rs` with `uniform_bits` active and `println` output visible, run the command
+To run the `test_concurrency` test in `database.rs` with `uniform_bits` active and `println` output visible, run the command:
 
 ```
 cargo test database::tests::test_concurrency --features uniform_bits -- --nocapture
@@ -93,7 +93,7 @@ Note that this project is Linux-exclusive.
 
 `database.flush()` - manually flushes the database, writing the memtable to an SST and writing LSM metadata to disk. The database automatically handles closing upon being dropped, but this function can optionally be called if you need to handle any errors arising from the closing process.
 
-For more detail on the interface, run `cargo doc --open`.
+For more details on the interface, run `cargo doc --open`.
 
 ## Design
 
@@ -110,15 +110,15 @@ LSM trees are implemented as the `LsmTree` struct in `lsm.rs`. They make use of 
 
 #### Memtable
 
-Our memtable is implemented as a Red-Black binary tree. The current implementation is the `MemTable<K, V>` struct in `memtable.rs` which is generic over the types of keys and values. We only ever use it with the specific types of u64 for both keys and values, but we implemented it as generic in case we decided to change this in the future. The nodes in the tree store their keys, their values, their color, and pointers to their two children. We don't store pointers to the parents, and we use a non-recursive, top-down, one-pass algorithm for insertion and updates which was inspired by [this source](https://web.archive.org/web/20190207151651/http://www.eternallyconfuzzled.com/tuts/datastructures/jsw_tut_rbtree.aspx). It also provides range scans via an iterator interface using a non-recursive algorithm.
+Our memtable is implemented as a Red-Black binary tree. The current implementation is the `MemTable<K, V>` struct in `memtable.rs`, which is generic over the types of keys and values. We only ever use it with the specific types of u64 for both keys and values, but we implemented it as generic in case we decided to change this in the future. The nodes in the tree store their keys, their values, their color, and pointers to their two children. We don't store pointers to the parents, and we use a non-recursive, top-down, one-pass algorithm for insertion and updates, which was inspired by [this source](https://web.archive.org/web/20190207151651/http://www.eternallyconfuzzled.com/tuts/datastructures/jsw_tut_rbtree.aspx). It also provides range scans via an iterator interface using a non-recursive algorithm.
 
 #### Merging
 
-Throughout our code, we use Rust iterators to handle sequences of key-value pairs to avoid the need to allocate and store all the data in memory. The memtable and the SSTs provide iterator interfaces which we combine to perform compactions.
+Throughout our code, we use Rust iterators to handle sequences of key-value pairs to avoid the need to allocate and store all the data in memory. The memtable and the SSTs provide iterator interfaces, which we combine to perform compactions.
 
 `MergedIterator` in `merge.rs` merges a list of such iterators into one large iterator, ensuring we preserve sorted order and that we only return the newest version of a given key-value pair. A min-heap is used in order to implement this merging iterator in an efficient way when there are more than two iterators being merged.
 
-This merged iterator is also responsible for handling tombstone values in scans, and when compacting at the last layer. This works by taking in a flag which controls whether tombstone values should be erased or preserved. 
+This merged iterator is also responsible for handling tombstone values in scans and when compacting at the last layer. This works by taking in a flag that controls whether tombstone values should be erased or preserved. 
 
 ### SST and B-tree
 
@@ -240,7 +240,7 @@ $$\text{Robustness Metric} = \frac{\text{Log Buffer Size}}{\text{Memtable Size}}
 
 This metric represents the upper bound of the expected fraction of data loss relative to the total in-memory state in the event of a system crash. For example, a robustness metric of 0.1 indicates that at most, 10% of the memtable's data could be lost in a worst-case crash scenario where the log buffer has not yet been flushed. A lower metric indicates a more robust configuration with smaller potential data loss windows, while a higher metric suggests prioritization of performance over durability. You can tune this parameter based on your application's specific requirements.
 
-** Disclaimer: As of now because of the format of the WAL and since its a text file, the performance is not as good but it works and there are several tests simulating a database crash and show how the recovery works. For future works the text file can be converted to a binary file for optimized operations.
+** Disclaimer: As of now, because of the format of the WAL and since it's a text file, the performance is not good. But it works, and there are several tests simulating a database crash and showing how the recovery works. For future work, the text file can be converted to a binary file for optimized operations.
 
 
 ## Experiments
@@ -257,7 +257,7 @@ We designed several experiments to measure the throughput of our get, put, and s
 - Final database size: 1 GiB
 - One sample every 16 MiB of data inserted
 
-We picked the memtable capacity to match what was requested. We picked 256 MiB as the buffer pool capacity to be able to see the difference in our throughputs as the database grows too big to fit in the buffer pool. Our database uses Monkey by default to allocate memory to bloom filters, and we calculated that the total memory used in a 1 GiB database with 8 bits per entry is 512 MiB. To match this total amount of memory, we use 13 bits per entry at the highest LSM tree level, and with Monkey this will end up using a similar amount of total memory. We calculated this in `bloom_bits.py`. We use a size ratio of 4 as we saw this gives us a good balance between read and write throughputs. We chose 96 pages for read buffering and 128 pages for write buffering after little testing on the teach.cs server showed they provided reasonable performance. We disable the write-ahead logging feature since it's performance is really slow for now.
+We picked the memtable capacity to match what was requested. We picked 256 MiB as the buffer pool capacity to be able to see the difference in our throughputs as the database grows too big to fit in the buffer pool. Our database uses Monkey by default to allocate memory to bloom filters, and we calculated that the total memory used in a 1 GiB database with 8 bits per entry is 512 MiB. To match this total amount of memory, we use 13 bits per entry at the highest LSM tree level, and with Monkey, this will end up using a similar amount of total memory. We calculated this in `bloom_bits.py`. We use a size ratio of 4, as we saw this gives us a good balance between read and write throughputs. We chose 96 pages for read buffering and 128 pages for write buffering after a little testing on the teach.cs server showed they provided reasonable performance. We disable the write-ahead logging feature since its performance is really slow for now.
 
 
 To run all the experiments and get the CSV data output used to generate the figures, use:
@@ -288,7 +288,7 @@ All the experiments insert unique uniformly random keys and values, and queries 
 ![](img/put_rolling_avg_throughput.png)
 [TODO] other image of get throughput
 
-In this experiment we compare the put and get operations throughput as we vary the size ratio of the LSM tree. The data we get from the put operation throughput is really chaotic because compactions happen in some samples but not in others. To make the data easier to interpret and contrast, we calculated a running average of 5 samples and this is what is displayed on the graph. The data from get operations was left as is.
+In this experiment, we compare the put and get operations throughput as we vary the size ratio of the LSM tree. The data we get from the put operation throughput is really chaotic because compactions happen in some samples but not in others. To make the data easier to interpret and contrast, we calculated a running average of 5 samples, and this is what is displayed on the graph. The data from the get operations was left as is.
 
 As we increase the size ratio of the LSM tree, we expect the put throughput to increase and the get throughput to decrease, which indeed happens. This shows that our database can be tuned to prioritize put operation throughput if the workload is write-heavy or get operation throughput if the workload is read-heavy.
 
@@ -300,11 +300,11 @@ As we increase the size ratio of the LSM tree, we expect the put throughput to i
 
 ![](img/get_100pct_throughput.png)
 
-In this experiment we compare the throughput of the get operation when using binary search vs. B-tree search when doing a point query to an SST. We also compare how enabling Monkey affects the get throughput. This is the only experiment where we disable Monkey on the database. We also test when performing get operations where 0% are to keys that exist in the database, or 50% are to keys that exist, or 100% are to keys that exist. 
+In this experiment, we compare the throughput of the get operation when using binary search vs. B-tree search when doing a point query to an SST. We also compare how enabling Monkey affects the get throughput. This is the only experiment where we disable Monkey on the database. We also test the performance of get operations where 0% are to keys that exist in the database, or 50% are to keys that exist, or 100% are to keys that exist. 
 
-At 0% success for get operations, using Monkey is noticeably faster since this test relis more on avoiding I/O from false positive filter queries. Binary search is last, but the difference isn't as big as in the other graphs. This is because there is less point queries to the SSTs as it can skip them using the filters, so the binary search doesn't slow it down as much.
+At 0% success for get operations, using Monkey is noticeably faster since this test relies more on avoiding I/O from false positive filter queries. Binary search is last, but the difference isn't as big as in the other graphs. This is because there are fewer point queries to the SSTs, as it can skip them using the filters, so the binary search doesn't slow it down as much.
 
-At 50% and 100% success for get operations, binary search is a lot slower than B-tree search. And everything is slower than at 0% success. In here, most get operations will result in I/O so the binary search algorithm is a lot slower. As we can see from the spiky structure of the graphs, the throughput on gets is affected by how many and how big the SSTs are, but overal remains approximately constant as database size grows.
+At 50% and 100% success for get operations, binary search is a lot slower than B-tree search. And everything is slower than at 0% success. In here, most get operations will result in I/O, so the binary search algorithm is a lot slower. As we can see from the spiky structure of the graphs, the throughput on gets is affected by how many and how big the SSTs are, but overall remains approximately constant as the database size grows.
 
 ### Concurrency
 
@@ -313,13 +313,13 @@ At 50% and 100% success for get operations, binary search is a lot slower than B
 ![](img/scan_concurrent_throughput.png)
 
 
-In this experiment, we measure the throughput of concurrent reads from multiple threads. As we increase the number of threads, we can perform many concurrent file reads to the SSTs. Since we are performing this experiment on the teach.cs server, which uses SSDs for storage, we expect the throughput to increase. This is because SSDs can perform I/Os in parallel. However, there seems to be a point of diminishing returns, where adding more threads cannot increase throughput past this. 
+In this experiment, we measure the throughput of concurrent reads from multiple threads. As we increase the number of threads, we can perform many concurrent file reads to the SSTs. Since this experiment is running on the teach.cs server, which uses SSDs for storage, we expect the throughput to increase. This is because SSDs can perform I/Os in parallel. However, there seems to be a point of diminishing returns, where adding more threads cannot increase throughput past this. 
 
 ### Full database scan
 
 ![](img/full_scan_throughput.png)
 
-In this experiment we measure the throughput of doing a full database scan as the database grows. Before the database grows to 256 MiB, the whole database can fit in the buffer pool, so the throughput has really high peaks when it has cached the SSTs and reads from memory. After 256 MiB, the throughput settles at ~140 MiB/sec. [TODO] change this number if new run changes
+In this experiment, we measure the throughput of doing a full database scan as the database grows. Before the database grows to 256 MiB, the whole database can fit in the buffer pool, so the throughput has really high peaks when it has cached the SSTs and reads from memory. After 256 MiB, the throughput settles at ~140 MiB/sec. [TODO] change this number if new run changes
 
 
 
