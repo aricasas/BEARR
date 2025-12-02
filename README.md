@@ -104,6 +104,7 @@ Keys and values are of the `u64` type (64-bit unsigned integer). The tombstone v
 
 ### LSM tree
 
+
 LSM trees are implemented as the `LsmTree` struct in `lsm.rs`. They make use of Dostoevsky for compaction, and Monkey (optional, enabled by default) for assigning bloom filter bits.
 
 #### Memtable
@@ -244,11 +245,11 @@ We designed several experiments to measure the throughput of our get, put, and s
 - LSM tree size ratio: 4
 - Compaction write buffering: 96 pages
 - Sequential readahead buffering: 128 pages
+- Write-ahead log: disabled
 - Final database size: 1 GiB
 - One sample every 16 MiB of data inserted
 
-We picked the memtable capacity to match what was requested. We picked 256 MiB as the buffer pool capacity to be able to see the difference in our throughputs as the database grows too big to fit in the buffer pool. Our database uses Monkey by default to allocate memory to bloom filters, and we calculated that the total memory used in a 1 GiB database with 8 bits per entry is 512 MiB. To match this total amount of memory, we use 13 bits per entry at the highest LSM tree level, and with Monkey this will end up using a similar amount of total memory.
-
+We picked the memtable capacity to match what was requested. We picked 256 MiB as the buffer pool capacity to be able to see the difference in our throughputs as the database grows too big to fit in the buffer pool. Our database uses Monkey by default to allocate memory to bloom filters, and we calculated that the total memory used in a 1 GiB database with 8 bits per entry is 512 MiB. To match this total amount of memory, we use 13 bits per entry at the highest LSM tree level, and with Monkey this will end up using a similar amount of total memory. We calculated this in `bloom_bits.py`. We use a size ratio of 4 as we saw this gives us a good balance between read and write throughputs. We chose 96 pages for read buffering and 128 pages for write buffering after little testing on the teach.cs server showed they provided reasonable performance. We disable the write-ahead logging feature since it's performance is really slow for now.
 
 
 To run all the experiments and get the CSV data output used to generate the figures, use:
@@ -256,17 +257,34 @@ To run all the experiments and get the CSV data output used to generate the figu
 $ ./run_experiments.sh
 ```
 
-This will run 25 experiments that build a 1 GiB database each and take a sample of the throughput every 16 MiB inserted. The shortest takes around 2.5 min and the longest around 25 min. In total, they took [TODO].
+This will run 25 benchmarks that build a 1 GiB database each and take a sample of the throughput every 16 MiB. The shortest takes around 2.5 min and the longest around 25 min. In total, they took [TODO] on the teach.cs server.
 
-### Put operation
+To run a specific benchmark, we can use:
+```sh
+$ cargo build --release
+$ ./target/release/experiments --<benchmark_name> out.csv [OPTIONS]
+```
+
+To help see the configuration options available and possible benchmarks, use:
+```sh
+$ cargo build --release
+$ ./target/release/experiments --help
+```
+
+And there are plenty of example usages in the `run_experiments.sh` file.
+
+All the experiments insert unique uniformly random keys and values, and queries are also uniformly randomly distributed.
+
+### LSM tree size ratio
 
 ![](img/put_rolling_avg_throughput.png)
+[TODO] other image of get throughput
 
-In this experiment we compare the put operation throughput as we vary the size ratio of the LSM tree. We build a 1 GiB database by inserting uniformly random keys and values without any duplicates. We measure the time each put operation takes, and we keep track of the total time spent in put operations. Every 16 MiB of data inserted, we can divide 16 MiB by the time it took to perform the last 16 MiB worth of put operations to calculate the throughput. The data we get from this is really chaotic because compactions happen in some samples but not in others. To make the data easier to interpret and contrast, we calculate a running average of 5 samples and this is what is displayed on the graph.
+In this experiment we compare the put and get operations throughput as we vary the size ratio of the LSM tree. The data we get from the put operation throughput is really chaotic because compactions happen in some samples but not in others. To make the data easier to interpret and contrast, we calculated a running average of 5 samples and this is what is displayed on the graph. The data from get operations was left as is.
 
-As we increase the size ratio of the LSM tree, we expect the throughput to increase, which indeed happens. This shows that our database can be tuned to prioritize put operation throughput if the workload is write-heavy.
+As we increase the size ratio of the LSM tree, we expect the put throughput to increase and the get throughput to decrease, which indeed happens. This shows that our database can be tuned to prioritize put operation throughput if the workload is write-heavy or get operation throughput if the workload is read-heavy.
 
-### Get operation
+### Binary search vs. B-tree search
 
 ![](img/get_0pct_throughput.png)
 
@@ -274,14 +292,26 @@ As we increase the size ratio of the LSM tree, we expect the throughput to incre
 
 ![](img/get_100pct_throughput.png)
 
-These
+In this experiment we compare the throughput of the get operation when using binary search vs. B-tree search when doing a point query to an SST. We also compare how enabling Monkey affects the get throughput. This is the only experiment where we disable Monkey on the database. We also test when performing get operations where 0% are to keys that exist in the database, or 50% are to keys that exist, or 100% are to keys that exist. 
+
+At 0% success for get operations, using Monkey is noticeably faster since this test relis more on avoiding I/O from false positive filter queries. Binary search is last, but the difference isn't as big as in the other graphs. This is because there is less point queries to the SSTs as it can skip them using the filters, so the binary search doesn't slow it down as much.
+
+At 50% and 100% success for get operations, binary search is a lot slower than B-tree search. And everything is slower than at 0% success. In here, most get operations will result in I/O so the binary search algorithm is a lot slower.
+
+### Concurrency
 
 ![](img/get_concurrent_throughput.png)
 
-### Scan operation
-
 ![](img/scan_concurrent_throughput.png)
+
+
+These
+
 
 In this experiment, we measure the throughput of scan operations in our database.
 
+### Full database scan
+
 ![](img/full_scan_throughput.png)
+
+In this experiment we measure the throughput of doing a full database scan as the datbase grows. Before the database grows to 256 MiB, the whole database can fit in the buffer pool, so the throughput has really high peaks. After 256 MiB, the throughput settles
