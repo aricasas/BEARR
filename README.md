@@ -297,7 +297,7 @@ All the experiments insert unique uniformly random keys and values, and queries 
 
 ![](img/put_rolling_avg_throughput.png)
 
-![](img/get_rolling_avg_throughput.png)
+![](img/get_throughput.png)
 
 In this experiment, we compare the put and get operations throughput as we vary the size ratio of the LSM tree. The data we get from the put operation throughput is really chaotic because compactions happen in some samples but not in others. To make the data easier to interpret and contrast, we calculated a running average of 5 samples, and this is what is displayed on the graph. The data from the get operations was left as is.
 
@@ -313,9 +313,9 @@ As we increase the size ratio of the LSM tree, we expect the put throughput to i
 
 In this experiment, we compare the throughput of the get operation when using binary search vs. B-tree search when doing a point query to an SST. We also compare how enabling Monkey affects the get throughput. This is the only experiment where we disable Monkey on the database. We also test the performance of get operations where 0% are to keys that exist in the database, or 50% are to keys that exist, or 100% are to keys that exist. 
 
-At 0% success for get operations, using Monkey is noticeably faster since this test relies more on avoiding I/O from false positive filter queries. Binary search is last, but the difference isn't as big as in the other graphs. This is because there are fewer point queries to the SSTs, as it can skip them using the filters, so the binary search doesn't slow it down as much.
+At 0% success for get operations, using Monkey is slightly faster since this test relies more on avoiding I/O from false positive filter queries. Binary search is last, but the difference isn't as big as in the other graphs. This is because there are fewer point queries to the SSTs, as it can skip them using the filters, so the binary search doesn't slow it down as much.
 
-At 50% and 100% success for get operations, binary search is a lot slower than B-tree search. And everything is slower than at 0% success. In here, most get operations will result in I/O, so the binary search algorithm is a lot slower. As we can see from the spiky structure of the graphs, the throughput on gets is affected by how many and how big the SSTs are, but overall remains approximately constant as the database size grows.
+At 50% and 100% success for get operations, binary search is a lot slower than B-tree search. And everything is slower than at 0% success. In here, most get operations will result in I/O, so the binary search algorithm is a lot slower. As we can see from the spiky structure of the graphs, the throughput on gets is affected by how many and how big the SSTs are, but overall remains approximately constant as the database size grows. We didn't find much difference in performance whether we use Monkey or not. We expect that if the database size were to grow much more, then we would start seeing the positive effects more clearly.
 
 ### Concurrency
 
