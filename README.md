@@ -137,7 +137,7 @@ SSTs (Sorted String Tables) are immutable files that store key-value data on dis
 │  - Hash functions                                           │
 └─────────────────────────────────────────────────────────────┘
 ```
-Just wrap the ASCII diagram in triple backticks (```) to create a code block. This preserves all the spacing and box-drawing characters perfectly. The diagram will render exactly as shown on GitHub.RetryClaude can make mistakes. Please double-check responses.
+
 
 ---
 
