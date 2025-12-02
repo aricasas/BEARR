@@ -243,7 +243,7 @@ This metric represents the upper bound of the expected fraction of data loss rel
 
 ## Tests
 
-For the public interface, all major documented details were tested except for errors arising from miscellaneous file I/O issues. `database.rs` has some basic unit tests (`test_basic`, `test_persistence`, `test_errors`) as well as two larger tests that involve performing a large number of random operations and comparing the results against a `HashMap` oracle: `test_chaotic`, which is single-threaded and intermixes database read (get and scan) and write (put, delete, flush, and close & reopen) operations, and `test_concurrency`, which is multi-threaded and only involves read operations.
+For the public interface, all major documented details were tested. `database.rs` has some basic unit tests (`test_basic`, `test_persistence`, `test_errors`) as well as two larger tests that involve performing a large number of random operations and comparing the results against a `HashMap` oracle: `test_chaotic`, which is single-threaded and intermixes database read (get and scan) and write (put, delete, flush, and close & reopen) operations, and `test_concurrency`, which is multi-threaded and only involves read operations.
 
 For internal interfaces, we tested everything that we felt needed testing. For interfaces that were a thin wrapper around another interface (e.g. database and LSM tree, SST and B-tree), we let the wrapped interface be tested indirectly via the wrapper interface. Most checks involved are automated, but some tests have output that can be inspected to verify correctness even further.
 
