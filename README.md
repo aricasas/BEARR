@@ -79,7 +79,17 @@ cargo test --release test_insert_in_order
 
 ## Design
 
+### Public interface
+
+The KV-store APIs are implemented on the `Database` struct in `database.rs`.
+
+Keys and values are of the `u64` type (64-bit unsigned integer). The tombstone value for deletions is represented as `u64::MAX`, and trying to insert this value into the database will return an error.
+
 ### LSM tree
+
+LSM trees are implemented as the `LsmTree` struct in `lsm.rs`. They make use of Dostoevsky for compaction, and Monkey (optional, enabled by default) for assigning bloom filter bits.
+
+#### Memtable
 
 #### Merging
 
@@ -97,7 +107,17 @@ The nodes are the actual indexing of Leafs in the format of a **B+ Tree** where 
 
 ### File system and buffer pool
 
+We have a `FileSystem` struct, implemented in `file_system.rs`, for working with data files. Page IDs -- data of the form (lsm level, sst number, page number) -- are translated into file names by the file system to access files.
+
+The buffer pool, implemented as a hash table, is part of the file system. In order to share the file system in multiple places while simultaneously mutating the buffer pool, we have an inner file system behind a mutex.
+
+Modifying a file invalidates its entries in the buffer pool. To help with this, we have a different page ID type for the buffer pool. Translating between the two ID types is done by the `FileMap` struct, which can disassociate a buffer pool page ID from a regular page ID when the entries in the buffer pool are invalidated.
+
 #### Hashing and hash table
+
+The hash table is implemented in `hashtable.rs` as the `HashTable` struct. It uses linear probing to resolve collisions.
+
+For hash functions, we have a common `HashFunction` struct in `hash.rs` that is used in both the hash table and the bloom filter. It is initialized with a random seed upon creation. The hash algorithm used is MurmurHash.
 
 #### Eviction policy
 
