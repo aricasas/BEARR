@@ -3,7 +3,7 @@
   <img src="img/bearr.png" width="500" />
 </p>
 
-BEARR is a key-value store written in Rust as our CSC443 course project.
+BEARR is a high-performance, multithread key-value engine written in Rust.
 
 ## Status
 
@@ -55,7 +55,27 @@ For more detail on the interface, run `cargo doc --open`.
 
 ## How to run
 
-[TODO]
+### Tests
+You can view the latest test results in github actions via our workflow and the time each test takes plus the maximium memory usage of all tests. 
+#### Docker 
+To run across all platforms you can use **docker** to run the project. 
+```bash
+git clone https://github.com/aricasas/BEARR.git
+cd BEARR 
+docker build -f bearr-test .
+docker run bearr-test
+```
+#### Rust 
+To run the tests in rust with _cargo_ you can execute the command:
+```bash
+cargo test --release 
+```
+The command runs all the test.
+
+If you want to run a single test you can execute `cargo test` with the test name:
+```bash
+cargo test --release test_insert_in_order
+```
 
 ## Design
 
@@ -64,6 +84,14 @@ For more detail on the interface, run `cargo doc --open`.
 #### Merging
 
 ### SST and B-tree
+SSTs are mutable files with indexes that are used to store the actual data on the disk. Each SST has the structure as below : 
+Metadata -- Leafs -- Nodes -- Bloom Filter 
+#### Metadata 
+The metatdata of the SST stores the relevant information about that sst which is the offsets of each section, the size of the sst, the size of the bloom filter and the number of hash functions we use for the bloom filters
+#### Leafs 
+The leafs are sorted blocks of data in the form of **K:V** which can be vied as a contiguos view of the memtable.
+#### Nodes 
+The nodes are the actual indexing of Leafs in the format of a **B+ Tree** where the first block is the top node in the tree and each pair in the nodes points to its direct children ( the last level of nodes point to the corresponding leafs ). Each node can hold up to 255 children locations. The tree is written to the way in a contigous matter to keep writting/reading locality inside the btree. With our calculations every page would give its biggest key as its representative to the btree and since a page can fit 255 (~= (PAGE_SIZE = 4096B) / ((KEY_SIZE = 8) + (VALUE_SIZE = 8)) )   
 
 #### Bloom filter
 
@@ -72,6 +100,8 @@ For more detail on the interface, run `cargo doc --open`.
 #### Hashing and hash table
 
 #### Eviction policy
+
+
 
 ## Experiments
 
