@@ -23,7 +23,7 @@ The public interface is fully tested, including an integration test that perform
 
 Most internal interfaces also have dedicated unit tests.
 
-[TODO: status of experiments]
+We have a set of 25 benchmarks that are used to measure and compare database throughput as we vary our configuration parameters.
 
 ## How to run
 
@@ -265,7 +265,7 @@ To run all the experiments and get the CSV data output used to generate the figu
 $ ./run_experiments.sh
 ```
 
-This will run 25 benchmarks that build a 1 GiB database each and take a sample of the throughput every 16 MiB. The shortest takes around 2.5 min and the longest around 25 min. In total, they took [TODO] on the teach.cs server.
+This will run 25 benchmarks that build a 1 GiB database each and take a sample of the throughput every 16 MiB. The shortest takes around 2.5 min and the longest around 25 min. In total, they took [TODO] on the teach.cs server. Note that the units used in the output files are in terms of rows and not MiB like the graphs. 
 
 To run a specific benchmark, we can use:
 ```sh
