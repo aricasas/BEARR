@@ -57,7 +57,7 @@ For more detail on the interface, run `cargo doc --open`.
 
 ### Tests
 You can view the latest test results in github actions via our workflow and the time each test takes plus the maximium memory usage of all tests. 
-#### Docker 
+#### Docker ( Release V3.0.0+ )
 To run across all platforms you can use **docker** to run the project. 
 ```bash
 git clone https://github.com/aricasas/BEARR.git
@@ -101,9 +101,16 @@ The metatdata of the SST stores the relevant information about that sst which is
 #### Leafs 
 The leafs are sorted blocks of data in the form of **K:V** which can be vied as a contiguos view of the memtable.
 #### Nodes 
-The nodes are the actual indexing of Leafs in the format of a **B+ Tree** where the first block is the top node in the tree and each pair in the nodes points to its direct children ( the last level of nodes point to the corresponding leafs ). Each node can hold up to 255 children locations. The tree is written to the way in a contigous matter to keep writting/reading locality inside the btree. With our calculations every page would give its biggest key as its representative to the btree and since a page can fit 255 (~= (PAGE_SIZE = 4096B) / ((KEY_SIZE = 8) + (VALUE_SIZE = 8)) )   
+The nodes are the actual indexing of Leafs in the format of a **B+ Tree** where the first block is the top node in the tree and each pair in the nodes points to its direct children ( the last level of nodes point to the corresponding leafs ). Each node can hold up to 255 children locations. The tree is written to the way in a contigous matter to keep writting/reading locality inside the btree. With our calculations every page would give its biggest key as its representative to the btree and since a page can fit 255 (~= (PAGE_SIZE = 4096B) / ((KEY_SIZE = 8) + (VALUE_SIZE = 8)) ) key values so you can expect every 255 Leafs to generate one Node and every 255 Nodes to generate a parent node and so on so for example you can expect for 10GB of data to have a tree of depth $log_255(\frac{10 * 10^9}{16}) ~= 4$ and the size of the tree would be $= \frac{2 ^ 30}{16 * 255 * 255} * 4096 ~= 40MB$ which shows the index size is negligible compared to actual size ( 40MB vs 10GB ) which is **0.4%** overhead. The B-tree index finds the correct page that our K:V is in in **Tree Depth + 1** io accesses. You can also not use indexing and directly use binary search on the leafs by using `--features binary_search` in the commands which will take **$log_2(\frac{Datasize}{16 * 255})$** io accesses so in the case of the 10GB database you need 21 io accesses which is almost 1/5 of when using the indexing. Caveat to having the indexing btree is you need enough memory to construct it. 
 
 #### Bloom filter
+Each SST has a bloom filter which consists of a number of hash functions and a a bitmap showing what element exists in that SST. The bloom filter is stored ( unlike leafs, nodes and metadata ) as a contigous array of bytes after the nodes. The filter size is given by the database and optimizations like Monkey are also added to make it more efficient.
+
+#### SST Consistancy
+The SSTs have a magic number and the order of writting to disk is : 
+Leafs --> Nodes --> Bloom Filter --> Metadata 
+
+If anything goes wrong while writing each part, the metadata will contain a wrong magic number which is used to indicate the SST is corrupt and should not be used. This ensures the consistancy of each SST. 
 
 ### File system and buffer pool
 
