@@ -93,8 +93,6 @@ Note that this project is Linux-exclusive.
 
 For more detail on the interface, run `cargo doc --open`.
 
-```
-
 ## Design
 
 ### Public interface
