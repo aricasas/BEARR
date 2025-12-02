@@ -93,28 +93,6 @@ Note that this project is Linux-exclusive.
 
 For more detail on the interface, run `cargo doc --open`.
 
-## How to run
-
-### Tests
-You can view the latest test results in github actions via our workflow and the time each test takes plus the maximium memory usage of all tests. 
-#### Docker ( Release V3.0.0+ )
-To run across all platforms you can use **docker** to run the project. 
-```bash
-git clone https://github.com/aricasas/BEARR.git
-cd BEARR 
-docker build -f bearr-test .
-docker run bearr-test
-```
-#### Rust 
-To run the tests in rust with _cargo_ you can execute the command:
-```bash
-cargo test --release 
-```
-The command runs all the test.
-
-If you want to run a single test you can execute `cargo test` with the test name:
-```bash
-cargo test --release test_insert_in_order
 ```
 
 ## Design
