@@ -14,6 +14,7 @@ The following bonus features have also been implemented:
 - Dostoevsky
 - Using a min-heap for Dostoevsky
 - Monkey
+- Write Ahead Logging
 
 In addition, our implementation can handle concurrent gets and scans from several threads.
 
@@ -189,8 +190,24 @@ For hash functions, we have a common `HashFunction` struct in `hash.rs` that is 
 
 #### Eviction policy
 
-### Write-Ahead Logging
-This database also has configurable write-ahead logging
+### Write-Ahead Logging (WAL)
+
+The database implements a configurable write-ahead logging system to ensure durability and crash recovery. Write-ahead logging is a fundamental technique in database systems that guarantees that all modifications are recorded to persistent storage before they are applied to the in-memory data structures, providing protection against data loss in the event of system failures.
+
+In our implementation, each write operation follows a buffered logging protocol. When a key-value pair is inserted into the database via a `put` operation, the entry is first appended to an in-memory log buffer. This buffer accumulates write operations until it reaches a configurable threshold size, at which point all buffered entries are synchronously flushed to the persistent log file on disk using an `fsync` operation to ensure durability. This batching strategy amortizes the cost of expensive disk synchronization operations across multiple writes, improving overall write throughput.
+
+During database initialization or recovery, the system performs a sanity check operation by replaying the entire log file. This process reconstructs the in-memory state by applying all logged operations sequentially, ensuring that the database reflects all committed writes that were persisted to the log but may not have been flushed to the SST files before a crash. The redo mechanism is critical for maintaining consistency and preventing data loss across restart boundaries.
+
+To prevent unbounded log file growth, the system implements a checkpointing mechanism. When the memtable is flushed to disk as an SST file, the corresponding entries in the log file become redundant since they are now durably stored in the persistent SST structure. At this point, the log file is truncated, removing all entries that have been successfully persisted to SSTs. This checkpointing process keeps the log file size manageable and reduces recovery time, as fewer log entries need to be replayed during startup.
+
+The log buffer size is a tuning parameter that presents a fundamental tradeoff between robustness and performance. Smaller buffer sizes result in more frequent synchronous flushes to disk, which increases the I/O overhead and reduces write throughput. However, this configuration provides stronger durability guarantees since less data resides in volatile memory at any given time. Conversely, larger buffer sizes improve performance by reducing the frequency of expensive disk synchronization operations and allowing more effective batching of writes. The drawback is that more data may be lost if a crash occurs before the buffer is flushed, as all uncommitted entries in the buffer will be lost.
+
+To quantify this tradeoff, we introduce a **Robustness Metric** defined as:
+
+$$\text{Robustness Metric} = \frac{\text{Log Buffer Size}}{\text{Memtable Size}}$$
+
+This metric represents the upper bound of the expected fraction of data loss relative to the total in-memory state in the event of a system crash. For example, a robustness metric of 0.1 indicates that at most, 10% of the memtable's data could be lost in a worst-case crash scenario where the log buffer has not yet been flushed. A lower metric indicates a more robust configuration with smaller potential data loss windows, while a higher metric suggests prioritization of performance over durability. You can tune this parameter based on your application's specific requirements.
+
 
 
 
