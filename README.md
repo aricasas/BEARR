@@ -10,13 +10,14 @@ BEARR is a high-performance, multithread key-value engine written in Rust.
 All core features are complete.
 
 The following bonus features have also been implemented:
-- Handling sequential flooding with 2Q algorithm
+- Handling sequential flooding (with 2Q algorithm)
 - Dostoevsky
 - Using a min-heap for Dostoevsky
 - Monkey
-- Write Ahead Logging
 
-In addition, our implementation can handle concurrent gets and scans from several threads.
+We also have the following additional features:
+- Support for concurrent gets and scans from several threads
+- Write Ahead Logging
 
 The public interface is fully tested, including an integration test that performs a large number of random database operations, comparing against a HashMap oracle.
 
@@ -111,6 +112,10 @@ LSM trees are implemented as the `LsmTree` struct in `lsm.rs`. They make use of 
 
 #### Merging
 
+Throughout our code, we use Rust iterators to handle sequences of key-value pairs to avoid the need to allocate and store all the data in memory.
+
+`MergedIterator` in `merge.rs` merges a list of such iterators into one large iterator. A min-heap is used in order to yield the key-value pairs in sorted order.
+
 ### SST and B-tree
 
 SSTs (Sorted String Tables) are immutable files that store key-value data on disk. Each SST consists of four main sections written in the following order:
@@ -200,7 +205,7 @@ The metadata contains a magic number that serves as a consistency check. If any 
 
 ### File system and buffer pool
 
-We have a `FileSystem` struct, implemented in `file_system.rs`, for working with data files. Page IDs -- data of the form (lsm level, sst number, page number) -- are translated into file names by the file system to access files.
+We have a `FileSystem` struct, implemented in `file_system.rs`, for working with data files. Page IDs -- data of the form (LSM level, SST number, page number) -- are translated into file names by the file system to access files.
 
 The buffer pool, implemented as a hash table, is part of the file system. In order to share the file system in multiple places while simultaneously mutating the buffer pool, we have an inner file system behind a mutex.
 
