@@ -116,6 +116,29 @@ SSTs (Sorted String Tables) are immutable files that store key-value data on dis
 
 **Metadata → Leafs → Nodes → Bloom Filter**
 
+#### SST File Layout
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Page 0: METADATA                                            │
+│  - Magic number, offsets, tree depth, sizes                 │
+├─────────────────────────────────────────────────────────────┤
+│ Pages 1..nodes_offset: LEAF NODES                           │
+│  - Sorted key-value pairs (actual data)                     │
+│  - Each leaf contains up to KEYS_PER_NODE pairs             │
+├─────────────────────────────────────────────────────────────┤
+│ Pages nodes_offset..bloom_offset: INTERNAL NODES            │
+│  - Tree structure for navigation                            │
+│  - Each node contains (largest_key, page offset) pairs      │
+│  - Bottom internal nodes point to leaf pages offset         │
+│  - Upper nodes point to lower internal nodes                │
+├─────────────────────────────────────────────────────────────┤
+│ Pages bloom_offset..end: BLOOM FILTER                       │
+│  - Bitmap                                                   │
+│  - Hash functions                                           │
+└─────────────────────────────────────────────────────────────┘
+```
+Just wrap the ASCII diagram in triple backticks (```) to create a code block. This preserves all the spacing and box-drawing characters perfectly. The diagram will render exactly as shown on GitHub.RetryClaude can make mistakes. Please double-check responses.
+
 ---
 
 #### Metadata
