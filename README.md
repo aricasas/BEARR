@@ -343,7 +343,7 @@ We welcome contributions to BEARR! Whether you're fixing bugs, adding features, 
 
 1. Fork the repository
 2. Create a new branch for your feature (`git checkout -b feature/amazing-feature`)
-3. Make your changes and ensure tests pass (`cargo test`)
+3. Make your changes and ensure tests pass (`cargo test` -- make sure to also test with `--features binary_search` and `--features uniform_bits`)
 4. Commit your changes (`git commit -m 'Add amazing feature'`)
 5. Push to your branch (`git push origin feature/amazing-feature`)
 6. Open a Pull Request
