@@ -110,11 +110,15 @@ LSM trees are implemented as the `LsmTree` struct in `lsm.rs`. They make use of 
 
 #### Memtable
 
+Our memtable is implemented as a Red-Black binary tree. The current implementation is the `MemTable<K, V>` struct in `memtable.rs` which is generic over the types of keys and values. We only ever use it with the specific types of u64 for both keys and values, but we implemented it as generic in case we decided to change this in the future. The nodes in the tree store their keys, their values, their color, and pointers to their two children. We don't store pointers to the parents, and we use a non-recursive, top-down, one-pass algorithm for insertion and updates which was inspired by [this source](https://web.archive.org/web/20190207151651/http://www.eternallyconfuzzled.com/tuts/datastructures/jsw_tut_rbtree.aspx). It also provides range scans via an iterator interface using a non-recursive algorithm.
+
 #### Merging
 
-Throughout our code, we use Rust iterators to handle sequences of key-value pairs to avoid the need to allocate and store all the data in memory.
+Throughout our code, we use Rust iterators to handle sequences of key-value pairs to avoid the need to allocate and store all the data in memory. The memtable and the SSTs provide iterator interfaces which we combine to perform compactions.
 
-`MergedIterator` in `merge.rs` merges a list of such iterators into one large iterator. A min-heap is used in order to yield the key-value pairs in sorted order.
+`MergedIterator` in `merge.rs` merges a list of such iterators into one large iterator, ensuring we preserve sorted order and that we only return the newest version of a given key-value pair. A min-heap is used in order to implement this merging iterator in an efficient way when there are more than two iterators being merged.
+
+This merged iterator is also responsible for handling tombstone values in scans, and when compacting at the last layer. This works by taking in a flag which controls whether tombstone values should be erased or preserved. 
 
 ### SST and B-tree
 
@@ -300,7 +304,7 @@ In this experiment we compare the throughput of the get operation when using bin
 
 At 0% success for get operations, using Monkey is noticeably faster since this test relis more on avoiding I/O from false positive filter queries. Binary search is last, but the difference isn't as big as in the other graphs. This is because there is less point queries to the SSTs as it can skip them using the filters, so the binary search doesn't slow it down as much.
 
-At 50% and 100% success for get operations, binary search is a lot slower than B-tree search. And everything is slower than at 0% success. In here, most get operations will result in I/O so the binary search algorithm is a lot slower.
+At 50% and 100% success for get operations, binary search is a lot slower than B-tree search. And everything is slower than at 0% success. In here, most get operations will result in I/O so the binary search algorithm is a lot slower. As we can see from the spiky structure of the graphs, the throughput on gets is affected by how many and how big the SSTs are, but overal remains approximately constant as database size grows.
 
 ### Concurrency
 
@@ -309,16 +313,15 @@ At 50% and 100% success for get operations, binary search is a lot slower than B
 ![](img/scan_concurrent_throughput.png)
 
 
-These
-
-
-In this experiment, we measure the throughput of scan operations in our database.
+In this experiment, we measure the throughput of concurrent reads from multiple threads. As we increase the number of threads, we can perform many concurrent file reads to the SSTs. Since we are performing this experiment on the teach.cs server, which uses SSDs for storage, we expect the throughput to increase. This is because SSDs can perform I/Os in parallel. However, there seems to be a point of diminishing returns, where adding more threads cannot increase throughput past this. 
 
 ### Full database scan
 
 ![](img/full_scan_throughput.png)
 
-In this experiment we measure the throughput of doing a full database scan as the datbase grows. Before the database grows to 256 MiB, the whole database can fit in the buffer pool, so the throughput has really high peaks. After 256 MiB, the throughput settles
+In this experiment we measure the throughput of doing a full database scan as the database grows. Before the database grows to 256 MiB, the whole database can fit in the buffer pool, so the throughput has really high peaks when it has cached the SSTs and reads from memory. After 256 MiB, the throughput settles at ~140 MiB/sec. [TODO] change this number if new run changes
+
+
 
 ## Contributing
 
