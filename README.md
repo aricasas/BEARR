@@ -23,6 +23,46 @@ Most internal interfaces also have dedicated unit tests.
 
 [TODO: status of experiments]
 
+## How to run
+
+### Tests
+You can view the latest test results in github actions via our workflow and the time each test takes plus the maximium memory usage of all tests. 
+#### Docker 
+To run across all platforms you can use **docker** to run the project. 
+```bash
+git clone https://github.com/aricasas/BEARR.git
+cd BEARR 
+docker build -f bearr-test .
+docker run bearr-test
+```
+
+### In Rust
+
+If you have [Rust and Cargo installed](https://rust-lang.org/tools/install/), you can use Cargo to run tests and experiments.
+
+The basic command is `cargo test` to run all tests in debug mode. To run in release mode, use the `--release` flag. To run while capturing `println` output, provide `-- --nocapture` to the command. To run a specific test or set of tests, provide the name as an argument.
+
+There are three conditional compilation options in the form of Cargo features:
+- `binary_search`: use binary search instead of B-tree search for SSTs.
+- `uniform_bits`: assign the same number of bits per entry for each LSM level instead of using Monkey.
+- `keep_test_files`: do not delete any test files created as a result of running tests.
+
+As an example, to run all the tests in `database.rs` in release mode with `binary_search` and `keep_test_files` active, run the command
+
+```
+cargo test --release database --features binary_search,keep_test_files
+```
+
+To run the `test_concurrency` test in `database.rs` with `uniform_bits` active and `println` output visible, run the command
+
+```
+cargo test database::tests::test_concurrency --features uniform_bits -- --nocapture
+```
+
+### Experiments
+
+Instructions for running experiments are in the "Experiments" section of the README.
+
 ## Interface
 
 Our project is designed as a library. The main item of interest is the `Database` struct.
