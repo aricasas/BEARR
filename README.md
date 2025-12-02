@@ -275,7 +275,7 @@ To run all the experiments and get the CSV data output used to generate the figu
 $ ./run_experiments.sh
 ```
 
-This will run 25 benchmarks that build a 1 GiB database each and take a sample of the throughput every 16 MiB. The shortest takes around 4 min and the longest around 30 min. In total, they took 3 hours on the teach.cs server. Note that the units used in the output files are in terms of key-value pairs and not MiB like the graphs. 
+This will run 25 benchmarks that build a 1 GiB database each and take a sample of the throughput every 16 MiB. The shortest takes around 4 min and the longest around 30 min. In total, they took 3 hours on the teach.cs server. Note that the units used in the output files are in terms of key-value pairs and not MiB like the graphs. [Here](https://colab.research.google.com/drive/12Wkc125rhlBuqOs8nubJG3m1yyit6w_Y?usp=sharing) is the Google Colab file we use to generate the graphs from the CSV files.
 
 To run a specific benchmark, we can use:
 ```sh
