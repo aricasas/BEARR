@@ -251,7 +251,10 @@ impl FileSystem {
             let inner = inner_lock.deref_mut();
 
             let buffer_page_id = inner.file_map.get_or_assign_file(file_id).page(page_start);
+
+            inner.buffer_pool_accesses += 1;
             if let Some(entry) = inner.buffer_pool.get(buffer_page_id) {
+                inner.buffer_pool_hits += 1;
                 inner.eviction_handler.touch(entry.eviction_id);
                 return Ok(Arc::clone(&entry.page));
             }
