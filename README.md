@@ -221,8 +221,7 @@ For hash functions, we have a common `HashFunction` struct in `hash.rs` that is 
 
 ### Write-Ahead Logging (WAL)
 
-The database implements a configurable write-ahead logging system to ensure durability and crash recovery. Write-ahead logging is a fundamental technique in database systems that guarantees that all modifications are recorded to persistent storage before they are applied to the in-memory data structures, providing protection against data loss in the event of system failures.
-
+The database implements a configurable write-ahead logging system to ensure durability and crash recovery. 
 In our implementation, each write operation follows a buffered logging protocol. When a key-value pair is inserted into the database via a `put` operation, the entry is first appended to an in-memory log buffer. This buffer accumulates write operations until it reaches a configurable threshold size, at which point all buffered entries are synchronously flushed to the persistent log file on disk using an `fsync` operation to ensure durability. This batching strategy amortizes the cost of expensive disk synchronization operations across multiple writes, improving overall write throughput.
 
 During database initialization or recovery, the system performs a sanity check operation by replaying the entire log file. This process reconstructs the in-memory state by applying all logged operations sequentially, ensuring that the database reflects all committed writes that were persisted to the log but may not have been flushed to the SST files before a crash. The redo mechanism is critical for maintaining consistency and preventing data loss across restart boundaries.
@@ -237,7 +236,7 @@ $$\text{Robustness Metric} = \frac{\text{Log Buffer Size}}{\text{Memtable Size}}
 
 This metric represents the upper bound of the expected fraction of data loss relative to the total in-memory state in the event of a system crash. For example, a robustness metric of 0.1 indicates that at most, 10% of the memtable's data could be lost in a worst-case crash scenario where the log buffer has not yet been flushed. A lower metric indicates a more robust configuration with smaller potential data loss windows, while a higher metric suggests prioritization of performance over durability. You can tune this parameter based on your application's specific requirements.
 
-
+** Disclaimer: As of now because of the format of the WAL and since its a text file, the performance is not as good but it works and there are several tests simulating a database crash and show how the recovery works. For future works the text file can be converted to a binary file for optimized operations.
 
 
 ## Experiments
