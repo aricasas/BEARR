@@ -112,13 +112,15 @@ LSM trees are implemented as the `LsmTree` struct in `lsm.rs`. They make use of 
 
 Our memtable is implemented as a Red-Black binary tree. The current implementation is the `MemTable<K, V>` struct in `memtable.rs`, which is generic over the types of keys and values. We only ever use it with the specific types of u64 for both keys and values, but we implemented it as generic in case we decided to change this in the future. The nodes in the tree store their keys, their values, their color, and pointers to their two children. We don't store pointers to the parents, and we use a non-recursive, top-down, one-pass algorithm for insertion and updates, which was inspired by [this source](https://web.archive.org/web/20190207151651/http://www.eternallyconfuzzled.com/tuts/datastructures/jsw_tut_rbtree.aspx). It also provides range scans via an iterator interface using a non-recursive algorithm.
 
+The tree structure is stored in a contiguous vector of nodes, and we use indices into the vector as our pointers. This made the implementation process easier to write in safe Rust, and it allows us to very easily allocate the entire memory for the memtable up front and only once, when the database is opened.
+
 #### Merging
 
 Throughout our code, we use Rust iterators to handle sequences of key-value pairs to avoid the need to allocate and store all the data in memory. The memtable and the SSTs provide iterator interfaces, which we combine to perform compactions.
 
 `MergedIterator` in `merge.rs` merges a list of such iterators into one large iterator, ensuring we preserve sorted order and that we only return the newest version of a given key-value pair. A min-heap is used in order to implement this merging iterator in an efficient way when there are more than two iterators being merged.
 
-This merged iterator is also responsible for handling tombstone values in scans and when compacting at the last layer. This works by taking in a flag that controls whether tombstone values should be erased or preserved. 
+This merged iterator is also responsible for either preserving or erasing tombstone values as it reads them. When returning a scan iterator to the user, or when compacting at the last layer of the LSM tree, we pass in a flag to this merged iterator that makes it delete tombstone values from its output. 
 
 ### SST and B-tree
 
@@ -265,7 +267,7 @@ To run all the experiments and get the CSV data output used to generate the figu
 $ ./run_experiments.sh
 ```
 
-This will run 25 benchmarks that build a 1 GiB database each and take a sample of the throughput every 16 MiB. The shortest takes around 2.5 min and the longest around 25 min. In total, they took [TODO] on the teach.cs server. Note that the units used in the output files are in terms of rows and not MiB like the graphs. 
+This will run 25 benchmarks that build a 1 GiB database each and take a sample of the throughput every 16 MiB. The shortest takes around 2.5 min and the longest around 25 min. In total, they took [TODO] on the teach.cs server. Note that the units used in the output files are in terms of key-value pairs and not MiB like the graphs. 
 
 To run a specific benchmark, we can use:
 ```sh
