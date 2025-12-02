@@ -320,3 +320,45 @@ In this experiment, we measure the throughput of scan operations in our database
 ![](img/full_scan_throughput.png)
 
 In this experiment we measure the throughput of doing a full database scan as the datbase grows. Before the database grows to 256 MiB, the whole database can fit in the buffer pool, so the throughput has really high peaks. After 256 MiB, the throughput settles
+
+## Contributing
+
+We welcome contributions to BEARR! Whether you're fixing bugs, adding features, improving documentation, or sharing ideas, your help is appreciated.
+
+### How You Can Contribute
+
+- **Code contributions**: Implement new features, optimize performance, or fix bugs
+- **Documentation**: Improve explanations, add examples, or fix typos
+- **Testing**: Write additional tests or report issues you discover
+- **Ideas**: Suggest new features or improvements through GitHub Issues
+- **Experiments**: Run benchmarks and share your results
+
+### Getting Started
+
+1. Fork the repository
+2. Create a new branch for your feature (`git checkout -b feature/amazing-feature`)
+3. Make your changes and ensure tests pass (`cargo test`)
+4. Commit your changes (`git commit -m 'Add amazing feature'`)
+5. Push to your branch (`git push origin feature/amazing-feature`)
+6. Open a Pull Request
+
+### Development Guidelines
+
+- Follow Rust's standard formatting (use `cargo fmt`)
+- Run `cargo clippy` to catch common issues
+- Add tests for new functionality
+- Update documentation as needed
+- Keep commits focused and write clear commit messages
+
+### Questions or Need Help?
+
+Feel free to open an issue if you have questions or need guidance. We're happy to help new contributors get started!
+
+---
+
+We'd love to grow this project with your help. Every contribution, no matter how small, makes a difference! 🐻
+
+## Todos
+- Async Writes with io_uring
+- Binary writes to the WAL
+- Partial compactions
