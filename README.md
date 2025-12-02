@@ -19,9 +19,7 @@ We also have the following additional features:
 - Support for concurrent gets and scans from several threads
 - Write Ahead Logging
 
-The public interface is fully tested, including an integration test that performs a large number of random database operations, comparing against a HashMap oracle.
-
-Most internal interfaces also have dedicated unit tests.
+The public interface is fully tested, and most internal interfaces also have dedicated unit tests. More info in the "Tests" section of the README.
 
 We have a set of 25 benchmarks that are used to measure and compare database throughput as we vary our configuration parameters.
 
@@ -243,6 +241,11 @@ This metric represents the upper bound of the expected fraction of data loss rel
 
 ** Disclaimer: As of now, because of the format of the WAL and since it's a text file, the performance is not good. But it works, and there are several tests simulating a database crash and showing how the recovery works. For future work, the text file can be converted to a binary file for optimized operations.
 
+## Tests
+
+For the public interface, all major documented details were tested except for errors arising from miscellaneous file I/O issues. `database.rs` has some basic unit tests (`test_basic`, `test_persistence`, `test_errors`) as well as two larger tests that involve performing a large number of random operations and comparing the results against a `HashMap` oracle: `test_chaotic`, which is single-threaded and intermixes database read (get and scan) and write (put, delete, flush, and close & reopen) operations, and `test_concurrent`, which is multi-threaded and only involves read operations.
+
+For internal interfaces, we tested everything that we felt needed testing. For interfaces that were a thin wrapper around another interface (e.g. database and LSM tree, SST and B-tree), we let the wrapped interface be tested indirectly via the wrapper interface. Most checks involved are automated, but some tests have output that can be inspected to verify correctness even further.
 
 ## Experiments
 
