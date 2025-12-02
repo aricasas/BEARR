@@ -94,23 +94,68 @@ LSM trees are implemented as the `LsmTree` struct in `lsm.rs`. They make use of 
 #### Merging
 
 ### SST and B-tree
-SSTs are mutable files with indexes that are used to store the actual data on the disk. Each SST has the structure as below : 
-Metadata -- Leafs -- Nodes -- Bloom Filter 
-#### Metadata 
-The metatdata of the SST stores the relevant information about that sst which is the offsets of each section, the size of the sst, the size of the bloom filter and the number of hash functions we use for the bloom filters
-#### Leafs 
-The leafs are sorted blocks of data in the form of **K:V** which can be vied as a contiguos view of the memtable.
-#### Nodes 
-The nodes are the actual indexing of Leafs in the format of a **B+ Tree** where the first block is the top node in the tree and each pair in the nodes points to its direct children ( the last level of nodes point to the corresponding leafs ). Each node can hold up to 255 children locations. The tree is written to the way in a contigous matter to keep writting/reading locality inside the btree. With our calculations every page would give its biggest key as its representative to the btree and since a page can fit 255 (~= (PAGE_SIZE = 4096B) / ((KEY_SIZE = 8) + (VALUE_SIZE = 8)) ) key values so you can expect every 255 Leafs to generate one Node and every 255 Nodes to generate a parent node and so on so for example you can expect for 10GB of data to have a tree of depth $log_255(\frac{10 * 10^9}{16}) ~= 4$ and the size of the tree would be $= \frac{2 ^ 30}{16 * 255 * 255} * 4096 ~= 40MB$ which shows the index size is negligible compared to actual size ( 40MB vs 10GB ) which is **0.4%** overhead. The B-tree index finds the correct page that our K:V is in in **Tree Depth + 1** io accesses. You can also not use indexing and directly use binary search on the leafs by using `--features binary_search` in the commands which will take **$log_2(\frac{Datasize}{16 * 255})$** io accesses so in the case of the 10GB database you need 21 io accesses which is almost 1/5 of when using the indexing. Caveat to having the indexing btree is you need enough memory to construct it. 
 
-#### Bloom filter
-Each SST has a bloom filter which consists of a number of hash functions and a a bitmap showing what element exists in that SST. The bloom filter is stored ( unlike leafs, nodes and metadata ) as a contigous array of bytes after the nodes. The filter size is given by the database and optimizations like Monkey are also added to make it more efficient.
+SSTs (Sorted String Tables) are immutable files that store key-value data on disk. Each SST consists of four main sections written in the following order:
 
-#### SST Consistancy
-The SSTs have a magic number and the order of writting to disk is : 
-Leafs --> Nodes --> Bloom Filter --> Metadata 
+**Metadata → Leafs → Nodes → Bloom Filter**
 
-If anything goes wrong while writing each part, the metadata will contain a wrong magic number which is used to indicate the SST is corrupt and should not be used. This ensures the consistancy of each SST. 
+---
+
+#### Metadata
+The metadata section stores critical information about the SST, including:
+- Offsets for each section (leafs, nodes, bloom filter)
+- Total SST size
+- Bloom filter size and number of hash functions
+
+---
+
+#### Leafs
+Leafs are sorted blocks of key-value pairs stored contiguously on disk in the format of Pages. They can be viewed as a persistent, sorted representation of the memtable. Each leaf contains up to 255 key-value pairs (approximately `PAGE_SIZE / (KEY_SIZE + VALUE_SIZE)` = `4096B / 16B` ≈ 255 entries per page).
+
+---
+
+#### Nodes (B+ Tree Index)
+The nodes form a B+ tree index over the leafs, enabling efficient lookups. 
+
+**Structure:**
+- Each node can reference up to 255 children
+- Internal nodes store the maximum key from each child
+- The lowest level of nodes points directly to leaf pages
+- Nodes are written contiguously to maintain good read/write locality
+
+**Performance Analysis:**
+
+For a 10GB database:
+- **Tree depth:** $\log_{255}(\frac{10 \times 10^9}{16}) \approx 4$
+- **Index size:** $\frac{10^{10}}{16 \times 255 \times 255} \times 4096 \approx 40\text{MB}$
+- **Overhead:** 40MB / 10GB = **0.4%** (negligible)
+
+**Lookup Performance:**
+- **With B-tree:** `Tree Depth + 1` I/O accesses (~5 I/Os for 10GB)
+- **Without B-tree (binary search):** $\log_2(\frac{\text{DataSize}}{16 \times 255})$ I/O accesses (~21 I/Os for 10GB)
+
+The B-tree index provides approximately **5× faster lookups** compared to binary search. You can disable indexing and use binary search with the `--features binary_search` flag.
+
+**Trade-off:** The B-tree requires sufficient memory to construct the index during SST creation but.
+
+---
+
+#### Bloom Filter
+Each SST includes a Bloom filter to quickly determine if a key might exist in the file without reading the entire SST.
+
+**Implementation:**
+- Stored as a contiguous byte array after the nodes section
+- Size and hash function count are configurable
+- Optimizations like Monkey are applied for efficiency
+
+---
+
+#### SST Consistency Guarantees
+SSTs maintain consistency through a write-ordering protocol:
+
+**Write Order:** Leafs → Nodes → Bloom Filter → Metadata
+
+The metadata contains a magic number that serves as a consistency check. If any error occurs during the write process, the magic number will be invalid, marking the SST as corrupt and preventing its use. This ensures that partially written SSTs are never treated as valid.
 
 ### File system and buffer pool
 
@@ -127,6 +172,9 @@ The hash table is implemented in `hashtable.rs` as the `HashTable` struct. It us
 For hash functions, we have a common `HashFunction` struct in `hash.rs` that is used in both the hash table and the bloom filter. It is initialized with a random seed upon creation. The hash algorithm used is MurmurHash.
 
 #### Eviction policy
+
+### Write-Ahead Logging
+This database also has configurable write-ahead logging
 
 
 
