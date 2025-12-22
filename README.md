@@ -91,7 +91,7 @@ Note that this project is Linux-exclusive.
 
 `database.flush()` - manually flushes the database, writing the memtable to an SST and writing LSM metadata to disk. The database automatically handles closing upon being dropped, but this function can optionally be called if you need to handle any errors arising from the closing process.
 
-For more details on the interface, run `cargo doc --open`.
+For more details on the interface, run `cargo doc --open`, or see `examples/example.rs` for example usage. You can run the example with `cargo run --example example`.
 
 ## Design
 
