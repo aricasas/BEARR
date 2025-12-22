@@ -125,7 +125,7 @@ struct InnerFs {
 impl Drop for InnerFs {
     fn drop(&mut self) {
         println!(
-            "buffer pool hit rate : {}",
+            "Buffer pool hit rate: {}",
             self.buffer_pool_hits as f64 / (self.buffer_pool_accesses.max(1) as f64),
         );
     }
