@@ -15,10 +15,14 @@ use io_uring::{CompletionQueue, SubmissionQueue};
 
 use crate::{DbRequest, DbResponse};
 
+/// Simple waker that just uses an AtomicBool to track whether it's been woken or not
 struct BoolWaker {
     woken: AtomicBool,
 }
 impl BoolWaker {
+    /// Creates a new BoolWaker that starts in the woken state.
+    /// We start in the woken state so newly spawned tasks are polled immediately
+    /// and can start their I/O operations
     fn new() -> Arc<Self> {
         Arc::new(Self {
             woken: AtomicBool::new(true),
@@ -27,7 +31,7 @@ impl BoolWaker {
     fn is_woken(&self) -> bool {
         self.woken.load(atomic::Ordering::Acquire)
     }
-    fn sleep(&self) {
+    fn set_not_woken(&self) {
         self.woken.store(false, atomic::Ordering::Release);
     }
 }
@@ -38,6 +42,7 @@ impl Wake for BoolWaker {
     }
 }
 
+/// Task representing an in-progress database operation
 struct Task<'b> {
     future: Pin<Box<dyn Future<Output = DbResponse> + 'b>>,
     waker: Arc<BoolWaker>,
@@ -55,16 +60,27 @@ impl<'b> Task<'b> {
     }
 }
 
+/// Executor for handling database operations using io_uring for asynchronous I/O
 struct Executor<'a, 'b> {
+    /// io_uring submission queue
     s_queue: Arc<Mutex<SubmissionQueue<'a>>>,
+    /// io_uring completion queue
     c_queue: Arc<Mutex<CompletionQueue<'a>>>,
+    /// Channel for receiving database operations to execute
     receiver: flume::Receiver<DbRequest>,
+    /// Channel for sending back database operation results
     sender: flume::Sender<DbResponse>,
+    /// Queue of responses that are ready to be sent back but haven't been sent yet
     to_send: VecDeque<DbResponse>,
+    /// Tasks currently being executed
     tasks: Vec<Task<'b>>,
+    /// Tasks waiting to be submitted to the s_queue once there's space
     submission_registry: Arc<Mutex<VecDeque<Waker>>>,
+    /// Tasks waiting for a completion from the c_queue with a specific id
     completion_registry: Arc<Mutex<HashMap<u64, Waker>>>,
+    /// Counter for generating unique ids for tasks
     id_counter: u64,
+    /// Maximum number of tasks to execute concurrently
     max_tasks: usize,
 }
 
@@ -81,8 +97,8 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
             c_queue,
             receiver,
             sender,
-            to_send: VecDeque::with_capacity(max_tasks),
-            tasks: Vec::with_capacity(max_tasks),
+            to_send: VecDeque::new(),
+            tasks: Vec::new(),
             submission_registry: Arc::new(Mutex::new(VecDeque::new())),
             completion_registry: Arc::new(Mutex::new(HashMap::new())),
             id_counter: 0,
@@ -126,6 +142,7 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
         self.tasks.push(Task::new(read_fut));
     }
 
+    /// Spawns a new task for the given database operation
     fn spawn_operation(&mut self, operation: DbRequest) {
         match operation {
             DbRequest::Read {
@@ -139,6 +156,8 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
         }
     }
 
+    /// Main executor loop. Continuously polls active tasks, reacts to new requests and responses,
+    /// and manages the submission and completion queues.
     fn run(&mut self) {
         loop {
             // Poll all active tasks
@@ -151,7 +170,7 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
                 };
 
                 // Mark the task as sleeping before polling so it can wake itself again when it's ready
-                task.waker.sleep();
+                task.waker.set_not_woken();
 
                 let waker = Waker::from(Arc::clone(&task.waker));
                 let mut cx = Context::from_waker(&waker);
@@ -162,7 +181,7 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
                         self.to_send.push_back(response);
                     }
                     Poll::Pending => {
-                        task.waker.sleep();
+                        task.waker.set_not_woken();
                         i += 1;
                     }
                 }
@@ -178,7 +197,8 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
 
             if self.tasks.is_empty() {
                 let recv_alive = self.react_no_tasks_blocking();
-                if !recv_alive && self.tasks.is_empty() && self.to_send.is_empty() {
+                if !recv_alive && self.tasks.is_empty() {
+                    self.send_responses_blocking();
                     return;
                 }
             }
@@ -209,6 +229,13 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
                     // If the receiver has been dropped, we can just drop the responses
                 }
             }
+        }
+    }
+
+    /// Sends all pending responses. Should only be used when shutting down the executor
+    fn send_responses_blocking(&mut self) {
+        while let Some(response) = self.to_send.pop_front() {
+            let _ = self.sender.send(response);
         }
     }
 
