@@ -4,7 +4,46 @@ use std::{
     task::{Context, Poll},
 };
 
-use io_uring::{CompletionQueue, SubmissionQueue};
+use io_uring::{CompletionQueue, SubmissionQueue, squeue};
+
+struct SubmissionQueueWait<'a> {
+    s_queue: SubmissionQueue<'a>,
+    entry: squeue::Entry,
+    id: u64,
+}
+
+impl<'a> Future for SubmissionQueueWait<'a> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        todo!()
+    }
+}
+
+struct CompletionQueueWait<'a> {
+    c_queue: CompletionQueue<'a>,
+    id: u64,
+}
+impl<'a> Future for CompletionQueueWait<'a> {
+    type Output = i32;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+
+        let res = this
+            .c_queue
+            .find(|entry| entry.user_data() == this.id)
+            .map(|entry| entry.result());
+
+        if let Some(code) = res {
+            Poll::Ready(code)
+        } else {
+            todo!();
+
+            Poll::Pending
+        }
+    }
+}
 
 struct FileReadFuture<'a> {
     s_queue: SubmissionQueue<'a>,
@@ -35,11 +74,11 @@ impl<'a> Future for FileReadFuture<'a> {
             // TODO we are using this incorrectyl for now
             unsafe { fake_self.s_queue.push(&entry) };
 
-            spawn_thread(||{
-// check completion queue until find corresponding entry
-cx.waker().wake();
+            //             spawn_thread(||{
+            // // check completion queue until find corresponding entry
+            // cx.waker().wake();
 
-            })
+            //             })
             fake_self.submitted = true;
             return Poll::Pending;
         } else {
@@ -84,35 +123,35 @@ unsafe fn read<'a>(
     }
 }
 
-async fn btree_read() {
-    let first_block = read(s_queue, "poop.basetas", 0, 4096).await.unwrap();
-    first_block[5] = 0;
-}
+// async fn btree_read() {
+// let first_block = read(s_queue, "poop.basetas", 0, 4096).await.unwrap();
+// first_block[5] = 0;
+// }
 
-fn main() {}
+// fn main() {}
 
-fn executor_main() {
-    let active_tasks = Vec::new();
-    let inactive_tasks = Vec::new();
+// fn executor_main() {
+// let active_tasks = Vec::new();
+// let inactive_tasks = Vec::new();
 
-    stuct waker;
-    wake(){
-        //move task from inactive to active
-    }
+// stuct waker;
+// wake(){
+//     //move task from inactive to active
+// }
 
-    loop {
-        for task in active_tasks {
-            match task.poll() {
-                Poll::Pending => {
-                    // move task to inactive_tasks
-                }
-                Poll::Ready(x) => {
-                    // do something with it
-                }
-            }
-        }
+// loop {
+// for task in active_tasks {
+//     match task.poll() {
+//         Poll::Pending => {
+//             // move task to inactive_tasks
+//         }
+//         Poll::Ready(x) => {
+//             // do something with it
+//         }
+//     }
+// }
 
-        // Check completion queue;
-        // for items in completion queue, put their corresponding tasks in active_tasks
-    }
-}
+// Check completion queue;
+// for items in completion queue, put their corresponding tasks in active_tasks
+// }
+// }
