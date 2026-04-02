@@ -50,6 +50,7 @@ struct CompletionQueueWait<'a> {
     c_queue: Arc<Mutex<CompletionQueue<'a>>>,
     id: u64,
     registry: Arc<Mutex<HashMap<u64, Waker>>>,
+    completion_codes: Arc<Mutex<HashMap<u64, i32>>>,
 }
 impl<'a> Future for CompletionQueueWait<'a> {
     type Output = i32;
@@ -57,12 +58,8 @@ impl<'a> Future for CompletionQueueWait<'a> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
-        let res = this
-            .c_queue
-            .lock()
-            .unwrap()
-            .find(|entry| entry.user_data() == this.id)
-            .map(|entry| entry.result());
+        let codes = this.completion_codes.lock().unwrap();
+        let res = codes.get(&this.id).copied();
 
         if let Some(code) = res {
             // Remove from registry if it was there
@@ -83,11 +80,13 @@ fn wait_for_entry<'a>(
     c_queue: Arc<Mutex<CompletionQueue<'a>>>,
     id: u64,
     registry: Arc<Mutex<HashMap<u64, Waker>>>,
+    completion_codes: Arc<Mutex<HashMap<u64, i32>>>,
 ) -> CompletionQueueWait<'a> {
     CompletionQueueWait {
         c_queue,
         id,
         registry,
+        completion_codes,
     }
 }
 
@@ -108,6 +107,7 @@ pub async unsafe fn read<'a>(
     id: u64,
     submission_registry: Arc<Mutex<VecDeque<Waker>>>,
     completion_registry: Arc<Mutex<HashMap<u64, Waker>>>,
+    completion_codes: Arc<Mutex<HashMap<u64, i32>>>,
 ) -> DbResponse {
     assert!(buffer.len() >= num_bytes as usize);
 
@@ -117,7 +117,7 @@ pub async unsafe fn read<'a>(
         .user_data(id);
 
     unsafe { submit_entry(s_queue, entry, submission_registry).await };
-    let err_code = wait_for_entry(c_queue, id, completion_registry).await;
+    let err_code = wait_for_entry(c_queue, id, completion_registry, completion_codes).await;
     if err_code >= 0 {
         DbResponse::ReadResult(Ok((buffer, err_code as usize)))
     } else {

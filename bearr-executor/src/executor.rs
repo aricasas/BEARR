@@ -79,6 +79,8 @@ pub struct Executor<'a, 'b> {
     submission_registry: Arc<Mutex<VecDeque<Waker>>>,
     /// Tasks waiting for a completion from the c_queue with a specific id
     completion_registry: Arc<Mutex<HashMap<u64, Waker>>>,
+    /// Map from task ids to their completion codes, set when a completion is received from the c_queue
+    completion_codes: Arc<Mutex<HashMap<u64, i32>>>,
     /// Counter for generating unique ids for tasks
     id_counter: u64,
     /// Maximum number of tasks to execute concurrently
@@ -104,6 +106,7 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
             tasks: Vec::new(),
             submission_registry: Arc::new(Mutex::new(VecDeque::new())),
             completion_registry: Arc::new(Mutex::new(HashMap::new())),
+            completion_codes: Arc::new(Mutex::new(HashMap::new())),
             id_counter: 0,
             max_tasks,
         }
@@ -128,6 +131,7 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
         let c_queue = Arc::clone(&self.c_queue);
         let submission_registry = Arc::clone(&self.submission_registry);
         let completion_registry = Arc::clone(&self.completion_registry);
+        let completion_codes = Arc::clone(&self.completion_codes);
         let read_fut = unsafe {
             crate::io::read(
                 s_queue,
@@ -139,6 +143,7 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
                 id,
                 submission_registry,
                 completion_registry,
+                completion_codes,
             )
         };
 
@@ -189,9 +194,6 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
                     }
                 }
             }
-
-            // TODO: check if this makes sense
-            self.submitter.submit().unwrap();
 
             // TODO: handle waking up kernel threads
 
@@ -267,10 +269,13 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
         c_queue.sync();
 
         let mut c_registry = self.completion_registry.lock().unwrap();
+        let mut completion_codes = self.completion_codes.lock().unwrap();
         if !c_registry.is_empty() {
             for entry in c_queue.by_ref() {
                 let user_data = entry.user_data();
                 if let Some(waker) = c_registry.remove(&user_data) {
+                    completion_codes.insert(user_data, entry.result());
+
                     waker.wake();
                 }
             }
