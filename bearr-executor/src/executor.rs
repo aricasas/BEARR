@@ -11,7 +11,7 @@ use std::{
 };
 
 use flume::TrySendError;
-use io_uring::{CompletionQueue, SubmissionQueue};
+use io_uring::{CompletionQueue, SubmissionQueue, Submitter};
 
 use crate::{DbRequest, DbResponse};
 
@@ -62,6 +62,7 @@ impl<'b> Task<'b> {
 
 /// Executor for handling database operations using io_uring for asynchronous I/O
 pub struct Executor<'a, 'b> {
+    submitter: Submitter<'a>,
     /// io_uring submission queue
     s_queue: Arc<Mutex<SubmissionQueue<'a>>>,
     /// io_uring completion queue
@@ -86,6 +87,7 @@ pub struct Executor<'a, 'b> {
 
 impl<'a: 'b, 'b> Executor<'a, 'b> {
     pub fn new(
+        submitter: Submitter<'a>,
         s_queue: Arc<Mutex<SubmissionQueue<'a>>>,
         c_queue: Arc<Mutex<CompletionQueue<'a>>>,
         receiver: flume::Receiver<DbRequest>,
@@ -93,6 +95,7 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
         max_tasks: usize,
     ) -> Self {
         Self {
+            submitter,
             s_queue,
             c_queue,
             receiver,
@@ -186,6 +189,9 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
                     }
                 }
             }
+
+            // TODO: check if this makes sense
+            self.submitter.submit().unwrap();
 
             // TODO: handle waking up kernel threads
 
@@ -310,7 +316,7 @@ mod tests {
 
         let poo_file = OpenOptions::new()
             .read(true)
-            .open("/home/ari/BEARR/poo_file_uring.txt")
+            .open("/h/u13/c2/01/casasna1/BEARR/poo_file_uring.txt")
             .unwrap();
         let poo_fd = poo_file.into_raw_fd();
         assert!(poo_fd == 3);
@@ -336,6 +342,7 @@ mod tests {
             // submitter.register_enable_rings().unwrap();
 
             let mut executor = Executor::new(
+                submitter,
                 Arc::new(Mutex::new(s_queue)),
                 Arc::new(Mutex::new(c_queue)),
                 db_ops_receiver,
@@ -352,10 +359,13 @@ mod tests {
             buffer: vec![0; 1024].into_boxed_slice(),
         };
 
+        println!("Sending read request");
         db_ops_sender.send(read_request).unwrap();
 
+        println!("Waiting for response");
         let res = db_responses_receiver.recv().unwrap();
 
+        println!("Received response: sdsd");
         match res {
             DbResponse::ReadResult(result) => match result {
                 Ok((buffer, num_bytes)) => {
