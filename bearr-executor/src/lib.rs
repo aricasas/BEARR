@@ -1,5 +1,6 @@
 mod executor;
 mod io;
+mod sync;
 
 // TODO: these should actually be db operations and not include something as raw as a file read
 // The read function that we use internally should return the values themselves not wrapped in this enum

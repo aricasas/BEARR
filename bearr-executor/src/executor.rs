@@ -61,7 +61,7 @@ impl<'b> Task<'b> {
 }
 
 /// Executor for handling database operations using io_uring for asynchronous I/O
-struct Executor<'a, 'b> {
+pub struct Executor<'a, 'b> {
     /// io_uring submission queue
     s_queue: Arc<Mutex<SubmissionQueue<'a>>>,
     /// io_uring completion queue
@@ -85,7 +85,7 @@ struct Executor<'a, 'b> {
 }
 
 impl<'a: 'b, 'b> Executor<'a, 'b> {
-    fn new(
+    pub fn new(
         s_queue: Arc<Mutex<SubmissionQueue<'a>>>,
         c_queue: Arc<Mutex<CompletionQueue<'a>>>,
         receiver: flume::Receiver<DbRequest>,
@@ -158,7 +158,7 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
 
     /// Main executor loop. Continuously polls active tasks, reacts to new requests and responses,
     /// and manages the submission and completion queues.
-    fn run(&mut self) {
+    pub fn run(&mut self) {
         loop {
             // Poll all active tasks
             let mut i = 0;
@@ -181,11 +181,13 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
                         self.to_send.push_back(response);
                     }
                     Poll::Pending => {
-                        task.waker.set_not_woken();
+                        // task.waker.set_not_woken();
                         i += 1;
                     }
                 }
             }
+
+            // TODO: handle waking up kernel threads
 
             self.recv_requests_non_blocking(self.max_tasks.saturating_sub(self.tasks.len()));
 
@@ -285,5 +287,79 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
         }
 
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs::OpenOptions,
+        io::{Read, Write},
+        mem,
+        os::fd::{AsRawFd, IntoRawFd},
+    };
+
+    use super::*;
+
+    #[test]
+    fn exec_test_add() {
+        println!("{}", libc::EBADF);
+
+        let (db_ops_sender, db_ops_receiver) = flume::bounded(100);
+        let (db_responses_sender, db_responses_receiver) = flume::bounded(100);
+
+        let poo_file = OpenOptions::new()
+            .read(true)
+            .open("/home/ari/BEARR/poo_file_uring.txt")
+            .unwrap();
+        let poo_fd = poo_file.into_raw_fd();
+        // mem::forget(poo_file);
+
+        std::thread::spawn(move || {
+            let max_io_entries = 2048;
+            let mut io_uring = io_uring::IoUring::builder()
+                .setup_sqpoll(10000)
+                .setup_r_disabled()
+                .build(max_io_entries)
+                .unwrap();
+
+            io_uring.submitter().register_files(&[poo_fd]).unwrap();
+            io_uring.submitter().register_enable_rings().unwrap();
+            let (submitter, s_queue, c_queue) = io_uring.split();
+
+            // submitter.register_files(&[poo_fd]).unwrap();
+            // submitter.register_enable_rings().unwrap();
+
+            let mut executor = Executor::new(
+                Arc::new(Mutex::new(s_queue)),
+                Arc::new(Mutex::new(c_queue)),
+                db_ops_receiver,
+                db_responses_sender,
+                10,
+            );
+            executor.run();
+        });
+
+        let read_request = DbRequest::Read {
+            file: io_uring::types::Fixed(poo_fd as u32),
+            offset: 0,
+            num_bytes: 10,
+            buffer: vec![0; 1024].into_boxed_slice(),
+        };
+
+        db_ops_sender.send(read_request).unwrap();
+
+        let res = db_responses_receiver.recv().unwrap();
+
+        match res {
+            DbResponse::ReadResult(result) => match result {
+                Ok((buffer, num_bytes)) => {
+                    println!("Read {} bytes: {:?}", num_bytes, &buffer[..num_bytes]);
+                }
+                Err((buffer, err)) => {
+                    eprintln!("Read error: {}, buffer: {:?}", err, buffer);
+                }
+            },
+        }
     }
 }
