@@ -98,7 +98,7 @@ fn wait_for_entry<'a>(
 pub async unsafe fn read<'a>(
     s_queue: Arc<Mutex<SubmissionQueue<'a>>>,
     c_queue: Arc<Mutex<CompletionQueue<'a>>>,
-    file: io_uring::types::Fixed,
+    file: io_uring::types::Fd,
     offset: u64,
     num_bytes: u32,
     mut buffer: Box<[u8]>,

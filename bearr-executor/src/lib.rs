@@ -7,7 +7,7 @@ mod sync;
 // Only the main Db API should return these
 pub enum DbRequest {
     Read {
-        file: io_uring::types::Fixed,
+        file: io_uring::types::Fd,
         offset: u64,
         num_bytes: u32,
         buffer: Box<[u8]>,

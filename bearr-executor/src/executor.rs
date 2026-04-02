@@ -114,7 +114,7 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
 
     fn spawn_read(
         &mut self,
-        file: io_uring::types::Fixed,
+        file: io_uring::types::Fd,
         offset: u64,
         num_bytes: u32,
         buffer: Box<[u8]>,
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn exec_test_add() {
-        println!("{}", libc::EBADF);
+        // println!("{}", libc::EBADF);
 
         let (db_ops_sender, db_ops_receiver) = flume::bounded(100);
         let (db_responses_sender, db_responses_receiver) = flume::bounded(100);
@@ -313,19 +313,24 @@ mod tests {
             .open("/home/ari/BEARR/poo_file_uring.txt")
             .unwrap();
         let poo_fd = poo_file.into_raw_fd();
+        assert!(poo_fd == 3);
         // mem::forget(poo_file);
 
         std::thread::spawn(move || {
             let max_io_entries = 2048;
+
             let mut io_uring = io_uring::IoUring::builder()
                 .setup_sqpoll(10000)
-                .setup_r_disabled()
                 .build(max_io_entries)
                 .unwrap();
 
-            io_uring.submitter().register_files(&[poo_fd]).unwrap();
-            io_uring.submitter().register_enable_rings().unwrap();
+            io_uring.submit().unwrap();
+
+            // io_uring.submitter().register_files(&[poo_fd]).unwrap();
+            // io_uring.submitter().register_enable_rings().unwrap();
             let (submitter, s_queue, c_queue) = io_uring.split();
+
+            // submitter
 
             // submitter.register_files(&[poo_fd]).unwrap();
             // submitter.register_enable_rings().unwrap();
@@ -341,7 +346,7 @@ mod tests {
         });
 
         let read_request = DbRequest::Read {
-            file: io_uring::types::Fixed(poo_fd as u32),
+            file: io_uring::types::Fd(poo_fd),
             offset: 0,
             num_bytes: 10,
             buffer: vec![0; 1024].into_boxed_slice(),
