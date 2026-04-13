@@ -15,8 +15,8 @@ mod sst;
 #[cfg(test)]
 mod test_util;
 
-pub use database::{Database, DbConfiguration};
+pub use database::{Database, DbConfiguration, DbRequest, DbResponse};
 pub use error::DbError;
 pub use lsm::LsmConfiguration;
 
-const PAGE_SIZE: usize = 4096;
+pub const PAGE_SIZE: usize = 4096;

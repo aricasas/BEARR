@@ -1,12 +1,16 @@
+use std::io;
 use std::{
     future::Future,
+    os::unix::raw::mode_t,
+    path::Path,
     pin::Pin,
     task::{Context, Poll},
 };
 
+use bearr::DbResponse;
 use io_uring::{register, squeue};
 
-use crate::{DbResponse, executor::CurrentTaskContext};
+use crate::executor::CurrentTaskContext;
 
 pub type IoId = u64;
 
@@ -78,16 +82,16 @@ pub async unsafe fn read(
     file: io_uring::types::Fd,
     offset: u64,
     num_bytes: u32,
-    mut buffer: Box<[u8]>,
-) -> DbResponse {
-    assert!(buffer.len() >= num_bytes as usize);
+    buffer: *mut u8,
+) -> io::Result<usize> {
+    // assert!(buffer.len() >= num_bytes as usize);
 
     let exec_ctx = CurrentTaskContext::get();
 
     // Being careful to not hold the exex_ctx when calling our futures
     let task_id = { exec_ctx.borrow_mut().task_id() };
 
-    let entry = io_uring::opcode::Read::new(file, buffer.as_mut_ptr(), num_bytes)
+    let entry = io_uring::opcode::Read::new(file, buffer, num_bytes)
         .offset(offset)
         .build()
         .user_data(task_id);
@@ -95,9 +99,9 @@ pub async unsafe fn read(
     unsafe { submit_entry(entry).await };
     let err_code = wait_for_entry(task_id).await;
     if err_code >= 0 {
-        DbResponse::ReadResult(Ok((buffer, err_code as usize)))
+        Ok(err_code as usize)
     } else {
-        DbResponse::ReadResult(Err((buffer, std::io::Error::from_raw_os_error(-err_code))))
+        Err(std::io::Error::from_raw_os_error(-err_code))
     }
 }
 
@@ -105,16 +109,16 @@ pub async unsafe fn write(
     file: io_uring::types::Fd,
     offset: u64,
     num_bytes: u32,
-    mut buffer: Box<[u8]>,
-) -> DbResponse {
-    assert!(buffer.len() >= num_bytes as usize);
+    buffer: *const u8,
+) -> io::Result<usize> {
+    // assert!(buffer.len() >= num_bytes as usize);
 
     let exec_ctx = CurrentTaskContext::get();
 
     // Being careful to not hold the exex_ctx when calling our futures
     let task_id = { exec_ctx.borrow_mut().task_id() };
 
-    let entry = io_uring::opcode::Write::new(file, buffer.as_mut_ptr(), num_bytes)
+    let entry = io_uring::opcode::Write::new(file, buffer, num_bytes)
         .offset(offset)
         .build()
         .user_data(task_id);
@@ -122,13 +126,103 @@ pub async unsafe fn write(
     unsafe { submit_entry(entry).await };
     let err_code = wait_for_entry(task_id).await;
     if err_code >= 0 {
-        DbResponse::WriteResult(Ok((buffer, err_code as usize)))
+        Ok(err_code as usize)
     } else {
-        DbResponse::WriteResult(Err((buffer, std::io::Error::from_raw_os_error(-err_code))))
+        Err(std::io::Error::from_raw_os_error(-err_code))
     }
 }
 
-pub async fn register_files() {
+pub async unsafe fn open(
+    directory: io_uring::types::Fd,
+    name: &Path,
+    flags: i32,
+    mode: libc::mode_t,
+) -> io::Result<io_uring::types::Fd> {
+    let exec_ctx = CurrentTaskContext::get();
+
+    // Being careful to not hold the exex_ctx when calling our futures
+    let task_id = { exec_ctx.borrow_mut().task_id() };
+
+    let entry = io_uring::opcode::OpenAt::new(
+        directory,
+        name.as_os_str().as_encoded_bytes().as_ptr() as *const libc::c_char,
+    )
+    .flags(flags)
+    .mode(mode)
+    .build()
+    .user_data(task_id);
+
+    unsafe { submit_entry(entry).await }
+    let err_code = wait_for_entry(task_id).await;
+
+    if err_code >= 0 {
+        Ok(io_uring::types::Fd(err_code))
+    } else {
+        Err(std::io::Error::from_raw_os_error(-err_code))
+    }
+}
+
+pub async unsafe fn unlink(
+    directory: io_uring::types::Fd,
+    name: &Path,
+    flags: i32,
+) -> io::Result<()> {
+    let exec_ctx = CurrentTaskContext::get();
+
+    // Being careful to not hold the exex_ctx when calling our futures
+    let task_id = { exec_ctx.borrow_mut().task_id() };
+
+    let entry = io_uring::opcode::UnlinkAt::new(
+        directory,
+        name.as_os_str().as_encoded_bytes().as_ptr() as *const libc::c_char,
+    )
+    .flags(flags)
+    .build()
+    .user_data(task_id);
+
+    unsafe { submit_entry(entry).await }
+    let err_code = wait_for_entry(task_id).await;
+
+    if err_code >= 0 {
+        assert!(err_code == 0);
+        Ok(())
+    } else {
+        Err(std::io::Error::from_raw_os_error(-err_code))
+    }
+}
+
+pub async unsafe fn rename(
+    old_directory: io_uring::types::Fd,
+    old_name: &Path,
+    new_directory: io_uring::types::Fd,
+    new_name: &Path,
+) -> io::Result<()> {
+    let exec_ctx = CurrentTaskContext::get();
+
+    // Being careful to not hold the exex_ctx when calling our futures
+    let task_id = { exec_ctx.borrow_mut().task_id() };
+
+    let entry = io_uring::opcode::RenameAt::new(
+        old_directory,
+        old_name.as_os_str().as_encoded_bytes().as_ptr() as *const libc::c_char,
+        new_directory,
+        new_name.as_os_str().as_encoded_bytes().as_ptr() as *const libc::c_char,
+    )
+    .build()
+    .user_data(task_id);
+
+    unsafe { submit_entry(entry).await }
+    let err_code = wait_for_entry(task_id).await;
+
+    if err_code >= 0 {
+        assert!(err_code == 0);
+        Ok(())
+    } else {
+        Err(std::io::Error::from_raw_os_error(-err_code))
+    }
+}
+
+pub async fn register_file() {
     unimplemented!()
 }
 
