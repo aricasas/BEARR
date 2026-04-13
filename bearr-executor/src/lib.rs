@@ -12,8 +12,21 @@ pub enum DbRequest {
         num_bytes: u32,
         buffer: Box<[u8]>,
     },
+    Write {
+        file: io_uring::types::Fd,
+        offset: u64,
+        num_bytes: u32,
+        buffer: Box<[u8]>,
+    },
+
+    Put{
+        
+    }
 }
 
 pub enum DbResponse {
     ReadResult(Result<(Box<[u8]>, usize), (Box<[u8]>, std::io::Error)>),
+    WriteResult(Result<(Box<[u8]>, usize), (Box<[u8]>, std::io::Error)>),
 }
+
+pub use executor::Executor;

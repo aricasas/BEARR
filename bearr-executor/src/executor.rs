@@ -1,19 +1,20 @@
 use std::{
+    cell::RefCell,
     cmp::min,
     collections::{HashMap, VecDeque},
     future::Future,
     pin::Pin,
+    rc::Rc,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{self, AtomicBool},
     },
     task::{Context, Poll, Wake, Waker},
 };
 
 use flume::TrySendError;
-use io_uring::{CompletionQueue, SubmissionQueue, Submitter};
 
-use crate::{DbRequest, DbResponse};
+use crate::{DbRequest, DbResponse, io::IoId};
 
 /// Simple waker that just uses an AtomicBool to track whether it's been woken or not
 struct BoolWaker {
@@ -42,31 +43,75 @@ impl Wake for BoolWaker {
     }
 }
 
+type TaskId = u64;
+
 /// Task representing an in-progress database operation
 struct Task<'b> {
     future: Pin<Box<dyn Future<Output = DbResponse> + 'b>>,
     waker: Arc<BoolWaker>,
+    task_id: TaskId,
 }
 
 impl<'b> Task<'b> {
-    fn new<F>(future: F) -> Self
+    fn new<F>(future: Pin<Box<F>>, task_id: TaskId) -> Self
     where
         F: Future<Output = DbResponse> + 'b,
     {
         Self {
-            future: Box::pin(future),
+            future,
             waker: BoolWaker::new(),
+            task_id,
         }
     }
 }
 
+thread_local! {
+    static CURRENT_TASK_CONTEXT: RefCell<Option<Rc<RefCell<CurrentTaskContext>>>> = const { RefCell::new(None) };
+}
+pub struct CurrentTaskContext {
+    /// io_uring instance
+    ring: io_uring::IoUring,
+    /// Wakers for tasks waiting to be submitted to the s_queue once there's space
+    submission_registry: VecDeque<Waker>,
+    /// Stores wakers for tasks waiting for the completion of an IO id
+    completion_registry: HashMap<IoId, Waker>,
+    /// Map from IO ids to their completion codes, set when a completion is received from the c_queue
+    completion_codes: HashMap<IoId, i32>,
+    /// The current task's id
+    task_id: TaskId,
+}
+
+impl CurrentTaskContext {
+    pub fn get() -> Rc<RefCell<CurrentTaskContext>> {
+        CURRENT_TASK_CONTEXT
+            .with(|x| x.borrow_mut().clone())
+            .expect("Calling get_context outside of a task context")
+    }
+
+    pub fn task_id(&self) -> TaskId {
+        self.task_id
+    }
+
+    pub fn register_submission_wait(&mut self, waker: Waker) {
+        self.submission_registry.push_back(waker);
+    }
+
+    pub fn register_completion_wait(&mut self, io_id: IoId, waker: Waker) {
+        self.completion_registry.insert(io_id, waker);
+    }
+
+    pub fn consume_completion(&mut self, io_id: IoId) -> Option<i32> {
+        self.completion_codes.remove(&io_id)
+    }
+
+    pub fn ring(&mut self) -> &mut io_uring::IoUring {
+        &mut self.ring
+    }
+}
+
 /// Executor for handling database operations using io_uring for asynchronous I/O
-pub struct Executor<'a, 'b> {
-    submitter: Submitter<'a>,
-    /// io_uring submission queue
-    s_queue: Arc<Mutex<SubmissionQueue<'a>>>,
-    /// io_uring completion queue
-    c_queue: Arc<Mutex<CompletionQueue<'a>>>,
+pub struct Executor<'b> {
+    context: Rc<RefCell<CurrentTaskContext>>,
     /// Channel for receiving database operations to execute
     receiver: flume::Receiver<DbRequest>,
     /// Channel for sending back database operation results
@@ -75,83 +120,46 @@ pub struct Executor<'a, 'b> {
     to_send: VecDeque<DbResponse>,
     /// Tasks currently being executed
     tasks: Vec<Task<'b>>,
-    /// Tasks waiting to be submitted to the s_queue once there's space
-    submission_registry: Arc<Mutex<VecDeque<Waker>>>,
-    /// Tasks waiting for a completion from the c_queue with a specific id
-    completion_registry: Arc<Mutex<HashMap<u64, Waker>>>,
-    /// Map from task ids to their completion codes, set when a completion is received from the c_queue
-    completion_codes: Arc<Mutex<HashMap<u64, i32>>>,
     /// Counter for generating unique ids for tasks
-    id_counter: u64,
+    task_id_counter: TaskId,
     /// Maximum number of tasks to execute concurrently
     max_tasks: usize,
 }
 
-impl<'a: 'b, 'b> Executor<'a, 'b> {
+impl<'b> Executor<'b> {
     pub fn new(
-        submitter: Submitter<'a>,
-        s_queue: Arc<Mutex<SubmissionQueue<'a>>>,
-        c_queue: Arc<Mutex<CompletionQueue<'a>>>,
+        ring: io_uring::IoUring,
         receiver: flume::Receiver<DbRequest>,
         sender: flume::Sender<DbResponse>,
         max_tasks: usize,
     ) -> Self {
         Self {
-            submitter,
-            s_queue,
-            c_queue,
+            context: Rc::new(RefCell::new(CurrentTaskContext {
+                ring,
+                submission_registry: VecDeque::new(),
+                completion_registry: HashMap::new(),
+                completion_codes: HashMap::new(),
+                task_id: 0,
+            })),
             receiver,
             sender,
             to_send: VecDeque::new(),
             tasks: Vec::new(),
-            submission_registry: Arc::new(Mutex::new(VecDeque::new())),
-            completion_registry: Arc::new(Mutex::new(HashMap::new())),
-            completion_codes: Arc::new(Mutex::new(HashMap::new())),
-            id_counter: 0,
+            task_id_counter: 0,
             max_tasks,
         }
     }
 
-    fn get_new_id(&mut self) -> u64 {
-        let id = self.id_counter;
-        self.id_counter += 1;
-        id
-    }
-
-    fn spawn_read(
-        &mut self,
-        file: io_uring::types::Fd,
-        offset: u64,
-        num_bytes: u32,
-        buffer: Box<[u8]>,
-    ) {
-        let id = self.get_new_id();
-
-        let s_queue = Arc::clone(&self.s_queue);
-        let c_queue = Arc::clone(&self.c_queue);
-        let submission_registry = Arc::clone(&self.submission_registry);
-        let completion_registry = Arc::clone(&self.completion_registry);
-        let completion_codes = Arc::clone(&self.completion_codes);
-        let read_fut = unsafe {
-            crate::io::read(
-                s_queue,
-                c_queue,
-                file,
-                offset,
-                num_bytes,
-                buffer,
-                id,
-                submission_registry,
-                completion_registry,
-                completion_codes,
-            )
-        };
-
-        self.tasks.push(Task::new(read_fut));
+    fn get_new_task_id(&mut self) -> TaskId {
+        let task_id = self.task_id_counter;
+        self.task_id_counter += 1;
+        task_id
     }
 
     /// Spawns a new task for the given database operation
     fn spawn_operation(&mut self, operation: DbRequest) {
+        let task_id = self.get_new_task_id();
+
         match operation {
             DbRequest::Read {
                 file,
@@ -159,14 +167,29 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
                 num_bytes,
                 buffer,
             } => {
-                self.spawn_read(file, offset, num_bytes, buffer);
+                let op = unsafe { Box::pin(crate::io::read(file, offset, num_bytes, buffer)) };
+                self.tasks.push(Task::new(op, task_id));
             }
-        }
+            DbRequest::Write {
+                file,
+                offset,
+                num_bytes,
+                buffer,
+            } => {
+                let op = unsafe { Box::pin(crate::io::write(file, offset, num_bytes, buffer)) };
+                self.tasks.push(Task::new(op, task_id));
+            }
+        };
     }
 
     /// Main executor loop. Continuously polls active tasks, reacts to new requests and responses,
     /// and manages the submission and completion queues.
     pub fn run(&mut self) {
+        let old_ctx = CURRENT_TASK_CONTEXT.replace(Some(self.context.clone()));
+        if old_ctx.is_some() {
+            panic!("Can only run one executor at a time per thread");
+        }
+
         loop {
             // Poll all active tasks
             let mut i = 0;
@@ -182,6 +205,11 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
 
                 let waker = Waker::from(Arc::clone(&task.waker));
                 let mut cx = Context::from_waker(&waker);
+
+                {
+                    self.context.borrow_mut().task_id = task.task_id;
+                }
+
                 match task.future.as_mut().poll(&mut cx) {
                     Poll::Ready(response) => {
                         // Task is done, remove it and add the response to the send queue
@@ -209,10 +237,12 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
                 let recv_alive = self.react_no_tasks_blocking();
                 if !recv_alive && self.tasks.is_empty() {
                     self.send_responses_blocking();
-                    return;
+                    break;
                 }
             }
         }
+
+        CURRENT_TASK_CONTEXT.replace(None);
     }
 
     /// Tries to receive up to n requests without blocking and spawns tasks for them
@@ -251,11 +281,14 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
 
     /// Syncs submission queue and wakes tasks waiting to submit
     fn react_submission_queue(&mut self) {
-        let mut s_queue = self.s_queue.lock().unwrap();
+        let context = &mut *self.context.borrow_mut();
+
+        let mut s_queue = context.ring.submission();
         s_queue.sync();
 
-        let mut s_registry = self.submission_registry.lock().unwrap();
         let submission_room = s_queue.capacity() - s_queue.len();
+
+        let s_registry = &mut context.submission_registry;
 
         for _ in 0..min(submission_room, s_registry.len()) {
             let waker = s_registry.pop_front().unwrap();
@@ -265,13 +298,15 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
 
     /// Syncs completion queue and wakes tasks waiting for completions
     fn react_completion_queue(&mut self) {
-        let mut c_queue = self.c_queue.lock().unwrap();
-        c_queue.sync();
+        let context = &mut *self.context.borrow_mut();
 
-        let mut c_registry = self.completion_registry.lock().unwrap();
-        let mut completion_codes = self.completion_codes.lock().unwrap();
+        context.ring.completion().sync();
+
+        let c_ring = &mut context.ring.completion();
+        let c_registry = &mut context.completion_registry;
+        let completion_codes = &mut context.completion_codes;
         if !c_registry.is_empty() {
-            for entry in c_queue.by_ref() {
+            for entry in c_ring.by_ref() {
                 let user_data = entry.user_data();
                 if let Some(waker) = c_registry.remove(&user_data) {
                     completion_codes.insert(user_data, entry.result());
@@ -303,59 +338,53 @@ impl<'a: 'b, 'b> Executor<'a, 'b> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs::OpenOptions,
-        io::{Read, Write},
-        mem,
-        os::fd::{AsRawFd, IntoRawFd},
-    };
+    use std::{fs::OpenOptions, os::fd::AsRawFd};
 
     use super::*;
 
     #[test]
     fn exec_test_add() {
-        // println!("{}", libc::EBADF);
-
         let (db_ops_sender, db_ops_receiver) = flume::bounded(100);
         let (db_responses_sender, db_responses_receiver) = flume::bounded(100);
-
-        let poo_file = OpenOptions::new()
-            .read(true)
-            .open("/h/u13/c2/01/casasna1/BEARR/poo_file_uring.txt")
-            .unwrap();
-        let poo_fd = poo_file.into_raw_fd();
-        assert!(poo_fd == 3);
-        // mem::forget(poo_file);
 
         std::thread::spawn(move || {
             let max_io_entries = 2048;
 
-            let mut io_uring = io_uring::IoUring::builder()
+            let ring = io_uring::IoUring::builder()
+                .setup_single_issuer()
                 .setup_sqpoll(10000)
                 .build(max_io_entries)
                 .unwrap();
 
-            io_uring.submit().unwrap();
+            ring.submit().unwrap();
 
-            // io_uring.submitter().register_files(&[poo_fd]).unwrap();
-            // io_uring.submitter().register_enable_rings().unwrap();
-            let (submitter, s_queue, c_queue) = io_uring.split();
-
-            // submitter
-
-            // submitter.register_files(&[poo_fd]).unwrap();
-            // submitter.register_enable_rings().unwrap();
-
-            let mut executor = Executor::new(
-                submitter,
-                Arc::new(Mutex::new(s_queue)),
-                Arc::new(Mutex::new(c_queue)),
-                db_ops_receiver,
-                db_responses_sender,
-                10,
-            );
+            let mut executor = Executor::new(ring, db_ops_receiver, db_responses_sender, 10);
             executor.run();
         });
+
+        let poo_file = OpenOptions::new()
+            .read(true)
+            .open("../poo_file_uring.txt")
+            .unwrap();
+        let poo_fd = poo_file.as_raw_fd();
+
+        let pee_file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open("../pee_file_uring.txt")
+            .unwrap();
+        let pee_fd = pee_file.as_raw_fd();
+
+        let write_request = DbRequest::Write {
+            file: io_uring::types::Fd(pee_fd),
+            offset: 0,
+            num_bytes: 11,
+            buffer: String::from("Hello world").into_bytes().into_boxed_slice(),
+        };
+
+        println!("Sending write request");
+        db_ops_sender.send(write_request).unwrap();
 
         let read_request = DbRequest::Read {
             file: io_uring::types::Fd(poo_fd),
@@ -368,18 +397,25 @@ mod tests {
         db_ops_sender.send(read_request).unwrap();
 
         println!("Waiting for response");
-        let res = db_responses_receiver.recv().unwrap();
 
-        println!("Received response: sdsd");
-        match res {
-            DbResponse::ReadResult(result) => match result {
-                Ok((buffer, num_bytes)) => {
-                    println!("Read {} bytes: {:?}", num_bytes, &buffer[..num_bytes]);
+        for _ in 0..2 {
+            if let Ok(res) = db_responses_receiver.recv() {
+                println!("Received response:");
+
+                match res {
+                    DbResponse::ReadResult(result) => {
+                        let (buffer, num_bytes) = result.unwrap();
+
+                        assert_eq!(&buffer[..num_bytes], "0123456789".as_bytes());
+                        println!("Read {} bytes: {:?}", num_bytes, &buffer[..num_bytes]);
+                    }
+                    DbResponse::WriteResult(result) => {
+                        let (_buffer, num_bytes) = result.unwrap();
+
+                        println!("Wrote {} bytes", num_bytes);
+                    }
                 }
-                Err((buffer, err)) => {
-                    eprintln!("Read error: {}, buffer: {:?}", err, buffer);
-                }
-            },
+            }
         }
     }
 }
