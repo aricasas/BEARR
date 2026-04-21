@@ -13,6 +13,9 @@ pub struct Mutex<T> {
     is_held: AtomicBool,
 }
 
+unsafe impl<T> Send for Mutex<T> {}
+unsafe impl<T> Sync for Mutex<T> {}
+
 impl<T> Mutex<T> {
     pub fn new(value: T) -> Self {
         Self {

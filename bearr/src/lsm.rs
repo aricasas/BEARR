@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     DbError,
-    file_system::{FileId, FileSystem},
     memtable::MemTable,
     merge::{self, MergedIterator},
     sst::Sst,
 };
+use bearr_buffer_pool::{FileId, FileSystem};
 
 /// Configuration options for an LSM tree.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
@@ -237,7 +237,7 @@ impl LsmTree {
     }
 
     /// Ensures that each level of the LSM tree does not have too many SSTs.
-    fn merge_levels(&mut self, file_system: &FileSystem) -> Result<(), DbError> {
+    async fn merge_levels(&mut self, file_system: &FileSystem) -> Result<(), DbError> {
         // Don't have to do anything if there are no levels
         let Some(bottom_level_number) = self.bottom_level_number() else {
             return Ok(());
@@ -258,7 +258,7 @@ impl LsmTree {
             let mut scans = Vec::new();
             let mut n_entries_hint = 0;
             for sst in level.iter().rev() {
-                let sst_scan = sst.scan(u64::MIN..=u64::MAX, file_system)?;
+                let sst_scan = sst.scan(u64::MIN..=u64::MAX, file_system).await?;
                 scans.push(sst_scan);
                 n_entries_hint += sst.num_entries();
             }

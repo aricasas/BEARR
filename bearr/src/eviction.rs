@@ -1,6 +1,7 @@
+use bearr_buffer_pool::BufferPageId;
+
 use crate::{
     DbError,
-    file_system::BufferPageId,
     hashtable::HashTable,
     list::{EntryId, List},
 };
@@ -193,7 +194,7 @@ impl<'a> Iterator for VictimChooser<'a> {
 mod tests {
     use anyhow::Result;
 
-    use crate::file_system::BufferFileId;
+    use bearr_buffer_pool::BufferFileId;
 
     use super::*;
 

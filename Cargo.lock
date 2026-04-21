@@ -112,11 +112,15 @@ version = "0.1.0"
 dependencies = [
  "aligned-vec",
  "anyhow",
+ "bearr-buffer-pool",
+ "bearr-error",
+ "bearr-executor",
  "bit-vec",
  "bytemuck",
  "clap",
  "csv",
  "fastrand",
+ "futures",
  "indicatif",
  "libc",
  "serde",
@@ -128,7 +132,7 @@ name = "bearr-buffer-pool"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bearr",
+ "bearr-error",
  "bearr-executor",
  "bytemuck",
  "hashbrown",
@@ -137,10 +141,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bearr-error"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "bearr-executor"
 version = "0.1.0"
 dependencies = [
- "bearr",
+ "bearr-error",
  "flume",
  "futures",
  "io-uring",

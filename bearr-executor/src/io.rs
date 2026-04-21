@@ -1,14 +1,12 @@
 use std::io;
 use std::{
     future::Future,
-    os::unix::raw::mode_t,
     path::Path,
     pin::Pin,
     task::{Context, Poll},
 };
 
-use bearr::DbResponse;
-use io_uring::{register, squeue};
+use io_uring::squeue;
 
 use crate::executor::CurrentTaskContext;
 
@@ -74,7 +72,8 @@ fn wait_for_entry(id: IoId) -> CompletionQueueWait {
     CompletionQueueWait { id }
 }
 
-/// SAFETY: You're not allowed to drop the future returned until the I/O operation is complete
+/// # Safety
+/// You're not allowed to drop the future returned until the I/O operation is complete
 ///
 /// On success, returns the buffer and the number of bytes read.
 /// On failure, returns the buffer and the error.
@@ -105,6 +104,8 @@ pub async unsafe fn read(
     }
 }
 
+/// # Safety
+/// You're not allowed to drop the future returned until the I/O operation is complete
 pub async unsafe fn write(
     file: io_uring::types::Fd,
     offset: u64,
@@ -132,6 +133,8 @@ pub async unsafe fn write(
     }
 }
 
+/// # Safety
+/// You're not allowed to drop the future returned until the I/O operation is complete
 pub async unsafe fn open(
     directory: io_uring::types::Fd,
     name: &Path,
@@ -162,6 +165,8 @@ pub async unsafe fn open(
     }
 }
 
+/// # Safety
+/// You're not allowed to drop the future returned until the I/O operation is complete
 pub async unsafe fn unlink(
     directory: io_uring::types::Fd,
     name: &Path,
@@ -191,6 +196,8 @@ pub async unsafe fn unlink(
     }
 }
 
+/// # Safety
+/// You're not allowed to drop the future returned until the I/O operation is complete
 pub async unsafe fn rename(
     old_directory: io_uring::types::Fd,
     old_name: &Path,

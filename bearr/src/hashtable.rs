@@ -180,10 +180,8 @@ mod tests {
 
     use anyhow::Result;
 
-    use crate::{
-        file_system::{BufferFileId, BufferPageId},
-        test_util::assert_panics,
-    };
+    use crate::test_util::assert_panics;
+    use bearr_buffer_pool::{BufferFileId, BufferPageId};
 
     use super::*;
 

@@ -1,4 +1,4 @@
-use bearr::DbError;
+use bearr_error::DbError;
 
 const NULL: usize = usize::MAX;
 

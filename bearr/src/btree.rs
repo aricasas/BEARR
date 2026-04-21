@@ -1,12 +1,8 @@
-use std::{ops::RangeInclusive, sync::Arc};
+use std::{ops::RangeInclusive, pin::Pin, sync::Arc};
 
-use crate::{
-    DbError, PAGE_SIZE,
-    bloom_filter::BloomFilter,
-    file_system::FileSystem,
-    file_system::{Aligned, FileId},
-    sst::Sst,
-};
+use crate::{DbError, PAGE_SIZE, bloom_filter::BloomFilter, sst::Sst};
+use bearr_buffer_pool::{Aligned, FileId, FileSystem};
+use futures::{Stream, StreamExt, stream};
 
 const PAIRS_PER_CHUNK: usize = (PAGE_SIZE - 8) / 16;
 const PADDING: usize = PAGE_SIZE - 8 - PAIRS_PER_CHUNK * 16;
@@ -110,20 +106,48 @@ pub struct BTreeIter<'a, 'b> {
     ended: bool,
 }
 
-impl<'a, 'b> Iterator for BTreeIter<'a, 'b> {
-    type Item = Result<(u64, u64), DbError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.go_to_next()
-    }
+pub struct AsyncBTreeIter<'a, 'b> {
+    iter: BTreeIter<'a, 'b>,
+    curr_future: Option<Pin<Box<dyn Future<Output = Option<Result<(u64, u64), DbError>>>>>>,
 }
+// impl<'a, 'b> Iterator for BTreeIter<'a, 'b> {
+//     type Item = Result<(u64, u64), DbError>;
+
+//     fn next(&mut self) -> Option<Self::Item> {
+//         self.go_to_next()
+//     }
+// }
+
+// impl<'a, 'b> AsyncIterator for AsyncBTreeIter<'a, 'b> {
+//     type Item = Result<(u64, u64), DbError>;
+
+//     fn poll_next(
+//         self: std::pin::Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//     ) -> std::task::Poll<Option<Self::Item>> {
+//         let this = self.get_mut();
+
+//         if let Some(curr_future) = this.curr_future.as_ref() {
+//             todo!()
+//         } else {
+//             let future = this.iter.go_to_next();
+
+//             this.curr_future = Some(Box::pin(future));
+
+//             // let res = pinned.as_mut().poll(cx);
+
+//             // res
+//             todo!()
+//         }
+//     }
+// }
 
 // BTree iterator functions
-impl<'a, 'b> BTreeIter<'a, 'b> {
+impl<'a, 'b: 'a> BTreeIter<'a, 'b> {
     /// Check the validity of our interator range, if there exsits
     /// any tree in that range, return the page number and the item number inside it
     /// that corresponds to the smallest element bigger that the start of the range
-    pub fn new(
+    pub async fn new(
         sst: &'a Sst,
         range: RangeInclusive<u64>,
         file_system: &'b FileSystem,
@@ -132,7 +156,7 @@ impl<'a, 'b> BTreeIter<'a, 'b> {
             return Err(DbError::InvalidScanRange);
         }
 
-        let res = BTree::search(sst, *range.start(), file_system)?;
+        let res = BTree::search(sst, *range.start(), file_system).await?;
 
         if let Some(Ok((page_number, item_number)) | Err((page_number, item_number))) = res {
             Ok(Self {
@@ -158,16 +182,19 @@ impl<'a, 'b> BTreeIter<'a, 'b> {
     }
 
     /// Get the next element and if needed go to the next page
-    fn go_to_next(&mut self) -> Option<Result<(u64, u64), DbError>> {
+    async fn go_to_next(&mut self) -> Option<Result<(u64, u64), DbError>> {
         if self.ended {
             return None;
         }
 
         if self.buffered_page.is_none() {
-            let page_bytes = self.file_system.get_sequential(
-                self.sst.file_id.page(self.page_number),
-                self.sst.btree_metadata.size as usize,
-            );
+            let page_bytes = self
+                .file_system
+                .get_sequential(
+                    self.sst.file_id.page(self.page_number),
+                    self.sst.btree_metadata.size as usize,
+                )
+                .await;
 
             let buffered_page: Arc<Page> = match page_bytes {
                 Ok(bytes) => bytemuck::cast_arc(bytes),
@@ -245,9 +272,9 @@ impl BTree {
     /// # Returns
     /// * `BTreeMetadata` - Metadata describing the tree structure and offsets
     /// * `BloomFilter` - The constructed bloom filter for quick negative lookups
-    pub fn write(
+    pub async fn write(
         file_id: FileId,
-        mut pairs: impl Iterator<Item = Result<(u64, u64), DbError>>,
+        mut pairs: impl Stream<Item = Result<(u64, u64), DbError>>,
         n_entries_hint: usize,
         bits_per_entry: usize,
         file_system: &FileSystem,
@@ -264,10 +291,11 @@ impl BTree {
         // Closure to write leaf pages containing actual key-value pairs.
         // Each leaf is filled with pairs from the iterator until full.
         // Tracks the largest key in each leaf for building the index structure.
-        let write_next_leaf = |page_bytes: &mut Aligned| {
+        let write_next_leaf = async |page_bytes: &mut Aligned| {
             let leaf: &mut Leaf = bytemuck::cast_mut(page_bytes);
             leaf.length = 0;
-            for (pair, k_v) in leaf.pairs.iter_mut().zip(&mut pairs) {
+            for pair in leaf.pairs.iter_mut() {
+                let k_v = pairs.ne;
                 match k_v {
                     Ok((k, v)) => {
                         filter.insert(k);
@@ -279,6 +307,18 @@ impl BTree {
                 }
                 leaf.length += 1;
             }
+            // for (pair, k_v) in stream::iter(leaf.pairs.iter_mut()).zip(&mut pairs) {
+            //     match k_v {
+            //         Ok((k, v)) => {
+            //             filter.insert(k);
+            //             n_entries += 1;
+
+            //             *pair = [k, v];
+            //         }
+            //         Err(e) => return Err(e),
+            //     }
+            //     leaf.length += 1;
+            // }
 
             // Push the largest key in a page to the largest keys vector
             if leaf.length > 0 {
@@ -290,8 +330,9 @@ impl BTree {
         };
 
         // Write all leaf pages starting at LEAF_OFFSET
-        nodes_offset =
-            file_system.write_file(file_id.page(LEAF_OFFSET as usize), write_next_leaf)? as u64;
+        nodes_offset = file_system
+            .write_file(file_id.page(LEAF_OFFSET as usize), write_next_leaf)
+            .await? as u64;
         nodes_offset += LEAF_OFFSET;
 
         // Construct the B-tree index structure in memory from the largest keys.
@@ -319,8 +360,8 @@ impl BTree {
 
         // Write internal nodes after the leaf pages
         let nodes_written = file_system
-            .write_file(file_id.page(nodes_offset as usize), write_next_btree_page)?
-            as u64;
+            .write_file(file_id.page(nodes_offset as usize), write_next_btree_page)
+            .await? as u64;
 
         let num_hashes = filter.hash_functions.len() as u64;
         let mut bloom_bytes_iter = filter.turn_to_bytes().into_iter();
@@ -341,8 +382,9 @@ impl BTree {
         };
 
         let file_size = bloom_offset
-            + file_system.write_file(file_id.page(bloom_offset as usize), write_next_bloom_page)?
-                as u64;
+            + file_system
+                .write_file(file_id.page(bloom_offset as usize), write_next_bloom_page)
+                .await? as u64;
 
         // Create metadata structure with all offsets and sizes
         let btree_metadata = BTreeMetadata {
@@ -367,7 +409,9 @@ impl BTree {
         };
 
         // Write metadata at page 0 (METADATA_OFFSET)
-        file_system.write_file(file_id.page(METADATA_OFFSET as usize), write_metadata)?;
+        file_system
+            .write_file(file_id.page(METADATA_OFFSET as usize), write_metadata)
+            .await?;
 
         Ok((btree_metadata, filter))
     }
@@ -390,12 +434,14 @@ impl BTree {
     ///
     /// # Errors
     /// * `DbError::CorruptSst` - If magic number is wrong or offsets are invalid
-    pub fn open(
+    pub async fn open(
         file_id: FileId,
         file_system: &FileSystem,
     ) -> Result<(BTreeMetadata, BloomFilter), DbError> {
         // Read metadata from page 0
-        let metadata_page = file_system.get(file_id.page(METADATA_OFFSET as usize))?;
+        let metadata_page = file_system
+            .get(file_id.page(METADATA_OFFSET as usize))
+            .await?;
         let metadata_page: Arc<MetadataPage> = bytemuck::cast_arc(metadata_page);
         let metadata = metadata_page.metadata;
 
@@ -417,7 +463,9 @@ impl BTree {
         let mut bloom_vec: aligned_vec::AVec<u8, aligned_vec::ConstAlign<4>> =
             aligned_vec::AVec::new(4);
         for page in 0..bloom_pages_num {
-            let bloom_page = file_system.get(file_id.page((bloom_offset + page) as usize))?;
+            let bloom_page = file_system
+                .get(file_id.page((bloom_offset + page) as usize))
+                .await?;
             // Handle partial last page
             let end = if page == bloom_pages_num - 1 {
                 (bloom_size % (PAGE_SIZE as u64)) as usize
@@ -449,8 +497,12 @@ impl BTree {
     /// # Returns
     /// * `Some(value)` if the key exists
     /// * `None` if the key doesn't exist
-    pub fn get(sst: &Sst, key: u64, file_system: &FileSystem) -> Result<Option<u64>, DbError> {
-        let res = BTree::search(sst, key, file_system)?;
+    pub async fn get(
+        sst: &Sst,
+        key: u64,
+        file_system: &FileSystem,
+    ) -> Result<Option<u64>, DbError> {
+        let res = BTree::search(sst, key, file_system).await?;
         let Some(res) = res else { return Ok(None) };
 
         let Ok((page_number, item_number)) = res else {
@@ -458,7 +510,7 @@ impl BTree {
         };
 
         // Read the leaf page and extract the value
-        let leaf_page = file_system.get(sst.file_id.page(page_number))?;
+        let leaf_page = file_system.get(sst.file_id.page(page_number)).await?;
         let leaf_node: Arc<Leaf> = bytemuck::cast_arc(leaf_page);
 
         Ok(Some(leaf_node.pairs[item_number][1]))
@@ -482,7 +534,7 @@ impl BTree {
     /// * `Some(Ok((page, index)))` - Exact match found at this position
     /// * `Some(Err((page, index)))` - Key not found, but this is where it would be inserted
     #[cfg(not(feature = "binary_search"))]
-    fn search(
+    async fn search(
         sst: &Sst,
         key: u64,
         file_system: &FileSystem,
@@ -492,7 +544,9 @@ impl BTree {
         let tree_depth = sst.btree_metadata.tree_depth;
 
         // Check if key is beyond the maximum key in the tree
-        let root_page = file_system.get(sst.file_id.page(nodes_offset as usize))?;
+        let root_page = file_system
+            .get(sst.file_id.page(nodes_offset as usize))
+            .await?;
         let root_node: Arc<Node> = bytemuck::cast_arc(root_page);
         assert_ne!(root_node.length, 0);
         if root_node.pairs[(root_node.length - 1) as usize][0] < key {
@@ -521,13 +575,17 @@ impl BTree {
 
             // Load next level node
             page_number = node_number + nodes_offset;
-            let current_page = file_system.get(sst.file_id.page(page_number as usize))?;
+            let current_page = file_system
+                .get(sst.file_id.page(page_number as usize))
+                .await?;
             current_node = bytemuck::cast_arc(current_page);
         }
 
         // Search within the target leaf page
         page_number = leafs_offset + node_number;
-        let leaf_page = file_system.get(sst.file_id.page(page_number as usize))?;
+        let leaf_page = file_system
+            .get(sst.file_id.page(page_number as usize))
+            .await?;
         let leaf: Arc<Leaf> = bytemuck::cast_arc(leaf_page);
         let sub_vec: &[[u64; 2]] = &leaf.as_ref().pairs[0..leaf.length as usize];
 

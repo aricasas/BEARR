@@ -15,7 +15,7 @@ use std::{
 use flume::TrySendError;
 
 use crate::io::IoId;
-use bearr::{DbRequest, DbResponse};
+use crate::{DbRequest, DbResponse};
 
 /// Simple waker that just uses an AtomicBool to track whether it's been woken or not
 struct BoolWaker {
@@ -114,8 +114,6 @@ impl CurrentTaskContext {
 pub struct Executor<'b> {
     context: Rc<RefCell<CurrentTaskContext>>,
 
-    
-    
     /// Channel for receiving database operations to execute
     receiver: flume::Receiver<DbRequest>,
     /// Channel for sending back database operation results

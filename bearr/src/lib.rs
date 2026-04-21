@@ -1,9 +1,7 @@
 mod bloom_filter;
 mod btree;
 mod database;
-mod error;
 mod eviction;
-mod file_system;
 mod hash;
 mod hashtable;
 mod list;
@@ -15,8 +13,9 @@ mod sst;
 #[cfg(test)]
 mod test_util;
 
-pub use database::{Database, DbConfiguration, DbRequest, DbResponse};
-pub use error::DbError;
+pub use bearr_error::DbError;
+pub use bearr_executor::{DbRequest, DbResponse};
+pub use database::{Database, DbConfiguration};
 pub use lsm::LsmConfiguration;
 
-pub const PAGE_SIZE: usize = 4096;
+use bearr_buffer_pool::PAGE_SIZE;

@@ -10,8 +10,9 @@ use std::{
     sync::Arc,
 };
 
+use crate::PAGE_SIZE;
 use crate::eviction::{Eviction, EvictionId};
-use bearr::{DbError, PAGE_SIZE};
+use bearr_error::DbError;
 use bearr_executor::{
     io::{open, read, rename, unlink, write},
     sync::Mutex,
