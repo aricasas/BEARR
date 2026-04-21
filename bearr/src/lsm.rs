@@ -1,5 +1,6 @@
 use std::ops::RangeInclusive;
 
+use futures::Stream;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -70,7 +71,7 @@ impl LsmTree {
     /// Opens an LSM tree in the given file system,
     /// opening all of its component SSTs based on the given metadata
     /// and storing the given configuration and bottom leveling.
-    pub fn open(
+    pub async fn open(
         metadata: LsmMetadata,
         configuration: LsmConfiguration,
         file_system: &FileSystem,
@@ -89,7 +90,8 @@ impl LsmTree {
                         sst_number,
                     },
                     file_system,
-                )?;
+                )
+                .await?;
                 level.push(sst);
             }
 
@@ -104,7 +106,7 @@ impl LsmTree {
         })
     }
 
-    pub fn get(&self, key: u64, file_system: &FileSystem) -> Result<Option<u64>, DbError> {
+    pub async fn get(&self, key: u64, file_system: &FileSystem) -> Result<Option<u64>, DbError> {
         let val = self.memtable.get(key);
         if let Some(value) = val {
             if value == TOMBSTONE {
@@ -116,7 +118,7 @@ impl LsmTree {
         // Search in order of level, then latest sst in level
         for level in &self.levels {
             for sst in level.iter().rev() {
-                let val = sst.get(key, file_system)?;
+                let val = sst.get(key, file_system).await?;
                 if let Some(value) = val {
                     if value == TOMBSTONE {
                         return Ok(None);
@@ -146,11 +148,11 @@ impl LsmTree {
         self.put(key, TOMBSTONE, file_system)
     }
 
-    pub fn scan<'a, 'b: 'a>(
+    pub async fn scan<'a, 'b: 'a>(
         &'a self,
         range: RangeInclusive<u64>,
         file_system: &'b FileSystem,
-    ) -> Result<MergedIterator<merge::Sources<'a>>, DbError> {
+    ) -> Result<impl Stream<Item = Result<(u64, u64), DbError>> + 'a + Unpin, DbError> {
         let mut scans = Vec::new();
 
         let memtable_scan = self.memtable.scan(range.clone())?;
@@ -158,7 +160,7 @@ impl LsmTree {
 
         for level in &self.levels {
             for sst in level.iter().rev() {
-                let sst_scan = sst.scan(range.clone(), file_system)?;
+                let sst_scan = sst.scan(range.clone(), file_system).await?;
                 scans.push(merge::Sources::BTree(sst_scan));
             }
         }
@@ -275,7 +277,8 @@ impl LsmTree {
                 bits_per_entry,
                 file_id,
                 file_system,
-            )?;
+            )
+            .await?;
             level_below.push(sst);
 
             for sst in level.drain(..) {
@@ -293,7 +296,7 @@ impl LsmTree {
             let mut scans = Vec::new();
             let mut n_entries_hint = 0;
             for sst in bottom_level.iter().rev() {
-                let sst_scan = sst.scan(u64::MIN..=u64::MAX, file_system)?;
+                let sst_scan = sst.scan(u64::MIN..=u64::MAX, file_system).await?;
                 scans.push(sst_scan);
                 n_entries_hint += sst.num_entries();
             }
@@ -326,13 +329,14 @@ impl LsmTree {
                     bottom_bits_per_entry,
                     file_id,
                     file_system,
-                )?
+                )
+                .await?
             } else {
                 new_sst
             };
 
             for sst in bottom_level.drain(..) {
-                sst.destroy(file_system)?;
+                sst.destroy(file_system).await?;
             }
 
             let new_file_id = FileId {
@@ -359,7 +363,7 @@ impl LsmTree {
                 lsm_level: bottom_level_number + 1,
                 sst_number: 0,
             };
-            sst.rename(new_file_id, file_system)?;
+            sst.rename(new_file_id, file_system).await?;
             new_bottom_level.push(sst);
 
             self.bottom_leveling = 1;

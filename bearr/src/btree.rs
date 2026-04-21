@@ -151,34 +151,39 @@ impl<'a, 'b: 'a> BTreeIter<'a, 'b> {
         sst: &'a Sst,
         range: RangeInclusive<u64>,
         file_system: &'b FileSystem,
-    ) -> Result<Self, DbError> {
+    ) -> Result<impl Stream<Item = Result<(u64, u64), DbError>> + 'a, DbError> {
         if range.start() > range.end() {
             return Err(DbError::InvalidScanRange);
         }
 
         let res = BTree::search(sst, *range.start(), file_system).await?;
 
-        if let Some(Ok((page_number, item_number)) | Err((page_number, item_number))) = res {
-            Ok(Self {
-                sst,
-                file_system,
-                buffered_page: None,
-                page_number,
-                item_number,
-                range,
-                ended: false,
-            })
-        } else {
-            Ok(Self {
-                sst,
-                file_system,
-                buffered_page: None,
-                page_number: 0,
-                item_number: 0,
-                range,
-                ended: true,
-            })
-        }
+        let iter =
+            if let Some(Ok((page_number, item_number)) | Err((page_number, item_number))) = res {
+                Self {
+                    sst,
+                    file_system,
+                    buffered_page: None,
+                    page_number,
+                    item_number,
+                    range,
+                    ended: false,
+                }
+            } else {
+                Self {
+                    sst,
+                    file_system,
+                    buffered_page: None,
+                    page_number: 0,
+                    item_number: 0,
+                    range,
+                    ended: true,
+                }
+            };
+
+        Ok(stream::unfold(iter, |mut iter| async move {
+            iter.go_to_next().await.map(|item| (item, iter))
+        }))
     }
 
     /// Get the next element and if needed go to the next page
@@ -274,7 +279,7 @@ impl BTree {
     /// * `BloomFilter` - The constructed bloom filter for quick negative lookups
     pub async fn write(
         file_id: FileId,
-        mut pairs: impl Stream<Item = Result<(u64, u64), DbError>>,
+        mut pairs: impl Stream<Item = Result<(u64, u64), DbError>> + Unpin,
         n_entries_hint: usize,
         bits_per_entry: usize,
         file_system: &FileSystem,
@@ -295,17 +300,19 @@ impl BTree {
             let leaf: &mut Leaf = bytemuck::cast_mut(page_bytes);
             leaf.length = 0;
             for pair in leaf.pairs.iter_mut() {
-                let k_v = pairs.ne;
-                match k_v {
-                    Ok((k, v)) => {
-                        filter.insert(k);
-                        n_entries += 1;
+                let k_v = pairs.next().await;
+                if let Some(k_v) = k_v {
+                    match k_v {
+                        Ok((k, v)) => {
+                            filter.insert(k);
+                            n_entries += 1;
 
-                        *pair = [k, v];
+                            *pair = [k, v];
+                        }
+                        Err(e) => return Err(e),
                     }
-                    Err(e) => return Err(e),
+                    leaf.length += 1;
                 }
-                leaf.length += 1;
             }
             // for (pair, k_v) in stream::iter(leaf.pairs.iter_mut()).zip(&mut pairs) {
             //     match k_v {
@@ -344,7 +351,7 @@ impl BTree {
 
         // Closure to write internal node pages.
         // Each node contains (key, page_number) pairs for navigation.
-        let write_next_btree_page = |page_bytes: &mut Aligned| {
+        let write_next_btree_page = async |page_bytes: &mut Aligned| {
             let node: &mut Node = bytemuck::cast_mut(page_bytes);
             node.length = 0;
             let Some(page_iter) = btree_itter.next() else {
@@ -371,7 +378,7 @@ impl BTree {
 
         // Closure to write bloom filter pages.
         // The bloom filter allows quick negative lookups (if a key is definitely not present).
-        let write_next_bloom_page = |page_bytes: &mut Aligned| {
+        let write_next_bloom_page = async |page_bytes: &mut Aligned| {
             let mut page_length: u64 = 0;
             for (dest, src) in page_bytes.0.iter_mut().zip(&mut bloom_bytes_iter) {
                 *dest = src;
@@ -400,7 +407,7 @@ impl BTree {
         };
 
         let mut write_metadata = 0;
-        let write_metadata = |page_bytes: &mut Aligned| {
+        let write_metadata = async |page_bytes: &mut Aligned| {
             write_metadata += 1;
             let metadata_page: &mut MetadataPage = bytemuck::cast_mut(page_bytes);
             metadata_page.metadata = btree_metadata;

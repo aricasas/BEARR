@@ -366,7 +366,8 @@ impl FileSystem {
         &self,
         starting_page_id: PageId,
         // Closure that writes out the next page and returns whether it wrote something (false if done)
-        mut next_page: impl FnMut(&mut Aligned) -> Result<bool, DbError>,
+        // TODO: maybe make another version that takes sync function to avoid possible unnecesary overhead
+        mut next_page: impl AsyncFnMut(&mut Aligned) -> Result<bool, DbError>,
     ) -> Result<usize, DbError> {
         let PageId {
             file_id,
@@ -399,7 +400,7 @@ impl FileSystem {
         loop {
             for page in &mut buffer {
                 page.clear();
-                if next_page(page)? {
+                if next_page(page).await? {
                     page_number_unwritten += 1;
                 } else {
                     end = true;

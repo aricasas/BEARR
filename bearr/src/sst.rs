@@ -84,7 +84,7 @@ impl Sst {
     /// )?;
     /// ```
     pub async fn create(
-        key_values: impl Stream<Item = Result<(u64, u64), DbError>>,
+        key_values: impl Stream<Item = Result<(u64, u64), DbError>> + Unpin,
         n_entries_hint: usize,
         bits_per_entry: usize,
         file_id: FileId,

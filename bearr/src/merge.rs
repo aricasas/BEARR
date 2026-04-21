@@ -1,25 +1,35 @@
 use std::{
     cmp::{self, Ordering},
     collections::{BinaryHeap, binary_heap::PeekMut},
+    task::Poll,
 };
 
-use crate::{DbError, btree::BTreeIter, lsm::TOMBSTONE, memtable::MemTableIter};
+use futures::{Stream, StreamExt};
 
-pub enum Sources<'a> {
+use crate::{
+    DbError,
+    btree::{BTree, BTreeIter},
+    lsm::TOMBSTONE,
+    memtable::MemTableIter,
+};
+
+pub enum Sources<'a, B: Stream<Item = Result<(u64, u64), DbError>> + 'a + Unpin> {
     MemTable(MemTableIter<'a, u64, u64>),
-    BTree(BTreeIter<'a, 'a>),
+    BTree(B),
 }
 
-impl<'a> Iterator for Sources<'a> {
+impl<'a, B: Stream<Item = Result<(u64, u64), DbError>> + 'a + Unpin> Stream for Sources<'a, B> {
     type Item = Result<(u64, u64), DbError>;
 
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::MemTable(mem_table_iter) => {
-                let kv = mem_table_iter.next()?;
-                Some(Ok(kv))
-            }
-            Self::BTree(btree_iter) => btree_iter.next(),
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+
+        match this {
+            Sources::MemTable(mem_table_iter) => Poll::Ready(mem_table_iter.next().map(|x| Ok(x))),
+            Sources::BTree(btree_iter) => btree_iter.poll_next_unpin(cx),
         }
     }
 }
@@ -108,7 +118,7 @@ impl<I: Iterator<Item = Result<(u64, u64), DbError>>> MergedIterator<I> {
     }
 }
 
-impl<I: Iterator<Item = Result<(u64, u64), DbError>>> Iterator for MergedIterator<I> {
+impl<I: Iterator<Item = Result<(u64, u64), DbError>>> Stream for MergedIterator<I> {
     type Item = Result<(u64, u64), DbError>;
 
     fn next(&mut self) -> Option<Self::Item> {
