@@ -1,5 +1,5 @@
 mod executor;
 pub mod io;
-mod sync;
+pub mod sync;
 
 pub use executor::Executor;

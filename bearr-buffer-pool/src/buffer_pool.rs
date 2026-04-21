@@ -12,7 +12,10 @@ use std::{
 
 use crate::eviction::{Eviction, EvictionId};
 use bearr::{DbError, PAGE_SIZE};
-use bearr_executor::io::{open, read, rename, unlink, write};
+use bearr_executor::{
+    io::{open, read, rename, unlink, write},
+    sync::Mutex,
+};
 use hashbrown::HashMap;
 
 /// An aligned 4096-byte page, suitable for various transmutations.
@@ -181,7 +184,7 @@ impl FileSystem {
             .read(true)
             .write(true)
             .custom_flags(libc::O_DIRECT)
-            .open(prefix)?
+            .open(prefix.as_ref())?
             .as_raw_fd();
 
         Ok(Self {
@@ -259,7 +262,7 @@ impl FileSystem {
 
         // Hold lock to check if page is in buffer pool
         {
-            let mut inner_lock = self.inner.lock().unwrap(); // If lock is poisoned, this is unrecoverable
+            let mut inner_lock = self.inner.lock().await; // If lock is poisoned, this is unrecoverable
             let inner = inner_lock.deref_mut();
 
             let buffer_page_id = inner.file_map.get_or_assign_file(file_id).page(page_start);
@@ -305,7 +308,7 @@ impl FileSystem {
 
         // Obtain lock again to put page in buffer pool
         {
-            let mut inner_lock = self.inner.lock().unwrap();
+            let mut inner_lock = self.inner.lock().await;
             let inner = inner_lock.deref_mut();
 
             let buffer_file_id = inner.file_map.get_file(file_id).unwrap();
@@ -386,7 +389,7 @@ impl FileSystem {
         //     .custom_flags(libc::O_DIRECT | libc::O_SYNC)
         //     .open(&path)?;
 
-        self.inner.lock().unwrap().file_map.unassign_file(file_id);
+        self.inner.lock().await.file_map.unassign_file(file_id);
 
         let mut buffer: Vec<Aligned> = bytemuck::allocation::zeroed_vec(self.write_buffering);
         let mut page_number_unwritten = starting_page_number;
@@ -433,7 +436,7 @@ impl FileSystem {
             panic!("Cannot delete non-existent file: {file_id:?}");
         }
 
-        self.inner.lock().unwrap().file_map.unassign_file(file_id);
+        self.inner.lock().await.file_map.unassign_file(file_id);
 
         unsafe { unlink(self.directory_fd, Path::new(&file_id.name()), 0).await? };
 
@@ -473,7 +476,7 @@ impl FileSystem {
 
         // fs::rename(old_path, new_path)?;
 
-        let file_map = &mut self.inner.lock().unwrap().file_map;
+        let file_map = &mut self.inner.lock().await.file_map;
         file_map.unassign_file(old_file_id);
         file_map.unassign_file(new_file_id);
 
