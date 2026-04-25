@@ -1,10 +1,8 @@
 mod bloom_filter;
 mod btree;
 mod database;
-mod eviction;
 mod hash;
-mod hashtable;
-mod list;
+// mod hashtable;
 mod lsm;
 mod memtable;
 mod merge;

@@ -15,6 +15,7 @@ pub enum DbRequest {
     Flush,
 }
 
+#[derive(Debug, PartialEq)]
 pub enum DbResponse {
     Get {
         result: Result<Option<u64>, DbError>,
@@ -25,4 +26,5 @@ pub enum DbResponse {
     Delete {
         result: Result<(), DbError>,
     },
+    None,
 }

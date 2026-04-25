@@ -1,4 +1,4 @@
-use std::{ops::RangeInclusive, pin::Pin, sync::Arc};
+use std::{ops::RangeInclusive, sync::Arc};
 
 use crate::{DbError, PAGE_SIZE, bloom_filter::BloomFilter, sst::Sst};
 use bearr_buffer_pool::{Aligned, FileId, FileSystem};
@@ -106,10 +106,6 @@ pub struct BTreeIter<'a, 'b> {
     ended: bool,
 }
 
-pub struct AsyncBTreeIter<'a, 'b> {
-    iter: BTreeIter<'a, 'b>,
-    curr_future: Option<Pin<Box<dyn Future<Output = Option<Result<(u64, u64), DbError>>>>>>,
-}
 // impl<'a, 'b> Iterator for BTreeIter<'a, 'b> {
 //     type Item = Result<(u64, u64), DbError>;
 
@@ -118,72 +114,43 @@ pub struct AsyncBTreeIter<'a, 'b> {
 //     }
 // }
 
-// impl<'a, 'b> AsyncIterator for AsyncBTreeIter<'a, 'b> {
-//     type Item = Result<(u64, u64), DbError>;
-
-//     fn poll_next(
-//         self: std::pin::Pin<&mut Self>,
-//         cx: &mut std::task::Context<'_>,
-//     ) -> std::task::Poll<Option<Self::Item>> {
-//         let this = self.get_mut();
-
-//         if let Some(curr_future) = this.curr_future.as_ref() {
-//             todo!()
-//         } else {
-//             let future = this.iter.go_to_next();
-
-//             this.curr_future = Some(Box::pin(future));
-
-//             // let res = pinned.as_mut().poll(cx);
-
-//             // res
-//             todo!()
-//         }
-//     }
-// }
-
 // BTree iterator functions
 impl<'a, 'b: 'a> BTreeIter<'a, 'b> {
     /// Check the validity of our interator range, if there exsits
     /// any tree in that range, return the page number and the item number inside it
     /// that corresponds to the smallest element bigger that the start of the range
-    pub async fn new(
+    async fn new(
         sst: &'a Sst,
         range: RangeInclusive<u64>,
         file_system: &'b FileSystem,
-    ) -> Result<impl Stream<Item = Result<(u64, u64), DbError>> + 'a, DbError> {
+    ) -> Result<Self, DbError> {
         if range.start() > range.end() {
             return Err(DbError::InvalidScanRange);
         }
 
         let res = BTree::search(sst, *range.start(), file_system).await?;
 
-        let iter =
-            if let Some(Ok((page_number, item_number)) | Err((page_number, item_number))) = res {
-                Self {
-                    sst,
-                    file_system,
-                    buffered_page: None,
-                    page_number,
-                    item_number,
-                    range,
-                    ended: false,
-                }
-            } else {
-                Self {
-                    sst,
-                    file_system,
-                    buffered_page: None,
-                    page_number: 0,
-                    item_number: 0,
-                    range,
-                    ended: true,
-                }
-            };
-
-        Ok(stream::unfold(iter, |mut iter| async move {
-            iter.go_to_next().await.map(|item| (item, iter))
-        }))
+        if let Some(Ok((page_number, item_number)) | Err((page_number, item_number))) = res {
+            Ok(Self {
+                sst,
+                file_system,
+                buffered_page: None,
+                page_number,
+                item_number,
+                range,
+                ended: false,
+            })
+        } else {
+            Ok(Self {
+                sst,
+                file_system,
+                buffered_page: None,
+                page_number: 0,
+                item_number: 0,
+                range,
+                ended: true,
+            })
+        }
     }
 
     /// Get the next element and if needed go to the next page
@@ -616,6 +583,19 @@ impl BTree {
         } else {
             Ok(Some(Err((page_number, idx))))
         }
+    }
+
+    #[cfg(not(feature = "binary_search"))]
+    pub async fn scan<'a, 'b: 'a>(
+        sst: &'a Sst,
+        range: RangeInclusive<u64>,
+        file_system: &'b FileSystem,
+    ) -> Result<impl Stream<Item = Result<(u64, u64), DbError>> + Unpin + 'a, DbError> {
+        let iter = BTreeIter::new(sst, range, file_system).await?;
+
+        Ok(Box::pin(stream::unfold(iter, |mut iter| async move {
+            iter.go_to_next().await.map(|item| (item, iter))
+        })))
     }
 
     /// Searches for a key using binary search over leaf pages (alternative implementation).

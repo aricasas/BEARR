@@ -48,16 +48,13 @@ type TaskId = u64;
 
 /// Task representing an in-progress database operation
 struct Task<'b> {
-    future: Pin<Box<dyn Future<Output = DbResponse> + 'b>>,
+    future: DbOpFuture<'b>,
     waker: Arc<BoolWaker>,
     task_id: TaskId,
 }
 
 impl<'b> Task<'b> {
-    fn new<F>(future: Pin<Box<F>>, task_id: TaskId) -> Self
-    where
-        F: Future<Output = DbResponse> + 'b,
-    {
+    fn new(future: DbOpFuture<'b>, task_id: TaskId) -> Self {
         Self {
             future,
             waker: BoolWaker::new(),
@@ -110,12 +107,14 @@ impl CurrentTaskContext {
     }
 }
 
+type DbOpFuture<'b> = Pin<Box<dyn Future<Output = DbResponse> + Send + 'b>>;
+
 /// Executor for handling database operations using io_uring for asynchronous I/O
 pub struct Executor<'b> {
     context: Rc<RefCell<CurrentTaskContext>>,
 
     /// Channel for receiving database operations to execute
-    receiver: flume::Receiver<DbRequest>,
+    receiver: flume::Receiver<DbOpFuture<'b>>,
     /// Channel for sending back database operation results
     sender: flume::Sender<DbResponse>,
     /// Queue of responses that are ready to be sent back but haven't been sent yet
@@ -131,7 +130,7 @@ pub struct Executor<'b> {
 impl<'b> Executor<'b> {
     pub fn new(
         ring: io_uring::IoUring,
-        receiver: flume::Receiver<DbRequest>,
+        receiver: flume::Receiver<DbOpFuture<'b>>,
         sender: flume::Sender<DbResponse>,
         max_tasks: usize,
     ) -> Self {
@@ -159,8 +158,10 @@ impl<'b> Executor<'b> {
     }
 
     /// Spawns a new task for the given database operation
-    fn spawn_operation(&mut self, operation: DbRequest) {
+    fn spawn_operation(&mut self, operation: DbOpFuture<'b>) {
         let task_id = self.get_new_task_id();
+        let task = Task::new(operation, task_id);
+        self.tasks.push(task);
 
         // match operation {
         //     DbRequest::Read {
@@ -340,84 +341,90 @@ impl<'b> Executor<'b> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs::OpenOptions, os::fd::AsRawFd};
+    // use std::{fs::OpenOptions, os::fd::AsRawFd};
 
     use super::*;
 
-    // #[test]
-    // fn exec_test_add() {
-    //     let (db_ops_sender, db_ops_receiver) = flume::bounded(100);
-    //     let (db_responses_sender, db_responses_receiver) = flume::bounded(100);
+    #[test]
+    fn exec_test_add() {
+        let (db_ops_sender, db_ops_receiver) = flume::bounded(100);
+        let (db_responses_sender, db_responses_receiver) = flume::bounded(100);
 
-    //     std::thread::spawn(move || {
-    //         let max_io_entries = 2048;
+        std::thread::spawn(move || {
+            let max_io_entries = 2048;
 
-    //         let ring = io_uring::IoUring::builder()
-    //             .setup_single_issuer()
-    //             .setup_sqpoll(10000)
-    //             .build(max_io_entries)
-    //             .unwrap();
+            let ring = io_uring::IoUring::builder()
+                .setup_single_issuer()
+                .setup_sqpoll(10000)
+                .build(max_io_entries)
+                .unwrap();
 
-    //         ring.submit().unwrap();
+            ring.submit().unwrap();
 
-    //         let mut executor = Executor::new(ring, db_ops_receiver, db_responses_sender, 10);
-    //         executor.run();
-    //     });
+            let mut executor = Executor::new(ring, db_ops_receiver, db_responses_sender, 10);
+            executor.run();
+        });
 
-    //     let poo_file = OpenOptions::new()
-    //         .read(true)
-    //         .open("../poo_file_uring.txt")
-    //         .unwrap();
-    //     let poo_fd = poo_file.as_raw_fd();
+        let transaction = Box::pin(async { DbResponse::None });
+        db_ops_sender.send(transaction).unwrap();
 
-    //     let pee_file = OpenOptions::new()
-    //         .create(true)
-    //         .truncate(true)
-    //         .write(true)
-    //         .open("../pee_file_uring.txt")
-    //         .unwrap();
-    //     let pee_fd = pee_file.as_raw_fd();
+        let res = db_responses_receiver.recv().unwrap();
+        assert_eq!(res, DbResponse::None);
 
-    //     let write_request = DbRequest::Write {
-    //         file: io_uring::types::Fd(pee_fd),
-    //         offset: 0,
-    //         num_bytes: 11,
-    //         buffer: String::from("Hello world").into_bytes().into_boxed_slice(),
-    //     };
+        // let poo_file = OpenOptions::new()
+        //     .read(true)
+        //     .open("../poo_file_uring.txt")
+        //     .unwrap();
+        // let poo_fd = poo_file.as_raw_fd();
 
-    //     println!("Sending write request");
-    //     db_ops_sender.send(write_request).unwrap();
+        // let pee_file = OpenOptions::new()
+        //     .create(true)
+        //     .truncate(true)
+        //     .write(true)
+        //     .open("../pee_file_uring.txt")
+        //     .unwrap();
+        // let pee_fd = pee_file.as_raw_fd();
 
-    //     let read_request = DbRequest::Read {
-    //         file: io_uring::types::Fd(poo_fd),
-    //         offset: 0,
-    //         num_bytes: 10,
-    //         buffer: vec![0; 1024].into_boxed_slice(),
-    //     };
+        // let write_request = DbRequest::Write {
+        //     file: io_uring::types::Fd(pee_fd),
+        //     offset: 0,
+        //     num_bytes: 11,
+        //     buffer: String::from("Hello world").into_bytes().into_boxed_slice(),
+        // };
 
-    //     println!("Sending read request");
-    //     db_ops_sender.send(read_request).unwrap();
+        // println!("Sending write request");
+        // db_ops_sender.send(write_request).unwrap();
 
-    //     println!("Waiting for response");
+        // let read_request = DbRequest::Read {
+        //     file: io_uring::types::Fd(poo_fd),
+        //     offset: 0,
+        //     num_bytes: 10,
+        //     buffer: vec![0; 1024].into_boxed_slice(),
+        // };
 
-    //     for _ in 0..2 {
-    //         if let Ok(res) = db_responses_receiver.recv() {
-    //             println!("Received response:");
+        // println!("Sending read request");
+        // db_ops_sender.send(read_request).unwrap();
 
-    //             match res {
-    //                 DbResponse::ReadResult(result) => {
-    //                     let (buffer, num_bytes) = result.unwrap();
+        // println!("Waiting for response");
 
-    //                     assert_eq!(&buffer[..num_bytes], "0123456789".as_bytes());
-    //                     println!("Read {} bytes: {:?}", num_bytes, &buffer[..num_bytes]);
-    //                 }
-    //                 DbResponse::WriteResult(result) => {
-    //                     let (_buffer, num_bytes) = result.unwrap();
+        // for _ in 0..2 {
+        //     if let Ok(res) = db_responses_receiver.recv() {
+        //         println!("Received response:");
 
-    //                     println!("Wrote {} bytes", num_bytes);
-    //                 }
-    //             }
-    //         }
-    //     }
-    // }
+        //         match res {
+        //             DbResponse::ReadResult(result) => {
+        //                 let (buffer, num_bytes) = result.unwrap();
+
+        //                 assert_eq!(&buffer[..num_bytes], "0123456789".as_bytes());
+        //                 println!("Read {} bytes: {:?}", num_bytes, &buffer[..num_bytes]);
+        //             }
+        //             DbResponse::WriteResult(result) => {
+        //                 let (_buffer, num_bytes) = result.unwrap();
+
+        //                 println!("Wrote {} bytes", num_bytes);
+        //             }
+        //         }
+        //     }
+        // }
+    }
 }

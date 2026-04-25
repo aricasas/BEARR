@@ -6,7 +6,7 @@ use futures::Stream;
 use crate::{
     DbError,
     bloom_filter::BloomFilter,
-    btree::{BTree, BTreeIter, BTreeMetadata},
+    btree::{BTree, BTreeMetadata},
 };
 
 /// A handle to an SST (Sorted String Table) file.
@@ -196,8 +196,8 @@ impl Sst {
         &'a self,
         range: RangeInclusive<u64>,
         file_system: &'b FileSystem,
-    ) -> Result<impl Stream<Item = Result<(u64, u64), DbError>> + 'a, DbError> {
-        BTreeIter::new(self, range, file_system).await
+    ) -> Result<impl Stream<Item = Result<(u64, u64), DbError>> + Unpin + 'a, DbError> {
+        BTree::scan(self, range, file_system).await
     }
 
     /// Returns the number of key-value pairs in the SST.

@@ -2,10 +2,7 @@ use std::{
     // fs,
     num::NonZeroUsize,
     ops::{DerefMut, Range},
-    os::{
-        fd::AsRawFd,
-        unix::fs::{FileExt, OpenOptionsExt},
-    },
+    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -280,7 +277,7 @@ impl FileSystem {
         // We don't hold the lock here so other threads can do work while we wait for I/O to complete.
         // This is fine as long as other threads are only reading the same file.
 
-        let path = self.path(file_id);
+        // let path = self.path(file_id);
         let file = unsafe {
             open(
                 self.directory_fd,
@@ -373,7 +370,7 @@ impl FileSystem {
             file_id,
             page_number: starting_page_number,
         } = starting_page_id;
-        let path = self.path(file_id);
+        // let path = self.path(file_id);
 
         let file = unsafe {
             open(
@@ -579,11 +576,11 @@ impl FileMap {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
+    // use anyhow::Result;
 
-    use crate::test_util::{TestPath, assert_panics};
+    // use crate::test_util::{TestPath, assert_panics};
 
-    use super::*;
+    // use super::*;
 
     // fn test_path(name: &str) -> Result<TestPath> {
     //     let path = TestPath::create("file_system", name);
