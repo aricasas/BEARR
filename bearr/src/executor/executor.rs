@@ -14,8 +14,7 @@ use std::{
 
 use flume::TrySendError;
 
-use crate::io::IoId;
-use crate::{DbRequest, DbResponse};
+use crate::{DbRequest, DbResponse, executor::io::IoId};
 
 /// Simple waker that just uses an AtomicBool to track whether it's been woken or not
 struct BoolWaker {
@@ -47,14 +46,14 @@ impl Wake for BoolWaker {
 type TaskId = u64;
 
 /// Task representing an in-progress database operation
-struct Task<'b> {
-    future: DbOpFuture<'b>,
+struct Task {
+    future: DbOpFuture,
     waker: Arc<BoolWaker>,
     task_id: TaskId,
 }
 
-impl<'b> Task<'b> {
-    fn new(future: DbOpFuture<'b>, task_id: TaskId) -> Self {
+impl Task {
+    fn new(future: DbOpFuture, task_id: TaskId) -> Self {
         Self {
             future,
             waker: BoolWaker::new(),
@@ -107,30 +106,29 @@ impl CurrentTaskContext {
     }
 }
 
-type DbOpFuture<'b> = Pin<Box<dyn Future<Output = DbResponse> + Send + 'b>>;
-
+pub type DbOpFuture = Pin<Box<dyn Future<Output = DbResponse> + Send>>;
 /// Executor for handling database operations using io_uring for asynchronous I/O
-pub struct Executor<'b> {
+pub struct Executor {
     context: Rc<RefCell<CurrentTaskContext>>,
 
     /// Channel for receiving database operations to execute
-    receiver: flume::Receiver<DbOpFuture<'b>>,
+    receiver: flume::Receiver<DbRequest>,
     /// Channel for sending back database operation results
     sender: flume::Sender<DbResponse>,
     /// Queue of responses that are ready to be sent back but haven't been sent yet
     to_send: VecDeque<DbResponse>,
     /// Tasks currently being executed
-    tasks: Vec<Task<'b>>,
+    tasks: Vec<Task>,
     /// Counter for generating unique ids for tasks
     task_id_counter: TaskId,
     /// Maximum number of tasks to execute concurrently
     max_tasks: usize,
 }
 
-impl<'b> Executor<'b> {
+impl Executor {
     pub fn new(
         ring: io_uring::IoUring,
-        receiver: flume::Receiver<DbOpFuture<'b>>,
+        receiver: flume::Receiver<DbRequest>,
         sender: flume::Sender<DbResponse>,
         max_tasks: usize,
     ) -> Self {
@@ -158,10 +156,10 @@ impl<'b> Executor<'b> {
     }
 
     /// Spawns a new task for the given database operation
-    fn spawn_operation(&mut self, operation: DbOpFuture<'b>) {
-        let task_id = self.get_new_task_id();
-        let task = Task::new(operation, task_id);
-        self.tasks.push(task);
+    fn spawn_operation(&mut self, operation: DbRequest) {
+        // let task_id = self.get_new_task_id();
+        // let task = Task::new(operation, task_id);
+        // self.tasks.push(task);
 
         // match operation {
         //     DbRequest::Read {
@@ -365,11 +363,15 @@ mod tests {
             executor.run();
         });
 
-        let transaction = Box::pin(async { DbResponse::None });
-        db_ops_sender.send(transaction).unwrap();
+        // let closure_ret_fut = || {
+        //     Box::pin(async { DbResponse::None }) as Pin<Box<dyn Future<Output = DbResponse> + Send>>
+        // };
 
-        let res = db_responses_receiver.recv().unwrap();
-        assert_eq!(res, DbResponse::None);
+        // let transaction = Box::new(closure_ret_fut) as RecvFn;
+        // db_ops_sender.send(transaction).unwrap();
+
+        // let res = db_responses_receiver.recv().unwrap();
+        // assert_eq!(res, DbResponse::None);
 
         // let poo_file = OpenOptions::new()
         //     .read(true)

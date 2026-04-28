@@ -7,10 +7,10 @@ use std::{
     sync::Arc,
 };
 
-use crate::PAGE_SIZE;
-use crate::eviction::{Eviction, EvictionId};
+use super::eviction::{Eviction, EvictionId};
+use crate::{PAGE_SIZE, executor};
 use bearr_error::DbError;
-use bearr_executor::{
+use executor::{
     io::{open, read, rename, unlink, write},
     sync::Mutex,
 };
@@ -181,7 +181,7 @@ impl FileSystem {
             .create(true)
             .read(true)
             .write(true)
-            .custom_flags(libc::O_DIRECT)
+            .custom_flags(libc::O_DIRECT | libc::O_DSYNC | libc::O_DIRECTORY)
             .open(prefix.as_ref())?
             .as_raw_fd();
 
@@ -282,7 +282,7 @@ impl FileSystem {
             open(
                 self.directory_fd,
                 Path::new(&file_id.name()),
-                libc::O_RDONLY | libc::O_DIRECT,
+                libc::O_RDONLY | libc::O_DIRECT | libc::O_DSYNC,
                 libc::S_IRUSR,
             )
             .await?
@@ -376,7 +376,7 @@ impl FileSystem {
             open(
                 self.directory_fd,
                 Path::new(&file_id.name()),
-                libc::O_WRONLY | libc::O_CREAT | libc::O_DIRECT,
+                libc::O_WRONLY | libc::O_CREAT | libc::O_DIRECT | libc::O_DSYNC,
                 libc::S_IRUSR | libc::S_IWUSR,
             )
             .await?

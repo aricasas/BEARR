@@ -3,13 +3,13 @@ use std::ops::RangeInclusive;
 use futures::{Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 
+use crate::buffer_pool::{FileId, FileSystem};
 use crate::{
     DbError,
     memtable::MemTable,
     merge::{self, MergedIterator},
     sst::Sst,
 };
-use bearr_buffer_pool::{FileId, FileSystem};
 
 /// Configuration options for an LSM tree.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]

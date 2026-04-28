@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use bearr_buffer_pool::FileSystem;
+use crate::buffer_pool::FileSystem;
 use futures::Stream;
 use serde::{Deserialize, Serialize};
 

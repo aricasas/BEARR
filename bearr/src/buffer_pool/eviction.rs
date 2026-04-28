@@ -3,7 +3,7 @@ use hashbrown::HashMap;
 
 use crate::{
     buffer_pool::BufferPageId,
-    list::{EntryId, List},
+    buffer_pool::list::{EntryId, List},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

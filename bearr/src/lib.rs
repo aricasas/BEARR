@@ -1,8 +1,9 @@
 mod bloom_filter;
 mod btree;
+mod buffer_pool;
 mod database;
+mod executor;
 mod hash;
-// mod hashtable;
 mod lsm;
 mod memtable;
 mod merge;
@@ -12,8 +13,8 @@ mod sst;
 mod test_util;
 
 pub use bearr_error::DbError;
-pub use bearr_executor::{DbRequest, DbResponse};
 pub use database::{Database, DbConfiguration};
+pub use executor::{DbRequest, DbResponse};
 pub use lsm::LsmConfiguration;
 
-use bearr_buffer_pool::PAGE_SIZE;
+use buffer_pool::PAGE_SIZE;

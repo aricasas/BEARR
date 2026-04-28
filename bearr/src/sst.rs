@@ -1,8 +1,8 @@
 use std::ops::RangeInclusive;
 
-use bearr_buffer_pool::{FileId, FileSystem};
 use futures::Stream;
 
+use crate::buffer_pool::{FileId, FileSystem};
 use crate::{
     DbError,
     bloom_filter::BloomFilter,
