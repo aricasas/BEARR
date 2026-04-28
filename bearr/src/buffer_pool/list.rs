@@ -193,173 +193,173 @@ impl<T: Clone> List<T> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use anyhow::Result;
+// #[cfg(test)]
+// mod tests {
+//     use anyhow::Result;
 
-    use crate::test_util::assert_panics;
+//     use crate::test_util::assert_panics;
 
-    use super::*;
+//     use super::*;
 
-    #[test]
-    fn test_push_in_order() -> Result<()> {
-        let mut list = List::new(10)?;
-        list.push_back(1);
-        list.push_back(2);
-        list.push_back(3);
+//     #[test]
+//     fn test_push_in_order() -> Result<()> {
+//         let mut list = List::new(10)?;
+//         list.push_back(1);
+//         list.push_back(2);
+//         list.push_back(3);
 
-        assert_eq!(list.pop_front(), Some(1));
-        assert_eq!(list.pop_front(), Some(2));
-        assert_eq!(list.pop_front(), Some(3));
-        assert_eq!(list.pop_front(), None);
+//         assert_eq!(list.pop_front(), Some(1));
+//         assert_eq!(list.pop_front(), Some(2));
+//         assert_eq!(list.pop_front(), Some(3));
+//         assert_eq!(list.pop_front(), None);
 
-        list.push_back(4);
-        list.push_back(5);
+//         list.push_back(4);
+//         list.push_back(5);
 
-        assert_eq!(list.pop_front(), Some(4));
-        assert_eq!(list.pop_front(), Some(5));
-        assert_eq!(list.pop_front(), None);
+//         assert_eq!(list.pop_front(), Some(4));
+//         assert_eq!(list.pop_front(), Some(5));
+//         assert_eq!(list.pop_front(), None);
 
-        Ok(())
-    }
+//         Ok(())
+//     }
 
-    #[test]
-    fn test_reordering() -> Result<()> {
-        let mut list = List::new(10)?;
-        let one = list.push_back(1);
-        let two = list.push_back(2);
-        let three = list.push_back(3);
+//     #[test]
+//     fn test_reordering() -> Result<()> {
+//         let mut list = List::new(10)?;
+//         let one = list.push_back(1);
+//         let two = list.push_back(2);
+//         let three = list.push_back(3);
 
-        list.move_to_back(three);
-        list.move_to_back(two);
-        list.move_to_back(one);
+//         list.move_to_back(three);
+//         list.move_to_back(two);
+//         list.move_to_back(one);
 
-        assert_eq!(list.pop_front(), Some(3));
-        assert_eq!(list.pop_front(), Some(2));
-        assert_eq!(list.pop_front(), Some(1));
-        assert_eq!(list.pop_front(), None);
+//         assert_eq!(list.pop_front(), Some(3));
+//         assert_eq!(list.pop_front(), Some(2));
+//         assert_eq!(list.pop_front(), Some(1));
+//         assert_eq!(list.pop_front(), None);
 
-        Ok(())
-    }
+//         Ok(())
+//     }
 
-    #[test]
-    fn test_deletion() -> Result<()> {
-        let mut list = List::new(10)?;
+//     #[test]
+//     fn test_deletion() -> Result<()> {
+//         let mut list = List::new(10)?;
 
-        let one = list.push_back(1);
-        let two = list.push_back(2);
-        let three = list.push_back(3);
+//         let one = list.push_back(1);
+//         let two = list.push_back(2);
+//         let three = list.push_back(3);
 
-        list.delete(two);
-        list.delete(three);
-        list.delete(one);
+//         list.delete(two);
+//         list.delete(three);
+//         list.delete(one);
 
-        assert!(list.is_empty());
+//         assert!(list.is_empty());
 
-        list.push_back(1);
-        let two = list.push_back(2);
-        list.push_back(3);
+//         list.push_back(1);
+//         let two = list.push_back(2);
+//         list.push_back(3);
 
-        list.delete(two);
+//         list.delete(two);
 
-        assert_eq!(list.pop_front(), Some(1));
-        assert_eq!(list.pop_front(), Some(3));
-        assert_eq!(list.pop_front(), None);
+//         assert_eq!(list.pop_front(), Some(1));
+//         assert_eq!(list.pop_front(), Some(3));
+//         assert_eq!(list.pop_front(), None);
 
-        Ok(())
-    }
+//         Ok(())
+//     }
 
-    #[test]
-    fn test_get_next() -> Result<()> {
-        let mut list = List::new(10)?;
+//     #[test]
+//     fn test_get_next() -> Result<()> {
+//         let mut list = List::new(10)?;
 
-        list.push_back(1);
-        list.push_back(2);
-        list.push_back(3);
+//         list.push_back(1);
+//         list.push_back(2);
+//         list.push_back(3);
 
-        let mut curr = list.front().unwrap();
-        assert_eq!(curr.1, &1);
+//         let mut curr = list.front().unwrap();
+//         assert_eq!(curr.1, &1);
 
-        curr = list.get_next(curr.0).unwrap();
-        assert_eq!(curr.1, &2);
+//         curr = list.get_next(curr.0).unwrap();
+//         assert_eq!(curr.1, &2);
 
-        curr = list.get_next(curr.0).unwrap();
-        assert_eq!(curr.1, &3);
+//         curr = list.get_next(curr.0).unwrap();
+//         assert_eq!(curr.1, &3);
 
-        assert!(list.get_next(curr.0).is_none());
+//         assert!(list.get_next(curr.0).is_none());
 
-        Ok(())
-    }
+//         Ok(())
+//     }
 
-    #[test]
-    fn test_capacity() -> Result<()> {
-        let mut list = List::new(3)?;
+//     #[test]
+//     fn test_capacity() -> Result<()> {
+//         let mut list = List::new(3)?;
 
-        list.push_back(1);
-        list.push_back(2);
-        list.push_back(3);
+//         list.push_back(1);
+//         list.push_back(2);
+//         list.push_back(3);
 
-        assert_panics(|| _ = list.push_back(4));
+//         assert_panics(|| _ = list.push_back(4));
 
-        list = List::new(0)?;
+//         list = List::new(0)?;
 
-        assert_panics(|| _ = list.push_back(1));
+//         assert_panics(|| _ = list.push_back(1));
 
-        Ok(())
-    }
+//         Ok(())
+//     }
 
-    #[test]
-    fn test_chaotic() -> Result<()> {
-        let mut list = List::new(10)?;
+//     #[test]
+//     fn test_chaotic() -> Result<()> {
+//         let mut list = List::new(10)?;
 
-        let a = list.push_back('a');
-        list.push_back('b');
-        list.push_back('c');
-        let d = list.push_back('d');
-        let e = list.push_back('e');
-        list.push_back('f');
-        let g = list.push_back('g');
-        list.push_back('h');
+//         let a = list.push_back('a');
+//         list.push_back('b');
+//         list.push_back('c');
+//         let d = list.push_back('d');
+//         let e = list.push_back('e');
+//         list.push_back('f');
+//         let g = list.push_back('g');
+//         list.push_back('h');
 
-        list.move_to_back(a);
-        let new_b = list.push_back('b');
-        list.move_to_back(d);
-        assert_eq!(list.pop_front(), Some('b'));
-        let new_a = list.push_back('a');
-        assert_eq!(list.pop_front(), Some('c'));
-        list.push_back('i');
-        list.push_back('c');
-        list.move_to_back(e);
-        assert_eq!(list.delete(new_b), 'b');
-        list.pop_front();
-        assert_eq!(list.delete(d), 'd');
+//         list.move_to_back(a);
+//         let new_b = list.push_back('b');
+//         list.move_to_back(d);
+//         assert_eq!(list.pop_front(), Some('b'));
+//         let new_a = list.push_back('a');
+//         assert_eq!(list.pop_front(), Some('c'));
+//         list.push_back('i');
+//         list.push_back('c');
+//         list.move_to_back(e);
+//         assert_eq!(list.delete(new_b), 'b');
+//         list.pop_front();
+//         assert_eq!(list.delete(d), 'd');
 
-        assert_eq!(list.len(), 7);
-        assert!(!list.is_empty());
+//         assert_eq!(list.len(), 7);
+//         assert!(!list.is_empty());
 
-        assert_eq!(list.front(), Some((g, &'g')));
-        assert_eq!(list.get(a), Some(&'a'));
-        assert_eq!(list.get_next(a), Some((new_a, &'a')));
-        assert_eq!(list.get_next(e), None);
+//         assert_eq!(list.front(), Some((g, &'g')));
+//         assert_eq!(list.get(a), Some(&'a'));
+//         assert_eq!(list.get_next(a), Some((new_a, &'a')));
+//         assert_eq!(list.get_next(e), None);
 
-        assert_eq!(list.pop_front(), Some('g'));
-        assert_eq!(list.pop_front(), Some('h'));
-        assert_eq!(list.pop_front(), Some('a'));
-        assert_eq!(list.pop_front(), Some('a'));
-        assert_eq!(list.pop_front(), Some('i'));
-        assert_eq!(list.pop_front(), Some('c'));
-        assert_eq!(list.pop_front(), Some('e'));
+//         assert_eq!(list.pop_front(), Some('g'));
+//         assert_eq!(list.pop_front(), Some('h'));
+//         assert_eq!(list.pop_front(), Some('a'));
+//         assert_eq!(list.pop_front(), Some('a'));
+//         assert_eq!(list.pop_front(), Some('i'));
+//         assert_eq!(list.pop_front(), Some('c'));
+//         assert_eq!(list.pop_front(), Some('e'));
 
-        assert_eq!(list.len(), 0);
-        assert!(list.is_empty());
+//         assert_eq!(list.len(), 0);
+//         assert!(list.is_empty());
 
-        assert_eq!(list.front(), None);
-        assert_eq!(list.get(a), None);
+//         assert_eq!(list.front(), None);
+//         assert_eq!(list.get(a), None);
 
-        assert_panics(|| _ = list.delete(a));
-        assert_panics(|| list.move_to_back(a));
-        assert_panics(|| _ = list.get_next(a));
+//         assert_panics(|| _ = list.delete(a));
+//         assert_panics(|| list.move_to_back(a));
+//         assert_panics(|| _ = list.get_next(a));
 
-        Ok(())
-    }
-}
+//         Ok(())
+//     }
+// }

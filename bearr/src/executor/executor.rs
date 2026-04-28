@@ -14,7 +14,10 @@ use std::{
 
 use flume::TrySendError;
 
-use crate::{DbRequest, DbResponse, executor::io::IoId};
+use crate::{
+    Database, DbRequest, DbResponse,
+    executor::{DbRet, io::IoId},
+};
 
 /// Simple waker that just uses an AtomicBool to track whether it's been woken or not
 struct BoolWaker {
@@ -50,14 +53,16 @@ struct Task {
     future: DbOpFuture,
     waker: Arc<BoolWaker>,
     task_id: TaskId,
+    user_data: u64,
 }
 
 impl Task {
-    fn new(future: DbOpFuture, task_id: TaskId) -> Self {
+    fn new(future: DbOpFuture, task_id: TaskId, user_data: u64) -> Self {
         Self {
             future,
             waker: BoolWaker::new(),
             task_id,
+            user_data,
         }
     }
 }
@@ -106,7 +111,7 @@ impl CurrentTaskContext {
     }
 }
 
-pub type DbOpFuture = Pin<Box<dyn Future<Output = DbResponse> + Send>>;
+pub type DbOpFuture = Pin<Box<dyn Future<Output = DbResponse>>>;
 /// Executor for handling database operations using io_uring for asynchronous I/O
 pub struct Executor {
     context: Rc<RefCell<CurrentTaskContext>>,
@@ -157,6 +162,31 @@ impl Executor {
 
     /// Spawns a new task for the given database operation
     fn spawn_operation(&mut self, operation: DbRequest) {
+        let task_id = self.get_new_task_id();
+        let user_data = operation.user_data;
+
+        match operation.request {
+            super::DbOperation::Create {
+                name,
+                configuration,
+            } => {
+                let fut = async move {
+                    let db = Database::create(name, configuration).await;
+                    DbResponse {
+                        user_data,
+                        response: db.map(DbRet::DbHandle),
+                    }
+                };
+                self.tasks
+                    .push(Task::new(Box::pin(fut), task_id, user_data));
+            }
+            super::DbOperation::Open { name } => todo!(),
+            super::DbOperation::Get { key } => todo!(),
+            super::DbOperation::Put { key, value } => todo!(),
+            super::DbOperation::Delete { key } => todo!(),
+            super::DbOperation::Flush => todo!(),
+        }
+
         // let task_id = self.get_new_task_id();
         // let task = Task::new(operation, task_id);
         // self.tasks.push(task);
@@ -341,6 +371,10 @@ impl Executor {
 mod tests {
     // use std::{fs::OpenOptions, os::fd::AsRawFd};
 
+    use std::path::PathBuf;
+
+    use crate::{DbConfiguration, LsmConfiguration, executor::DbOperation};
+
     use super::*;
 
     #[test]
@@ -363,70 +397,27 @@ mod tests {
             executor.run();
         });
 
-        // let closure_ret_fut = || {
-        //     Box::pin(async { DbResponse::None }) as Pin<Box<dyn Future<Output = DbResponse> + Send>>
-        // };
+        let create_db_req = DbRequest {
+            user_data: 0,
+            request: DbOperation::Create {
+                name: PathBuf::from("poopy"),
+                configuration: DbConfiguration {
+                    lsm_configuration: LsmConfiguration {
+                        size_ratio: 4,
+                        memtable_capacity: 100,
+                        bloom_filter_bits: 5,
+                    },
+                    buffer_pool_capacity: 20,
+                    write_buffering: 1,
+                    readahead_buffering: 1,
+                    wal_buffer_size: None,
+                },
+            },
+        };
 
-        // let transaction = Box::new(closure_ret_fut) as RecvFn;
-        // db_ops_sender.send(transaction).unwrap();
+        db_ops_sender.send(create_db_req).unwrap();
+        let response = db_responses_receiver.recv().unwrap();
 
-        // let res = db_responses_receiver.recv().unwrap();
-        // assert_eq!(res, DbResponse::None);
-
-        // let poo_file = OpenOptions::new()
-        //     .read(true)
-        //     .open("../poo_file_uring.txt")
-        //     .unwrap();
-        // let poo_fd = poo_file.as_raw_fd();
-
-        // let pee_file = OpenOptions::new()
-        //     .create(true)
-        //     .truncate(true)
-        //     .write(true)
-        //     .open("../pee_file_uring.txt")
-        //     .unwrap();
-        // let pee_fd = pee_file.as_raw_fd();
-
-        // let write_request = DbRequest::Write {
-        //     file: io_uring::types::Fd(pee_fd),
-        //     offset: 0,
-        //     num_bytes: 11,
-        //     buffer: String::from("Hello world").into_bytes().into_boxed_slice(),
-        // };
-
-        // println!("Sending write request");
-        // db_ops_sender.send(write_request).unwrap();
-
-        // let read_request = DbRequest::Read {
-        //     file: io_uring::types::Fd(poo_fd),
-        //     offset: 0,
-        //     num_bytes: 10,
-        //     buffer: vec![0; 1024].into_boxed_slice(),
-        // };
-
-        // println!("Sending read request");
-        // db_ops_sender.send(read_request).unwrap();
-
-        // println!("Waiting for response");
-
-        // for _ in 0..2 {
-        //     if let Ok(res) = db_responses_receiver.recv() {
-        //         println!("Received response:");
-
-        //         match res {
-        //             DbResponse::ReadResult(result) => {
-        //                 let (buffer, num_bytes) = result.unwrap();
-
-        //                 assert_eq!(&buffer[..num_bytes], "0123456789".as_bytes());
-        //                 println!("Read {} bytes: {:?}", num_bytes, &buffer[..num_bytes]);
-        //             }
-        //             DbResponse::WriteResult(result) => {
-        //                 let (_buffer, num_bytes) = result.unwrap();
-
-        //                 println!("Wrote {} bytes", num_bytes);
-        //             }
-        //         }
-        //     }
-        // }
+        response.response.unwrap();
     }
 }

@@ -15,6 +15,7 @@ use executor::{
     sync::Mutex,
 };
 use hashbrown::HashMap;
+use io_uring::types::Fd;
 
 /// An aligned 4096-byte page, suitable for various transmutations.
 #[repr(C, align(4096))]
@@ -161,7 +162,7 @@ impl FileSystem {
     /// and writes to the file system will be buffered until the given number of pages have been accumulated.
     ///
     /// Returns an error if creation of the buffer pool or eviction handler fails.
-    pub fn new(
+    pub async fn new(
         prefix: impl AsRef<Path>,
         capacity: usize,
         write_buffering: usize,
@@ -177,17 +178,19 @@ impl FileSystem {
             buffer_pool_accesses: 0,
         };
 
-        let dir_fd = std::fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .custom_flags(libc::O_DIRECT | libc::O_DSYNC | libc::O_DIRECTORY)
-            .open(prefix.as_ref())?
-            .as_raw_fd();
+        let dir_fd = unsafe {
+            open(
+                Fd(libc::AT_FDCWD),
+                prefix.as_ref(),
+                libc::O_DIRECTORY | libc::O_DSYNC,
+                libc::S_IRWXU,
+            )
+            .await?
+        };
 
         Ok(Self {
             inner: Mutex::new(inner),
-            directory_fd: io_uring::types::Fd(dir_fd),
+            directory_fd: dir_fd,
             prefix: prefix.as_ref().to_path_buf(),
             capacity,
             write_buffering,

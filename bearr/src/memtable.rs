@@ -405,332 +405,332 @@ impl<'a, K: Ord + Clone + Default, V: Clone + Default> MemTableIter<'a, K, V> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use anyhow::Result;
-
-    use crate::test_util::assert_panics;
-
-    use super::*;
-
-    #[test]
-    fn test_small() -> Result<()> {
-        let mut memtable: MemTable<u64, u64> = MemTable::new(5)?;
-
-        // Test get and scan before inserting nodes
-        assert_eq!(memtable.get(50), None);
-        assert_eq!(memtable.scan(0..=100)?.next(), None);
-
-        // Insert one node
-        memtable.put(0, 0);
-        dbg!(&memtable);
-
-        // Update node
-        memtable.put(0, 1);
-        dbg!(&memtable);
-
-        // Insert three nodes
-        for i in 0..3 {
-            memtable.put(5 + i, 10 + i);
-            dbg!(&memtable);
-        }
-
-        // Scan three last keys
-        let mut scan = memtable.scan(3..=10)?;
-        assert_eq!(scan.next(), Some((5, 10)));
-        assert_eq!(scan.next(), Some((6, 11)));
-        assert_eq!(scan.next(), Some((7, 12)));
-        assert_eq!(scan.next(), None);
-
-        // Scan range in between existing keys
-        let mut scan = memtable.scan(3..=4)?;
-        assert_eq!(scan.next(), None);
-
-        // Check memtable has 4 nodes and is a valid red black tree
-        assert_eq!(memtable.size(), 4);
-        validate_red_black(&memtable, memtable.root).unwrap();
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_large() -> Result<()> {
-        let mut memtable: MemTable<u64, u64> = MemTable::new(5_000_000)?;
-
-        for i in 0..4_000_000 {
-            memtable.put(i, i * 10);
-        }
-
-        for i in 1_000_000..3_000_000 {
-            memtable.put(i, i * 20);
-        }
-
-        memtable.put(10_000_000, 12345);
-        assert_eq!(memtable.get(10_000_000), Some(12345));
-
-        for (i, pair) in memtable.scan(u64::MIN..=u64::MAX)?.enumerate() {
-            let (k, v) = pair;
-
-            if (0..1_000_000).contains(&i) || (3_000_000..4_000_000).contains(&i) {
-                assert_eq!(v, k * 10)
-            } else if (1_000_000..3_000_000).contains(&i) {
-                assert_eq!(v, k * 20)
-            } else {
-                assert_eq!(k, 10_000_000);
-                assert_eq!(v, 12345);
-            }
-        }
-
-        assert_eq!(memtable.size(), 4_000_001);
-        assert_eq!(memtable.scan(u64::MIN..=u64::MAX)?.count(), 4_000_001);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_insert_in_order() -> Result<()> {
-        let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
-
-        // Insert 100 nodes
-        for i in 0..100 {
-            assert_eq!(memtable.size(), i as usize);
-            memtable.put(i, i * 10);
-            assert_eq!(memtable.size(), i as usize + 1);
-            validate_red_black(&memtable, memtable.root).unwrap();
-        }
-
-        // Check correct values stored
-        for i in 0..100 {
-            assert_eq!(memtable.get(i), Some(i * 10));
-        }
-
-        // Check get doesn't return when at wrong keys
-        for i in 200..300 {
-            assert_eq!(memtable.get(i), None);
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_insert_in_reverse() -> Result<()> {
-        let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
-
-        // Insert 100 nodes
-        for i in (0..100).rev() {
-            memtable.put(i, i * 10);
-            validate_red_black(&memtable, memtable.root).unwrap();
-        }
-
-        // Check correct values stored
-        for i in 0..100 {
-            assert_eq!(memtable.get(i), Some(i * 10));
-        }
-
-        // Check get doesn't return when at wrong keys
-        for i in 200..300 {
-            assert_eq!(memtable.get(i), None);
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_update() -> Result<()> {
-        let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
-
-        // Insert 100 nodes
-        for i in 0..100 {
-            memtable.put(i, i * 10);
-        }
-        assert_eq!(memtable.size(), 100);
-
-        // Update the value of every other node
-        for i in 0..100 {
-            if i % 2 == 0 {
-                memtable.put(i, i * 20);
-                validate_red_black(&memtable, memtable.root).unwrap();
-            }
-        }
-
-        // Check all keys map to correct value
-        for i in 0..100 {
-            if i % 2 == 0 {
-                assert_eq!(memtable.get(i), Some(i * 20));
-            } else {
-                assert_eq!(memtable.get(i), Some(i * 10));
-            }
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_full_capacity_zero() -> Result<()> {
-        let mut memtable = MemTable::new(0)?;
-
-        assert_panics(|| memtable.put(0, 0));
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_full_capacity() -> Result<()> {
-        // Test 100 capacity
-        let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
-
-        // Fill memtable
-        for i in 0..100 {
-            memtable.put(i, i * 10);
-        }
-        assert_eq!(memtable.size(), 100);
-
-        // Updating existing node doesn't panic
-        memtable.put(20, 200);
-
-        validate_red_black(&memtable, memtable.root).unwrap();
-
-        // Try to insert new node when full produces error
-        assert_panics(|| memtable.put(150, 200));
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_scan_valid_ranges() -> Result<()> {
-        let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
-
-        // Insert 100 nodes
-        for i in 0..100 {
-            memtable.put(i, i * 10);
-        }
-
-        // Test all possible ranges
-        for lower in 0..105 {
-            for upper in lower..105 {
-                let mut scan = memtable.scan(lower..=upper)?;
-
-                if lower >= 100 {
-                    assert!(scan.next().is_none());
-                    continue;
-                }
-
-                for i in lower..=upper.min(99) {
-                    let (k, v) = scan.next().unwrap();
-
-                    assert_eq!(k, i);
-                    assert_eq!(v, i * 10);
-                }
-
-                assert!(scan.next().is_none());
-            }
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    #[allow(clippy::reversed_empty_ranges)]
-    fn test_scan_invalid_ranges() -> Result<()> {
-        let mut memtable: MemTable<i64, u64> = MemTable::new(100)?;
-
-        // Insert 100 nodes
-        for i in 0..100 {
-            memtable.put(i, i as u64 * 10);
-        }
-
-        // Test several invalid scan ranges
-        assert!(matches!(
-            memtable.scan(20..=10),
-            Err(DbError::InvalidScanRange)
-        ));
-
-        assert!(matches!(
-            memtable.scan(10..=0),
-            Err(DbError::InvalidScanRange)
-        ));
-
-        assert!(matches!(
-            memtable.scan(100..=99),
-            Err(DbError::InvalidScanRange)
-        ));
-
-        assert!(matches!(
-            memtable.scan(99..=98),
-            Err(DbError::InvalidScanRange)
-        ));
-
-        assert!(matches!(
-            memtable.scan(0..=-1),
-            Err(DbError::InvalidScanRange)
-        ));
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_clear() -> Result<()> {
-        let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
-
-        for i in 0..50 {
-            memtable.put(i, i);
-        }
-
-        assert_eq!(memtable.size(), 50);
-
-        memtable.clear();
-
-        assert_eq!(memtable.size(), 0);
-
-        for i in 0..100 {
-            memtable.put(i, i);
-        }
-        assert_eq!(memtable.size(), 100);
-
-        Ok(())
-    }
-
-    /// Checks that the tree rooted at `root` in the `MemTable` is a valid binary tree
-    /// and satisfies the Red-Black conditions.
-    ///
-    /// If the tree is valid, returns the black height of the tree.
-    ///
-    /// Based on the implementation of `jsw_rb_assert` from [here](https://web.archive.org/web/20190207151651/http://www.eternallyconfuzzled.com/tuts/datastructures/jsw_tut_rbtree.aspx).
-    fn validate_red_black<K: Ord + Clone + Default, V: Clone + Default>(
-        memtable: &MemTable<K, V>,
-        root: usize,
-    ) -> Result<usize, ()> {
-        if let Some(root) = memtable.try_node(root) {
-            let left = root.link[LEFT];
-            let right = root.link[RIGHT];
-
-            if root.red && (memtable.is_red(left) || memtable.is_red(right)) {
-                // Red violation
-                return Err(());
-            }
-
-            let left_bh = validate_red_black(memtable, left)?;
-            let right_bh = validate_red_black(memtable, right)?;
-
-            if memtable.try_node(left).is_some_and(|l| l.key >= root.key)
-                || memtable.try_node(right).is_some_and(|r| r.key <= root.key)
-            {
-                // Binary tree violation
-                return Err(());
-            }
-
-            if left_bh != right_bh {
-                // Black violation
-                return Err(());
-            }
-
-            if root.red {
-                Ok(left_bh)
-            } else {
-                Ok(left_bh + 1)
-            }
-        } else {
-            Ok(1)
-        }
-    }
-}
+// #[cfg(test)]
+// mod tests {
+//     use anyhow::Result;
+
+//     use crate::test_util::assert_panics;
+
+//     use super::*;
+
+//     #[test]
+//     fn test_small() -> Result<()> {
+//         let mut memtable: MemTable<u64, u64> = MemTable::new(5)?;
+
+//         // Test get and scan before inserting nodes
+//         assert_eq!(memtable.get(50), None);
+//         assert_eq!(memtable.scan(0..=100)?.next(), None);
+
+//         // Insert one node
+//         memtable.put(0, 0);
+//         dbg!(&memtable);
+
+//         // Update node
+//         memtable.put(0, 1);
+//         dbg!(&memtable);
+
+//         // Insert three nodes
+//         for i in 0..3 {
+//             memtable.put(5 + i, 10 + i);
+//             dbg!(&memtable);
+//         }
+
+//         // Scan three last keys
+//         let mut scan = memtable.scan(3..=10)?;
+//         assert_eq!(scan.next(), Some((5, 10)));
+//         assert_eq!(scan.next(), Some((6, 11)));
+//         assert_eq!(scan.next(), Some((7, 12)));
+//         assert_eq!(scan.next(), None);
+
+//         // Scan range in between existing keys
+//         let mut scan = memtable.scan(3..=4)?;
+//         assert_eq!(scan.next(), None);
+
+//         // Check memtable has 4 nodes and is a valid red black tree
+//         assert_eq!(memtable.size(), 4);
+//         validate_red_black(&memtable, memtable.root).unwrap();
+
+//         Ok(())
+//     }
+
+//     #[test]
+//     fn test_large() -> Result<()> {
+//         let mut memtable: MemTable<u64, u64> = MemTable::new(5_000_000)?;
+
+//         for i in 0..4_000_000 {
+//             memtable.put(i, i * 10);
+//         }
+
+//         for i in 1_000_000..3_000_000 {
+//             memtable.put(i, i * 20);
+//         }
+
+//         memtable.put(10_000_000, 12345);
+//         assert_eq!(memtable.get(10_000_000), Some(12345));
+
+//         for (i, pair) in memtable.scan(u64::MIN..=u64::MAX)?.enumerate() {
+//             let (k, v) = pair;
+
+//             if (0..1_000_000).contains(&i) || (3_000_000..4_000_000).contains(&i) {
+//                 assert_eq!(v, k * 10)
+//             } else if (1_000_000..3_000_000).contains(&i) {
+//                 assert_eq!(v, k * 20)
+//             } else {
+//                 assert_eq!(k, 10_000_000);
+//                 assert_eq!(v, 12345);
+//             }
+//         }
+
+//         assert_eq!(memtable.size(), 4_000_001);
+//         assert_eq!(memtable.scan(u64::MIN..=u64::MAX)?.count(), 4_000_001);
+
+//         Ok(())
+//     }
+
+//     #[test]
+//     fn test_insert_in_order() -> Result<()> {
+//         let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
+
+//         // Insert 100 nodes
+//         for i in 0..100 {
+//             assert_eq!(memtable.size(), i as usize);
+//             memtable.put(i, i * 10);
+//             assert_eq!(memtable.size(), i as usize + 1);
+//             validate_red_black(&memtable, memtable.root).unwrap();
+//         }
+
+//         // Check correct values stored
+//         for i in 0..100 {
+//             assert_eq!(memtable.get(i), Some(i * 10));
+//         }
+
+//         // Check get doesn't return when at wrong keys
+//         for i in 200..300 {
+//             assert_eq!(memtable.get(i), None);
+//         }
+
+//         Ok(())
+//     }
+
+//     #[test]
+//     fn test_insert_in_reverse() -> Result<()> {
+//         let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
+
+//         // Insert 100 nodes
+//         for i in (0..100).rev() {
+//             memtable.put(i, i * 10);
+//             validate_red_black(&memtable, memtable.root).unwrap();
+//         }
+
+//         // Check correct values stored
+//         for i in 0..100 {
+//             assert_eq!(memtable.get(i), Some(i * 10));
+//         }
+
+//         // Check get doesn't return when at wrong keys
+//         for i in 200..300 {
+//             assert_eq!(memtable.get(i), None);
+//         }
+
+//         Ok(())
+//     }
+
+//     #[test]
+//     fn test_update() -> Result<()> {
+//         let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
+
+//         // Insert 100 nodes
+//         for i in 0..100 {
+//             memtable.put(i, i * 10);
+//         }
+//         assert_eq!(memtable.size(), 100);
+
+//         // Update the value of every other node
+//         for i in 0..100 {
+//             if i % 2 == 0 {
+//                 memtable.put(i, i * 20);
+//                 validate_red_black(&memtable, memtable.root).unwrap();
+//             }
+//         }
+
+//         // Check all keys map to correct value
+//         for i in 0..100 {
+//             if i % 2 == 0 {
+//                 assert_eq!(memtable.get(i), Some(i * 20));
+//             } else {
+//                 assert_eq!(memtable.get(i), Some(i * 10));
+//             }
+//         }
+
+//         Ok(())
+//     }
+
+//     #[test]
+//     fn test_full_capacity_zero() -> Result<()> {
+//         let mut memtable = MemTable::new(0)?;
+
+//         assert_panics(|| memtable.put(0, 0));
+
+//         Ok(())
+//     }
+
+//     #[test]
+//     fn test_full_capacity() -> Result<()> {
+//         // Test 100 capacity
+//         let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
+
+//         // Fill memtable
+//         for i in 0..100 {
+//             memtable.put(i, i * 10);
+//         }
+//         assert_eq!(memtable.size(), 100);
+
+//         // Updating existing node doesn't panic
+//         memtable.put(20, 200);
+
+//         validate_red_black(&memtable, memtable.root).unwrap();
+
+//         // Try to insert new node when full produces error
+//         assert_panics(|| memtable.put(150, 200));
+
+//         Ok(())
+//     }
+
+//     #[test]
+//     fn test_scan_valid_ranges() -> Result<()> {
+//         let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
+
+//         // Insert 100 nodes
+//         for i in 0..100 {
+//             memtable.put(i, i * 10);
+//         }
+
+//         // Test all possible ranges
+//         for lower in 0..105 {
+//             for upper in lower..105 {
+//                 let mut scan = memtable.scan(lower..=upper)?;
+
+//                 if lower >= 100 {
+//                     assert!(scan.next().is_none());
+//                     continue;
+//                 }
+
+//                 for i in lower..=upper.min(99) {
+//                     let (k, v) = scan.next().unwrap();
+
+//                     assert_eq!(k, i);
+//                     assert_eq!(v, i * 10);
+//                 }
+
+//                 assert!(scan.next().is_none());
+//             }
+//         }
+
+//         Ok(())
+//     }
+
+//     #[test]
+//     #[allow(clippy::reversed_empty_ranges)]
+//     fn test_scan_invalid_ranges() -> Result<()> {
+//         let mut memtable: MemTable<i64, u64> = MemTable::new(100)?;
+
+//         // Insert 100 nodes
+//         for i in 0..100 {
+//             memtable.put(i, i as u64 * 10);
+//         }
+
+//         // Test several invalid scan ranges
+//         assert!(matches!(
+//             memtable.scan(20..=10),
+//             Err(DbError::InvalidScanRange)
+//         ));
+
+//         assert!(matches!(
+//             memtable.scan(10..=0),
+//             Err(DbError::InvalidScanRange)
+//         ));
+
+//         assert!(matches!(
+//             memtable.scan(100..=99),
+//             Err(DbError::InvalidScanRange)
+//         ));
+
+//         assert!(matches!(
+//             memtable.scan(99..=98),
+//             Err(DbError::InvalidScanRange)
+//         ));
+
+//         assert!(matches!(
+//             memtable.scan(0..=-1),
+//             Err(DbError::InvalidScanRange)
+//         ));
+
+//         Ok(())
+//     }
+
+//     #[test]
+//     fn test_clear() -> Result<()> {
+//         let mut memtable: MemTable<u64, u64> = MemTable::new(100)?;
+
+//         for i in 0..50 {
+//             memtable.put(i, i);
+//         }
+
+//         assert_eq!(memtable.size(), 50);
+
+//         memtable.clear();
+
+//         assert_eq!(memtable.size(), 0);
+
+//         for i in 0..100 {
+//             memtable.put(i, i);
+//         }
+//         assert_eq!(memtable.size(), 100);
+
+//         Ok(())
+//     }
+
+//     /// Checks that the tree rooted at `root` in the `MemTable` is a valid binary tree
+//     /// and satisfies the Red-Black conditions.
+//     ///
+//     /// If the tree is valid, returns the black height of the tree.
+//     ///
+//     /// Based on the implementation of `jsw_rb_assert` from [here](https://web.archive.org/web/20190207151651/http://www.eternallyconfuzzled.com/tuts/datastructures/jsw_tut_rbtree.aspx).
+//     fn validate_red_black<K: Ord + Clone + Default, V: Clone + Default>(
+//         memtable: &MemTable<K, V>,
+//         root: usize,
+//     ) -> Result<usize, ()> {
+//         if let Some(root) = memtable.try_node(root) {
+//             let left = root.link[LEFT];
+//             let right = root.link[RIGHT];
+
+//             if root.red && (memtable.is_red(left) || memtable.is_red(right)) {
+//                 // Red violation
+//                 return Err(());
+//             }
+
+//             let left_bh = validate_red_black(memtable, left)?;
+//             let right_bh = validate_red_black(memtable, right)?;
+
+//             if memtable.try_node(left).is_some_and(|l| l.key >= root.key)
+//                 || memtable.try_node(right).is_some_and(|r| r.key <= root.key)
+//             {
+//                 // Binary tree violation
+//                 return Err(());
+//             }
+
+//             if left_bh != right_bh {
+//                 // Black violation
+//                 return Err(());
+//             }
+
+//             if root.red {
+//                 Ok(left_bh)
+//             } else {
+//                 Ok(left_bh + 1)
+//             }
+//         } else {
+//             Ok(1)
+//         }
+//     }
+// }

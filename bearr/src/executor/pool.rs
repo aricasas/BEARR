@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn test_multi_ops() {
-        let pool = WorkerPool::new(1, 100).unwrap();
+        let pool = WorkerPool::new(10, 100).unwrap();
 
         pool.send_request(DbRequest {
             user_data: 0,
@@ -150,17 +150,13 @@ mod tests {
             },
         });
 
-        println!("sdfs");
         let res = pool.recv_response().unwrap();
-        panic!();
         assert_eq!(res.user_data, 0);
 
         let DbRet::DbHandle(database) = res.response.unwrap() else {
             panic!()
         };
 
-        println!("sdfas");
-        panic!();
         // database.get(8);
     }
 }

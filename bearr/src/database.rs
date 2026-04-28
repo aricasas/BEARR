@@ -141,7 +141,8 @@ impl Database {
             configuration.buffer_pool_capacity,
             configuration.write_buffering,
             configuration.readahead_buffering,
-        )?;
+        )
+        .await?;
 
         let lsm = LsmTree::open(
             metadata.lsm_metadata,
