@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::buffer_pool::FileSystem;
+use crate::{buffer_pool::FileSystem, executor::sync::Mutex};
 use futures::Stream;
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +15,10 @@ use crate::{
 
 /// An open connection to a database.
 pub struct Database {
+    inner: Mutex<InnerDb>, // TODO: change synchronization
+}
+
+struct InnerDb {
     name: PathBuf,
     lsm: LsmTree,
     file_system: FileSystem,
@@ -68,6 +72,45 @@ const METADATA_FILENAME: &str = "metadata.json";
 const LOG_FILENAME: &str = "WAL.log";
 
 impl Database {
+    pub async fn create(
+        name: impl AsRef<Path>,
+        configuration: DbConfiguration,
+    ) -> Result<Self, DbError> {
+        let inner = InnerDb::create(name, configuration).await?;
+        Ok(Self {
+            inner: Mutex::new(inner),
+        })
+    }
+
+    pub async fn open(name: impl AsRef<Path>) -> Result<Self, DbError> {
+        let inner = InnerDb::open(name).await?;
+        Ok(Self {
+            inner: Mutex::new(inner),
+        })
+    }
+
+    pub async fn get(&self, key: u64) -> Result<Option<u64>, DbError> {
+        let inner = self.inner.lock().await;
+        inner.get(key).await
+    }
+
+    pub async fn put(&self, key: u64, value: u64) -> Result<(), DbError> {
+        let mut inner = self.inner.lock().await;
+        inner.put(key, value).await
+    }
+
+    pub async fn delete(&self, key: u64) -> Result<(), DbError> {
+        let mut inner = self.inner.lock().await;
+        inner.delete(key).await
+    }
+
+    pub async fn flush(&self) -> Result<(), DbError> {
+        let mut inner = self.inner.lock().await;
+        inner.flush().await
+    }
+}
+
+impl InnerDb {
     /// Creates and returns an empty database with the given configuration,
     /// initializing a folder with the given path.
     ///
@@ -340,12 +383,12 @@ impl Database {
 /// The database is flushed upon dropping.
 ///
 /// Errors are ignored. To handle them, call `Database::flush` manually.
-impl Drop for Database {
+impl Drop for InnerDb {
     fn drop(&mut self) {
         if self.wal_enabled {
             _ = self.flush_wal_buffer();
         }
-        _ = self.flush();
+        _ = self.flush(); // TODO: this currently does nothing cause flush is async, so droppping loses unflushed data 
     }
 }
 

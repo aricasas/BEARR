@@ -4,14 +4,14 @@ pub mod pool;
 pub mod sync;
 
 use bearr_error::DbError;
-use std::{ops::RangeInclusive, path::PathBuf};
+use std::{ops::RangeInclusive, path::PathBuf, sync::Arc};
 
 pub use executor::Executor;
 
 use crate::{Database, DbConfiguration};
 
 pub struct DbRequest {
-    user_data: u64,
+    request_id: u64,
     request: DbOperation,
 }
 pub enum DbOperation {
@@ -33,10 +33,14 @@ pub enum DbOperation {
         key: u64,
     },
     Flush,
+
+    RegisterDb {
+        database: Arc<Database>,
+    },
 }
 
 pub struct DbResponse {
-    user_data: u64,
+    request_id: u64,
     response: Result<DbRet, DbError>,
 }
 pub enum DbRet {

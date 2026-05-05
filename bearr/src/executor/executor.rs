@@ -12,11 +12,11 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
-use flume::TrySendError;
+use flume::{Receiver, Sender, TrySendError};
 
 use crate::{
     Database, DbRequest, DbResponse,
-    executor::{DbRet, io::IoId},
+    executor::{DbOperation, DbRet, io::IoId},
 };
 
 /// Simple waker that just uses an AtomicBool to track whether it's been woken or not
@@ -53,16 +53,16 @@ struct Task {
     future: DbOpFuture,
     waker: Arc<BoolWaker>,
     task_id: TaskId,
-    user_data: u64,
+    request_id: u64,
 }
 
 impl Task {
-    fn new(future: DbOpFuture, task_id: TaskId, user_data: u64) -> Self {
+    fn new(future: DbOpFuture, task_id: TaskId, request_id: u64) -> Self {
         Self {
             future,
             waker: BoolWaker::new(),
             task_id,
-            user_data,
+            request_id,
         }
     }
 }
@@ -128,14 +128,20 @@ pub struct Executor {
     task_id_counter: TaskId,
     /// Maximum number of tasks to execute concurrently
     max_tasks: usize,
+    // TODO: write doc
+    individual_receiver: Receiver<DbRequest>,
+
+    // TODO: probably change Arc?
+    database: Option<Arc<Database>>, // TODO: Add support for opening multiple databases
 }
 
 impl Executor {
     pub fn new(
         ring: io_uring::IoUring,
-        receiver: flume::Receiver<DbRequest>,
-        sender: flume::Sender<DbResponse>,
+        receiver: Receiver<DbRequest>,
+        sender: Sender<DbResponse>,
         max_tasks: usize,
+        individual_receiver: Receiver<DbRequest>,
     ) -> Self {
         Self {
             context: Rc::new(RefCell::new(CurrentTaskContext {
@@ -151,6 +157,8 @@ impl Executor {
             tasks: Vec::new(),
             task_id_counter: 0,
             max_tasks,
+            individual_receiver,
+            database: None,
         }
     }
 
@@ -163,7 +171,7 @@ impl Executor {
     /// Spawns a new task for the given database operation
     fn spawn_operation(&mut self, operation: DbRequest) {
         let task_id = self.get_new_task_id();
-        let user_data = operation.user_data;
+        let request_id = operation.request_id;
 
         match operation.request {
             super::DbOperation::Create {
@@ -173,18 +181,81 @@ impl Executor {
                 let fut = async move {
                     let db = Database::create(name, configuration).await;
                     DbResponse {
-                        user_data,
+                        request_id,
                         response: db.map(DbRet::DbHandle),
                     }
                 };
                 self.tasks
-                    .push(Task::new(Box::pin(fut), task_id, user_data));
+                    .push(Task::new(Box::pin(fut), task_id, request_id));
             }
             super::DbOperation::Open { name } => todo!(),
-            super::DbOperation::Get { key } => todo!(),
-            super::DbOperation::Put { key, value } => todo!(),
-            super::DbOperation::Delete { key } => todo!(),
-            super::DbOperation::Flush => todo!(),
+            super::DbOperation::Get { key } => {
+                let db_ref = Arc::clone(
+                    self.database
+                        .as_ref()
+                        .expect("Can only use db ops after registering a db"),
+                );
+                let fut = async move {
+                    let res = db_ref.get(key).await;
+                    DbResponse {
+                        request_id,
+                        response: res.map(DbRet::Value),
+                    }
+                };
+                self.tasks
+                    .push(Task::new(Box::pin(fut), task_id, request_id));
+            }
+            super::DbOperation::Put { key, value } => {
+                let db_ref = Arc::clone(
+                    self.database
+                        .as_ref()
+                        .expect("Can only use db ops after registering a db"),
+                );
+                let fut = async move {
+                    let res = db_ref.put(key, value).await;
+                    DbResponse {
+                        request_id,
+                        response: res.map(|_| DbRet::None),
+                    }
+                };
+                self.tasks
+                    .push(Task::new(Box::pin(fut), task_id, request_id));
+            }
+            super::DbOperation::Delete { key } => {
+                let db_ref = Arc::clone(
+                    self.database
+                        .as_ref()
+                        .expect("Can only use db ops after registering a db"),
+                );
+                let fut = async move {
+                    let res = db_ref.delete(key).await;
+                    DbResponse {
+                        request_id,
+                        response: res.map(|_| DbRet::None),
+                    }
+                };
+                self.tasks
+                    .push(Task::new(Box::pin(fut), task_id, request_id));
+            }
+            super::DbOperation::Flush => {
+                let db_ref = Arc::clone(
+                    self.database
+                        .as_ref()
+                        .expect("Can only use db ops after registering a db"),
+                );
+                let fut = async move {
+                    let res = db_ref.flush().await;
+                    DbResponse {
+                        request_id,
+                        response: res.map(|_| DbRet::None),
+                    }
+                };
+                self.tasks
+                    .push(Task::new(Box::pin(fut), task_id, request_id));
+            }
+            super::DbOperation::RegisterDb { database: _ } => {
+                panic!("RegisterDb should not be sent through the main request channel")
+            }
         }
 
         // let task_id = self.get_new_task_id();
@@ -264,10 +335,28 @@ impl Executor {
 
             self.react_completion_queue();
 
-            if self.tasks.is_empty() {
+            // TODO: check if this is the right place to check this
+            if self.database.is_none()
+                && let Ok(DbRequest {
+                    request_id,
+                    request: DbOperation::RegisterDb { database },
+                }) = self.individual_receiver.try_recv()
+            {
+                self.database = Some(database);
+                self.to_send.push_back(DbResponse {
+                    request_id,
+                    response: Ok(DbRet::None),
+                });
+            }
+
+            // TODO: make sure this logic makes sense
+            if self.tasks.is_empty() && self.database.is_some() {
+                self.send_responses_blocking();
                 let recv_alive = self.react_no_tasks_blocking();
                 if !recv_alive && self.tasks.is_empty() {
-                    self.send_responses_blocking();
+                    while !self.to_send.is_empty() {
+                        self.send_responses_blocking();
+                    }
                     break;
                 }
             }
@@ -306,7 +395,15 @@ impl Executor {
     /// Sends all pending responses. Should only be used when shutting down the executor
     fn send_responses_blocking(&mut self) {
         while let Some(response) = self.to_send.pop_front() {
-            let _ = self.sender.send(response);
+            // let _ = self.sender.send(response);
+
+            match self.sender.send(response) {
+                Ok(()) => {} // Err() => {}
+                Err(response) => {
+                    self.to_send.push_front(response.0);
+                    break;
+                }
+            }
         }
     }
 
@@ -381,6 +478,7 @@ mod tests {
     fn exec_test_add() {
         let (db_ops_sender, db_ops_receiver) = flume::bounded(100);
         let (db_responses_sender, db_responses_receiver) = flume::bounded(100);
+        let (individual_sender, individual_receiver) = flume::bounded(10);
 
         std::thread::spawn(move || {
             let max_io_entries = 2048;
@@ -393,12 +491,18 @@ mod tests {
 
             ring.submit().unwrap();
 
-            let mut executor = Executor::new(ring, db_ops_receiver, db_responses_sender, 10);
+            let mut executor = Executor::new(
+                ring,
+                db_ops_receiver,
+                db_responses_sender,
+                10,
+                individual_receiver,
+            );
             executor.run();
         });
 
         let create_db_req = DbRequest {
-            user_data: 0,
+            request_id: 0,
             request: DbOperation::Create {
                 name: PathBuf::from("poopy"),
                 configuration: DbConfiguration {
