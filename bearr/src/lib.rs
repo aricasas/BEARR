@@ -13,8 +13,8 @@ mod sst;
 mod test_util;
 
 pub use bearr_error::DbError;
-pub use database::{Database, DbConfiguration};
-pub use executor::{DbRequest, DbResponse};
+pub use database::DbConfiguration;
+pub use executor::{DbRequest, DbResponse, pool::WorkerPool, tokio};
 pub use lsm::LsmConfiguration;
 
 use buffer_pool::PAGE_SIZE;

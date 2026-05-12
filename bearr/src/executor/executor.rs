@@ -15,8 +15,7 @@ use std::{
 use flume::{Receiver, Sender, TrySendError};
 
 use crate::{
-    Database, DbRequest, DbResponse,
-    executor::{DbOperation, DbRet, io::IoId},
+    DbRequest, DbResponse, database::Database, executor::{DbOperation, DbRet, io::IoId}
 };
 
 /// Simple waker that just uses an AtomicBool to track whether it's been woken or not

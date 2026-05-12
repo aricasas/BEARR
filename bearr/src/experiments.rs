@@ -1,111 +1,115 @@
-// use std::{
-//     ops::RangeBounds,
-//     path::{Path, PathBuf},
-//     sync::atomic::{AtomicUsize, Ordering},
-//     thread,
-//     time::{Duration, Instant},
-// };
+use std::{
+    ops::RangeBounds,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicUsize, Ordering},
+    thread,
+    time::{Duration, Instant},
+};
 
-// use bearr::{Database, DbConfiguration, LsmConfiguration};
-// use clap::Parser;
-// use indicatif::ProgressStyle;
-// use serde::{Deserialize, Serialize};
+use bearr::{
+    DbConfiguration, LsmConfiguration, WorkerPool,
+    tokio::{Connection, DbHandle},
+};
+use clap::Parser;
+use indicatif::ProgressStyle;
+use serde::{Deserialize, Serialize};
 
-// #[derive(Parser)]
-// struct Cli {
-//     // 65,536 pages = 256 Mib
-//     #[arg(long, default_value_t = 65_536)]
-//     buffer_pool_capacity: usize,
+#[derive(Parser)]
+struct Cli {
+    // 65,536 pages = 256 Mib
+    #[arg(long, default_value_t = 65_536)]
+    buffer_pool_capacity: usize,
 
-//     #[arg(long, default_value_t = 96)]
-//     write_buffering: usize,
+    #[arg(long, default_value_t = 96)]
+    write_buffering: usize,
 
-//     #[arg(long, default_value_t = 128)]
-//     readahead_buffering: usize,
+    #[arg(long, default_value_t = 128)]
+    readahead_buffering: usize,
 
-//     #[arg(long, default_value_t = 4)]
-//     size_ratio: usize,
+    #[arg(long, default_value_t = 4)]
+    size_ratio: usize,
 
-//     // 655,360 rows = 10 MiB
-//     #[arg(long, default_value_t = 655_360)]
-//     memtable_capacity: usize,
+    // 655,360 rows = 10 MiB
+    #[arg(long, default_value_t = 655_360)]
+    memtable_capacity: usize,
 
-//     // On 1 GiB database with size ratio 4 and memtable capacity 655,360,
-//     // using Monkey with 13 bits per entry at the highest LSM tree level uses approx
-//     // the same total memory as having 8 bits per entry across all levels uniformly.
-//     #[arg(long, default_value_t = 13)]
-//     bloom_filter_bits: usize,
+    // On 1 GiB database with size ratio 4 and memtable capacity 655,360,
+    // using Monkey with 13 bits per entry at the highest LSM tree level uses approx
+    // the same total memory as having 8 bits per entry across all levels uniformly.
+    #[arg(long, default_value_t = 13)]
+    bloom_filter_bits: usize,
 
-//     #[arg(long)]
-//     wal_buffer_size: Option<usize>,
+    #[arg(long)]
+    wal_buffer_size: Option<usize>,
 
-//     // 64M rows = 1 GiB
-//     #[arg(long, default_value_t = 64 * 1024 * 1024)]
-//     total_entries: usize,
+    // 64M rows = 1 GiB
+    #[arg(long, default_value_t = 64 * 1024 * 1024)]
+    total_entries: usize,
 
-//     // Sample every 1M rows inserted = every 16 MiB
-//     #[arg(long, default_value_t = 1024 * 1024)]
-//     sample_spacing: usize,
+    // Sample every 1M rows inserted = every 16 MiB
+    #[arg(long, default_value_t = 1024 * 1024)]
+    sample_spacing: usize,
 
-//     #[arg(long, default_value_t = 1.0)]
-//     get_success_percentage: f32,
+    #[arg(long, default_value_t = 1.0)]
+    get_success_percentage: f32,
 
-//     #[arg(long, default_value_t = 1)]
-//     num_threads: usize,
+    #[arg(long, default_value_t = 1)]
+    num_threads: usize,
 
-//     #[arg(long, default_value_t = 1000)]
-//     ops_per_sample: usize,
+    #[arg(long, default_value_t = 1000)]
+    ops_per_sample: usize,
 
-//     #[arg(long, default_value_t = 1000)]
-//     entries_per_scan: usize,
+    #[arg(long, default_value_t = 1000)]
+    entries_per_scan: usize,
 
-//     #[arg(long)]
-//     get: Option<PathBuf>,
+    #[arg(long)]
+    get: Option<PathBuf>,
 
-//     #[arg(long)]
-//     concurrent_get: Option<PathBuf>,
+    #[arg(long)]
+    concurrent_get: Option<PathBuf>,
 
-//     #[arg(long)]
-//     put: Option<PathBuf>,
+    #[arg(long)]
+    put: Option<PathBuf>,
 
-//     #[arg(long)]
-//     scan: Option<PathBuf>,
+    #[arg(long)]
+    scan: Option<PathBuf>,
 
-//     #[arg(long)]
-//     concurrent_scan: Option<PathBuf>,
+    #[arg(long)]
+    concurrent_scan: Option<PathBuf>,
 
-//     #[arg(long)]
-//     full_scan: Option<PathBuf>,
-// }
+    #[arg(long)]
+    full_scan: Option<PathBuf>,
+}
 
-fn main() {
-    //     let cli = Cli::parse();
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
 
-    //     let db_config = DbConfiguration {
-    //         buffer_pool_capacity: cli.buffer_pool_capacity, // 65,536 pages = 256 Mib
-    //         write_buffering: cli.write_buffering,
-    //         readahead_buffering: cli.readahead_buffering,
-    //         wal_buffer_size: cli.wal_buffer_size,
-    //         lsm_configuration: LsmConfiguration {
-    //             size_ratio: cli.size_ratio,
-    //             memtable_capacity: cli.memtable_capacity, // 655,360 rows = 10 MiB
+    let db_config = DbConfiguration {
+        buffer_pool_capacity: cli.buffer_pool_capacity, // 65,536 pages = 256 Mib
+        write_buffering: cli.write_buffering,
+        readahead_buffering: cli.readahead_buffering,
+        wal_buffer_size: cli.wal_buffer_size,
+        lsm_configuration: LsmConfiguration {
+            size_ratio: cli.size_ratio,
+            memtable_capacity: cli.memtable_capacity, // 655,360 rows = 10 MiB
 
-    //             // On 1 GiB database with size ratio 4 and memtable capacity 655,360,
-    //             // using Monkey with 13 bits per entry at the highest LSM tree level uses approx
-    //             // the same total memory as having 8 bits per entry across all levels uniformly.
-    //             bloom_filter_bits: cli.bloom_filter_bits,
-    //         },
-    //     };
+            // On 1 GiB database with size ratio 4 and memtable capacity 655,360,
+            // using Monkey with 13 bits per entry at the highest LSM tree level uses approx
+            // the same total memory as having 8 bits per entry across all levels uniformly.
+            bloom_filter_bits: cli.bloom_filter_bits,
+        },
+    };
 
-    //     let total_entries = cli.total_entries; // 64M rows = 1 GiB
-    //     let sample_spacing = cli.sample_spacing; // Sample every 1M rows inserted = every 16 MiB
-    //     let ops_per_sample = cli.ops_per_sample;
-    //     let num_threads = cli.num_threads;
-    //     let entries_per_scan = cli.entries_per_scan;
+    let total_entries = cli.total_entries; // 64M rows = 1 GiB
+    let sample_spacing = cli.sample_spacing; // Sample every 1M rows inserted = every 16 MiB
+    let ops_per_sample = cli.ops_per_sample;
+    let num_threads = cli.num_threads;
+    let entries_per_scan = cli.entries_per_scan;
 
-    //     let mut keys: Vec<u64> = vec![0; total_entries];
-    //     let buffer: &mut [u8] = bytemuck::cast_slice_mut(&mut keys);
-    //     fastrand::fill(buffer);
+    let mut keys: Vec<u64> = vec![0; total_entries];
+    let buffer: &mut [u8] = bytemuck::cast_slice_mut(&mut keys);
+    fastrand::fill(buffer);
 
     //     if let Some(out_path) = cli.get {
     //         bench_get(BenchGetConfig {
@@ -134,15 +138,16 @@ fn main() {
     //         });
     //     }
 
-    //     if let Some(out_path) = cli.put {
-    //         bench_put(BenchPutConfig {
-    //             out_path,
-    //             total_entries,
-    //             key_range: ..,
-    //             sample_spacing,
-    //             db_config,
-    //         });
-    //     }
+    if let Some(out_path) = cli.put {
+        bench_put(BenchPutConfig {
+            out_path,
+            total_entries,
+            key_range: ..,
+            sample_spacing,
+            db_config,
+        })
+        .await;
+    }
 
     //     if let Some(out_path) = cli.scan {
     //         bench_scan(BenchScanConfig {
@@ -182,102 +187,111 @@ fn main() {
     //     }
 }
 
-// const PROGRESS_BAR_TEMPLATE: &str = "[{elapsed_precise}] {bar:64} {pos}/{len} samples";
+const PROGRESS_BAR_TEMPLATE: &str = "[{elapsed_precise}] {bar:64} {pos}/{len} samples";
 
-// #[derive(Serialize, Deserialize, Debug)]
-// struct BenchPutSample {
-//     elapsed_time: f64,
-//     n_entries: usize,
-//     puts_time: f64,
-//     throughput_per_sec: f64,
-// }
+#[derive(Serialize, Deserialize, Debug)]
+struct BenchPutSample {
+    elapsed_time: f64,
+    n_entries: usize,
+    puts_time: f64,
+    throughput_per_sec: f64,
+}
 
-// struct BenchPutConfig<P: AsRef<Path>, R: RangeBounds<u64> + Clone> {
-//     out_path: P,
-//     total_entries: usize,
-//     key_range: R,
-//     sample_spacing: usize,
-//     db_config: DbConfiguration,
-// }
+struct BenchPutConfig<P: AsRef<Path>, R: RangeBounds<u64> + Clone> {
+    out_path: P,
+    total_entries: usize,
+    key_range: R,
+    sample_spacing: usize,
+    db_config: DbConfiguration,
+}
 
-// fn bench_put<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(bench_config: BenchPutConfig<P, R>) {
-//     let BenchPutConfig {
-//         out_path,
-//         total_entries,
-//         key_range,
-//         sample_spacing,
-//         db_config,
-//     } = bench_config;
+async fn bench_put<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(
+    bench_config: BenchPutConfig<P, R>,
+) {
+    let BenchPutConfig {
+        out_path,
+        total_entries,
+        key_range,
+        sample_spacing,
+        db_config,
+    } = bench_config;
 
-//     let _ = std::fs::remove_dir_all("bench_put_db");
+    let _ = std::fs::remove_dir_all("bench_put_db");
 
-//     eprintln!(
-//         "Running put benchmark with size ratio {}: N={total_entries}",
-//         db_config.lsm_configuration.size_ratio
-//     );
-//     let bench_start = Instant::now();
+    eprintln!(
+        "Running put benchmark with size ratio {}: N={total_entries}",
+        db_config.lsm_configuration.size_ratio
+    );
+    let bench_start = Instant::now();
 
-//     let mut db = Database::create("bench_put_db", db_config).unwrap();
-//     let mut rng = fastrand::Rng::new();
+    let pool = WorkerPool::new(1, 1000).unwrap();
+    let mut conn = Connection::new(pool);
+    let mut db = conn
+        .create(PathBuf::from("bench_put_db"), db_config)
+        .await
+        .unwrap();
 
-//     let num_samples = total_entries / sample_spacing;
-//     let mut data = Vec::with_capacity(num_samples);
+    let mut rng = fastrand::Rng::new();
 
-//     let progress_bar = indicatif::ProgressBar::new(num_samples as u64)
-//         .with_style(ProgressStyle::with_template(PROGRESS_BAR_TEMPLATE).unwrap());
-//     progress_bar.inc(0);
-//     progress_bar.enable_steady_tick(Duration::from_millis(500));
+    let num_samples = total_entries / sample_spacing;
+    let mut data = Vec::with_capacity(num_samples);
 
-//     let start = Instant::now();
-//     let mut puts_duration = Duration::ZERO;
+    let progress_bar = indicatif::ProgressBar::new(num_samples as u64)
+        .with_style(ProgressStyle::with_template(PROGRESS_BAR_TEMPLATE).unwrap());
+    progress_bar.inc(0);
+    progress_bar.enable_steady_tick(Duration::from_millis(500));
 
-//     for n_entries in 1..=total_entries {
-//         let key = rng.u64(key_range.clone());
-//         let val = rng.u64(..);
+    let start = Instant::now();
+    let mut puts_duration = Duration::ZERO;
 
-//         let now = Instant::now();
-//         db.put(key, val).unwrap();
-//         puts_duration += now.elapsed();
+    for n_entries in 1..=total_entries {
+        let key = rng.u64(key_range.clone());
+        let val = rng.u64(..);
 
-//         if n_entries % sample_spacing == 0 {
-//             let elapsed_time = start.elapsed().as_secs_f64();
-//             let puts_time = puts_duration.as_secs_f64();
-//             let throughput_per_sec = sample_spacing as f64 / puts_time;
+        let now = Instant::now();
+        db.put(key, val).await.unwrap();
+        puts_duration += now.elapsed();
 
-//             data.push(BenchPutSample {
-//                 elapsed_time,
-//                 n_entries,
-//                 puts_time,
-//                 throughput_per_sec,
-//             });
+        if n_entries % sample_spacing == 0 {
+            let elapsed_time = start.elapsed().as_secs_f64();
+            let puts_time = puts_duration.as_secs_f64();
+            let throughput_per_sec = sample_spacing as f64 / puts_time;
 
-//             puts_duration = Duration::ZERO;
+            data.push(BenchPutSample {
+                elapsed_time,
+                n_entries,
+                puts_time,
+                throughput_per_sec,
+            });
 
-//             progress_bar.inc(1);
-//         }
-//     }
+            puts_duration = Duration::ZERO;
 
-//     drop(db);
+            progress_bar.inc(1);
+        }
+    }
 
-//     progress_bar.finish_and_clear();
+    db.flush().await.unwrap();
+    drop(db);
 
-//     let mut csv_writer = csv::Writer::from_path(out_path).unwrap();
-//     for record in data.iter() {
-//         csv_writer.serialize(record).unwrap();
-//     }
-//     csv_writer.flush().unwrap();
+    progress_bar.finish_and_clear();
 
-//     if !cfg!(feature = "keep_test_files") {
-//         std::fs::remove_dir_all("bench_put_db").unwrap();
-//     }
+    let mut csv_writer = csv::Writer::from_path(out_path).unwrap();
+    for record in data.iter() {
+        csv_writer.serialize(record).unwrap();
+    }
+    csv_writer.flush().unwrap();
 
-//     let bench_elapsed = bench_start.elapsed();
-//     eprintln!(
-//         "Finished put benchmark with size ratio {}: time={:.3} secs",
-//         db_config.lsm_configuration.size_ratio,
-//         bench_elapsed.as_secs_f64()
-//     );
-// }
+    if !cfg!(feature = "keep_test_files") {
+        std::fs::remove_dir_all("bench_put_db").unwrap();
+    }
+
+    let bench_elapsed = bench_start.elapsed();
+    eprintln!(
+        "Finished put benchmark with size ratio {}: time={:.3} secs",
+        db_config.lsm_configuration.size_ratio,
+        bench_elapsed.as_secs_f64()
+    );
+}
 
 // #[derive(Serialize, Deserialize, Debug)]
 // struct BenchGetSample {

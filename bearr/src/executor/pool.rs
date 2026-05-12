@@ -10,7 +10,8 @@ use flume::{Receiver, Sender};
 use io_uring::{IoUring, cqueue, squeue};
 
 use crate::{
-    Database, DbResponse,
+    DbResponse,
+    database::Database,
     executor::{DbOperation, DbRequest, DbRet, Executor},
 };
 

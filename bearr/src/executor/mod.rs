@@ -5,11 +5,11 @@ pub mod sync;
 pub mod tokio;
 
 use bearr_error::DbError;
-use std::{ops::RangeInclusive, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 pub use executor::Executor;
 
-use crate::{Database, DbConfiguration};
+use crate::{DbConfiguration, database::Database};
 
 pub struct DbRequest {
     request_id: u64,
