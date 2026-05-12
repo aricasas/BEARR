@@ -2,6 +2,7 @@ mod executor;
 pub mod io;
 pub mod pool;
 pub mod sync;
+pub mod tokio;
 
 use bearr_error::DbError;
 use std::{ops::RangeInclusive, path::PathBuf, sync::Arc};

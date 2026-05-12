@@ -19,6 +19,7 @@ flume = "0.12.0"
 io-uring = "0.7.11"
 libc = "0.2.184"
 hashbrown = "0.17.0"
+tokio = { version = "1.52.3", features = ["sync", "time", "macros", "rt"] }
 
 [[bin]]
 name = "experiments"

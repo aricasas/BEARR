@@ -87,6 +87,8 @@ impl WorkerPool {
         })
     }
 
+    /// Currently can only be called once at startup
+    /// TODO: Fix this
     pub fn register_db(&self, database: Database) {
         let database = Arc::new(database);
         for (i, sender) in self.individual_senders.iter().enumerate() {
@@ -107,14 +109,57 @@ impl WorkerPool {
         }
     }
 
+    /// Currently can only be called once at startup
+    /// TODO: Fix this
+    pub async fn register_db_async(&self, database: Database) {
+        let database = Arc::new(database);
+
+        // TODO: wait for all these at the same time instead of one at a time
+        for (i, sender) in self.individual_senders.iter().enumerate() {
+            sender
+                .send_async(DbRequest {
+                    request_id: i as u64,
+                    request: DbOperation::RegisterDb {
+                        database: database.clone(),
+                    },
+                })
+                .await
+                .unwrap();
+        }
+
+        for _ in 0..self.individual_senders.len() {
+            let res = self
+                .recv_response_async()
+                .await
+                .expect("Executors should be alive");
+            assert!(matches!(res.response, Ok(DbRet::None)));
+            assert!((0..self.individual_senders.len() as u64).contains(&res.request_id));
+        }
+    }
+
     pub fn send_request(&self, request: DbRequest) {
         self.submission
             .send(request)
             .expect("Executors should be alive");
     }
 
-    pub fn recv_response(&self) -> Option<DbResponse> {
-        self.completion.recv().ok()
+    pub async fn send_request_async(&self, request: DbRequest) {
+        self.submission
+            .send_async(request)
+            .await
+            .expect("Executors should be alive");
+    }
+
+    pub fn try_recv_response(&self) -> Result<DbResponse, flume::TryRecvError> {
+        self.completion.try_recv()
+    }
+
+    pub fn recv_response(&self) -> Result<DbResponse, flume::RecvError> {
+        self.completion.recv()
+    }
+
+    pub async fn recv_response_async(&self) -> Result<DbResponse, flume::RecvError> {
+        self.completion.recv_async().await
     }
 }
 
