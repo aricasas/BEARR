@@ -263,11 +263,23 @@ impl BTree {
         // Closure to write leaf pages containing actual key-value pairs.
         // Each leaf is filled with pairs from the iterator until full.
         // Tracks the largest key in each leaf for building the index structure.
+        let mut pairs_ended = false;
+
         let write_next_leaf = async |page_bytes: &mut Aligned| {
             let leaf: &mut Leaf = bytemuck::cast_mut(page_bytes);
             leaf.length = 0;
+
             for pair in leaf.pairs.iter_mut() {
+                if pairs_ended {
+                    break;
+                }
+
                 let k_v = pairs.next().await;
+                if k_v.is_none() {
+                    pairs_ended = true;
+                    break;
+                }
+
                 if let Some(k_v) = k_v {
                     match k_v {
                         Ok((k, v)) => {

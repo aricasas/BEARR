@@ -11,6 +11,7 @@ use bearr::{
     tokio::{Connection, DbHandle},
 };
 use clap::Parser;
+use futures::{StreamExt, stream::FuturesUnordered};
 use indicatif::ProgressStyle;
 use serde::{Deserialize, Serialize};
 
@@ -224,7 +225,7 @@ async fn bench_put<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(
     );
     let bench_start = Instant::now();
 
-    let pool = WorkerPool::new(1, 1000).unwrap();
+    let pool = WorkerPool::new(1, 400).unwrap();
     let mut conn = Connection::new(pool);
     let mut db = conn
         .create(PathBuf::from("bench_put_db"), db_config)
@@ -245,29 +246,37 @@ async fn bench_put<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(
     let mut puts_duration = Duration::ZERO;
 
     for n_entries in 1..=total_entries {
-        let key = rng.u64(key_range.clone());
-        let val = rng.u64(..);
+        let mut put_futures: FuturesUnordered<_> = (0..sample_spacing
+            .min(total_entries - n_entries + 1))
+            .map(|_| {
+                let key = rng.u64(key_range.clone());
+                let val = rng.u64(..);
+                db.put(key, val)
+            })
+            .collect();
 
         let now = Instant::now();
-        db.put(key, val).await.unwrap();
+        while let Some(res) = put_futures.next().await {
+            res.unwrap();
+        }
         puts_duration += now.elapsed();
 
-        if n_entries % sample_spacing == 0 {
-            let elapsed_time = start.elapsed().as_secs_f64();
-            let puts_time = puts_duration.as_secs_f64();
-            let throughput_per_sec = sample_spacing as f64 / puts_time;
+        // if n_entries % sample_spacing == 0 {
+        let elapsed_time = start.elapsed().as_secs_f64();
+        let puts_time = puts_duration.as_secs_f64();
+        let throughput_per_sec = sample_spacing as f64 / puts_time;
 
-            data.push(BenchPutSample {
-                elapsed_time,
-                n_entries,
-                puts_time,
-                throughput_per_sec,
-            });
+        data.push(BenchPutSample {
+            elapsed_time,
+            n_entries,
+            puts_time,
+            throughput_per_sec,
+        });
 
-            puts_duration = Duration::ZERO;
+        puts_duration = Duration::ZERO;
 
-            progress_bar.inc(1);
-        }
+        progress_bar.inc(1);
+        // }
     }
 
     db.flush().await.unwrap();

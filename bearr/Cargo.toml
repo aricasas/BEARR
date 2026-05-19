@@ -25,6 +25,9 @@ tokio = { version = "1.52.3", features = ["sync", "time", "macros", "rt", "rt-mu
 name = "experiments"
 path = "src/experiments.rs"
 
+[profile.release]
+debug = true
+
 [features]
 default = []
 binary_search = []

@@ -15,7 +15,9 @@ use std::{
 use flume::{Receiver, Sender, TrySendError};
 
 use crate::{
-    DbRequest, DbResponse, database::Database, executor::{DbOperation, DbRet, io::IoId}
+    DbRequest, DbResponse,
+    database::Database,
+    executor::{DbOperation, DbRet, io::IoId},
 };
 
 /// Simple waker that just uses an AtomicBool to track whether it's been woken or not
@@ -45,7 +47,7 @@ impl Wake for BoolWaker {
     }
 }
 
-type TaskId = u64;
+pub type TaskId = u64;
 
 /// Task representing an in-progress database operation
 struct Task {

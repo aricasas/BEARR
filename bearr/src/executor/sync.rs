@@ -7,8 +7,10 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
+use crate::executor::executor::{CurrentTaskContext, TaskId};
+
 pub struct Mutex<T> {
-    queue: std::sync::Mutex<VecDeque<Waker>>,
+    queue: std::sync::Mutex<VecDeque<(TaskId, Waker)>>,
     value: UnsafeCell<T>,
     is_held: AtomicBool,
 }
@@ -26,7 +28,7 @@ impl<T> Mutex<T> {
     }
 
     pub async fn lock(&'_ self) -> LockGuard<'_, T> {
-        Lock { mutex: self }.await;
+        Lock::Init { mutex: self }.await;
         LockGuard { mutex: self }
     }
 }
@@ -37,12 +39,12 @@ pub struct LockGuard<'a, T> {
 
 impl<'a, T> Drop for LockGuard<'a, T> {
     fn drop(&mut self) {
-        let mut queue = self.mutex.queue.lock().unwrap();
+        let queue = self.mutex.queue.lock().unwrap();
         // TODO: Check what ordering we need
         self.mutex.is_held.store(false, Ordering::SeqCst);
 
-        if let Some(waker) = queue.pop_front() {
-            waker.wake();
+        if let Some((_, waker)) = queue.front() {
+            waker.wake_by_ref();
         }
     }
 }
@@ -61,8 +63,10 @@ impl<'a, T> DerefMut for LockGuard<'a, T> {
     }
 }
 
-struct Lock<'a, T> {
-    mutex: &'a Mutex<T>,
+enum Lock<'a, T> {
+    Init { mutex: &'a Mutex<T> },
+    Queued { mutex: &'a Mutex<T> },
+    Done,
 }
 impl<'a, T> Future for Lock<'a, T> {
     type Output = ();
@@ -70,18 +74,45 @@ impl<'a, T> Future for Lock<'a, T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
-        let mut queue = this.mutex.queue.lock().unwrap();
+        match this {
+            Lock::Init { mutex } => {
+                if mutex.is_held.swap(true, Ordering::SeqCst) {
+                    let mut queue = mutex.queue.lock().unwrap();
 
-        // TODO: Check what ordering we need
-        if this.mutex.is_held.swap(true, Ordering::SeqCst) {
-            // Lock was already held, queue ourselves
-            let waker = cx.waker();
+                    // Lock was already held, queue ourselves
+                    let waker = cx.waker();
+                    let task_id = CurrentTaskContext::get().borrow().task_id();
 
-            queue.push_back(waker.clone());
-            Poll::Pending
-        } else {
-            // We obtained the lock
-            Poll::Ready(())
+                    queue.push_back((task_id, waker.clone()));
+                    *this = Lock::Queued { mutex };
+
+                    Poll::Pending
+                } else {
+                    // We obtained the lock
+                    *this = Lock::Done;
+
+                    Poll::Ready(())
+                }
+            }
+            Lock::Queued { mutex } => {
+                if mutex.is_held.swap(true, Ordering::SeqCst) {
+                    // Didn't acquire it, do nothing
+                    *this = Lock::Queued { mutex };
+                    Poll::Pending
+                } else {
+                    // We obtained the lock, remove ourselves from the queue
+                    let task_id = CurrentTaskContext::get().borrow().task_id();
+
+                    let mut queue = mutex.queue.lock().unwrap();
+                    if let Some(pos) = queue.iter().position(|(id, _)| *id == task_id) {
+                        queue.remove(pos);
+                    }
+                    *this = Lock::Done;
+
+                    Poll::Ready(())
+                }
+            }
+            Lock::Done => todo!(),
         }
     }
 }

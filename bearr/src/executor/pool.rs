@@ -162,6 +162,31 @@ impl WorkerPool {
     pub async fn recv_response_async(&self) -> Result<DbResponse, flume::RecvError> {
         self.completion.recv_async().await
     }
+
+    pub fn response_receiver(&self) -> Receiver<DbResponse> {
+        self.completion.clone()
+    }
+
+    pub fn num_workers(&self) -> usize {
+        self.individual_senders.len()
+    }
+
+    // Send-only: the connection's dispatcher collects the acks.
+    pub async fn send_register_requests(&self, database: Database, ids: &[u64]) {
+        assert_eq!(ids.len(), self.individual_senders.len());
+        let database = Arc::new(database);
+        for (sender, &id) in self.individual_senders.iter().zip(ids) {
+            sender
+                .send_async(DbRequest {
+                    request_id: id,
+                    request: DbOperation::RegisterDb {
+                        database: database.clone(),
+                    },
+                })
+                .await
+                .unwrap();
+        }
+    }
 }
 
 impl Drop for WorkerPool {
@@ -214,7 +239,7 @@ mod tests {
 
     #[test]
     fn test_multi_ops() {
-        let pool = WorkerPool::new(10, 100).unwrap();
+        let pool = WorkerPool::new(1, 100).unwrap();
 
         pool.send_request(DbRequest {
             request_id: 0,
@@ -299,5 +324,23 @@ mod tests {
         let res = pool.recv_response().unwrap();
         assert_eq!(res.request_id, 8);
         assert!(matches!(res.response, Ok(DbRet::None)));
+
+        let num_puts = 10_000;
+
+        for i in 0..num_puts {
+            pool.send_request(DbRequest {
+                request_id: 100 + i,
+                request: DbOperation::Put {
+                    key: 100 + i,
+                    value: 200 + i,
+                },
+            });
+        }
+
+        for i in 0..num_puts {
+            let res = pool.recv_response().unwrap();
+
+            assert!(matches!(res.response, Ok(DbRet::None)));
+        }
     }
 }
