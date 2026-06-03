@@ -5,10 +5,7 @@ use std::{
     future::Future,
     pin::Pin,
     rc::Rc,
-    sync::{
-        Arc,
-        atomic::{self, AtomicBool},
-    },
+    sync::{Arc, Mutex},
     task::{Context, Poll, Wake, Waker},
 };
 
@@ -20,30 +17,17 @@ use crate::{
     executor::{DbOperation, DbRet, io::IoId},
 };
 
-/// Simple waker that just uses an AtomicBool to track whether it's been woken or not
-struct BoolWaker {
-    woken: AtomicBool,
-}
-impl BoolWaker {
-    /// Creates a new BoolWaker that starts in the woken state.
-    /// We start in the woken state so newly spawned tasks are polled immediately
-    /// and can start their I/O operations
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            woken: AtomicBool::new(true),
-        })
-    }
-    fn is_woken(&self) -> bool {
-        self.woken.load(atomic::Ordering::Acquire)
-    }
-    fn set_not_woken(&self) {
-        self.woken.store(false, atomic::Ordering::Release);
-    }
+struct ReadyWaker {
+    task_id: TaskId,
+    queue: Arc<Mutex<VecDeque<TaskId>>>,
 }
 
-impl Wake for BoolWaker {
+impl Wake for ReadyWaker {
     fn wake(self: Arc<Self>) {
-        self.woken.store(true, atomic::Ordering::Release);
+        self.queue.lock().unwrap().push_back(self.task_id);
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.queue.lock().unwrap().push_back(self.task_id);
     }
 }
 
@@ -52,7 +36,6 @@ pub type TaskId = u64;
 /// Task representing an in-progress database operation
 struct Task {
     future: DbOpFuture,
-    waker: Arc<BoolWaker>,
     task_id: TaskId,
     request_id: u64,
 }
@@ -61,7 +44,6 @@ impl Task {
     fn new(future: DbOpFuture, task_id: TaskId, request_id: u64) -> Self {
         Self {
             future,
-            waker: BoolWaker::new(),
             task_id,
             request_id,
         }
@@ -117,14 +99,17 @@ pub type DbOpFuture = Pin<Box<dyn Future<Output = DbResponse>>>;
 pub struct Executor {
     context: Rc<RefCell<CurrentTaskContext>>,
 
+    /// Ready queue: task ids that have been woken and need to be polled.
+    ready_queue: Arc<Mutex<VecDeque<TaskId>>>,
+
     /// Channel for receiving database operations to execute
     receiver: flume::Receiver<DbRequest>,
     /// Channel for sending back database operation results
     sender: flume::Sender<DbResponse>,
     /// Queue of responses that are ready to be sent back but haven't been sent yet
     to_send: VecDeque<DbResponse>,
-    /// Tasks currently being executed
-    tasks: Vec<Task>,
+    /// Tasks currently being executed, keyed by task id
+    tasks: HashMap<TaskId, Task>,
     /// Counter for generating unique ids for tasks
     task_id_counter: TaskId,
     /// Maximum number of tasks to execute concurrently
@@ -152,10 +137,11 @@ impl Executor {
                 completion_codes: HashMap::new(),
                 task_id: 0,
             })),
+            ready_queue: Arc::new(Mutex::new(VecDeque::new())),
             receiver,
             sender,
             to_send: VecDeque::new(),
-            tasks: Vec::new(),
+            tasks: HashMap::new(),
             task_id_counter: 0,
             max_tasks,
             individual_receiver,
@@ -174,21 +160,17 @@ impl Executor {
         let task_id = self.get_new_task_id();
         let request_id = operation.request_id;
 
-        match operation.request {
+        let fut: DbOpFuture = match operation.request {
             super::DbOperation::Create {
                 name,
                 configuration,
-            } => {
-                let fut = async move {
-                    let db = Database::create(name, configuration).await;
-                    DbResponse {
-                        request_id,
-                        response: db.map(DbRet::DbHandle),
-                    }
-                };
-                self.tasks
-                    .push(Task::new(Box::pin(fut), task_id, request_id));
-            }
+            } => Box::pin(async move {
+                let db = Database::create(name, configuration).await;
+                DbResponse {
+                    request_id,
+                    response: db.map(DbRet::DbHandle),
+                }
+            }),
             super::DbOperation::Open { name } => todo!(),
             super::DbOperation::Get { key } => {
                 let db_ref = Arc::clone(
@@ -196,15 +178,13 @@ impl Executor {
                         .as_ref()
                         .expect("Can only use db ops after registering a db"),
                 );
-                let fut = async move {
+                Box::pin(async move {
                     let res = db_ref.get(key).await;
                     DbResponse {
                         request_id,
                         response: res.map(DbRet::Value),
                     }
-                };
-                self.tasks
-                    .push(Task::new(Box::pin(fut), task_id, request_id));
+                })
             }
             super::DbOperation::Put { key, value } => {
                 let db_ref = Arc::clone(
@@ -212,15 +192,13 @@ impl Executor {
                         .as_ref()
                         .expect("Can only use db ops after registering a db"),
                 );
-                let fut = async move {
+                Box::pin(async move {
                     let res = db_ref.put(key, value).await;
                     DbResponse {
                         request_id,
                         response: res.map(|_| DbRet::None),
                     }
-                };
-                self.tasks
-                    .push(Task::new(Box::pin(fut), task_id, request_id));
+                })
             }
             super::DbOperation::Delete { key } => {
                 let db_ref = Arc::clone(
@@ -228,15 +206,13 @@ impl Executor {
                         .as_ref()
                         .expect("Can only use db ops after registering a db"),
                 );
-                let fut = async move {
+                Box::pin(async move {
                     let res = db_ref.delete(key).await;
                     DbResponse {
                         request_id,
                         response: res.map(|_| DbRet::None),
                     }
-                };
-                self.tasks
-                    .push(Task::new(Box::pin(fut), task_id, request_id));
+                })
             }
             super::DbOperation::Flush => {
                 let db_ref = Arc::clone(
@@ -244,45 +220,23 @@ impl Executor {
                         .as_ref()
                         .expect("Can only use db ops after registering a db"),
                 );
-                let fut = async move {
+                Box::pin(async move {
                     let res = db_ref.flush().await;
                     DbResponse {
                         request_id,
                         response: res.map(|_| DbRet::None),
                     }
-                };
-                self.tasks
-                    .push(Task::new(Box::pin(fut), task_id, request_id));
+                })
             }
             super::DbOperation::RegisterDb { database: _ } => {
                 panic!("RegisterDb should not be sent through the main request channel")
             }
-        }
+        };
 
-        // let task_id = self.get_new_task_id();
-        // let task = Task::new(operation, task_id);
-        // self.tasks.push(task);
-
-        // match operation {
-        //     DbRequest::Read {
-        //         file,
-        //         offset,
-        //         num_bytes,
-        //         buffer,
-        //     } => {
-        //         let op = unsafe { Box::pin(crate::io::read(file, offset, num_bytes, buffer)) };
-        //         self.tasks.push(Task::new(op, task_id));
-        //     }
-        //     DbRequest::Write {
-        //         file,
-        //         offset,
-        //         num_bytes,
-        //         buffer,
-        //     } => {
-        //         let op = unsafe { Box::pin(crate::io::write(file, offset, num_bytes, buffer)) };
-        //         self.tasks.push(Task::new(op, task_id));
-        //     }
-        // };
+        self.tasks
+            .insert(task_id, Task::new(fut, task_id, request_id));
+        // Newly spawned tasks are immediately ready for their first poll.
+        self.ready_queue.lock().unwrap().push_back(task_id);
     }
 
     /// Main executor loop. Continuously polls active tasks, reacts to new requests and responses,
@@ -294,35 +248,36 @@ impl Executor {
         }
 
         loop {
-            // Poll all active tasks
-            let mut i = 0;
-            while i < self.tasks.len() {
-                let task = &mut self.tasks[i];
-                if !task.waker.is_woken() {
-                    i += 1;
+            // Drain the ready queue and poll only the tasks that are actually ready.
+            // Tasks push themselves back here via ReadyWaker::wake when they become
+            // runnable again (e.g. a mutex is released or an I/O completes).
+            let ready: Vec<TaskId> = {
+                let mut q = self.ready_queue.lock().unwrap();
+                q.drain(..).collect()
+            };
+
+            for task_id in ready {
+                // The task may have already completed and been removed (double-wake is safe).
+                let Some(task) = self.tasks.get_mut(&task_id) else {
                     continue;
                 };
 
-                // Mark the task as sleeping before polling so it can wake itself again when it's ready
-                task.waker.set_not_woken();
-
-                let waker = Waker::from(Arc::clone(&task.waker));
+                let waker = Waker::from(Arc::new(ReadyWaker {
+                    task_id,
+                    queue: Arc::clone(&self.ready_queue),
+                }));
                 let mut cx = Context::from_waker(&waker);
 
                 {
-                    self.context.borrow_mut().task_id = task.task_id;
+                    self.context.borrow_mut().task_id = task_id;
                 }
 
                 match task.future.as_mut().poll(&mut cx) {
                     Poll::Ready(response) => {
-                        // Task is done, remove it and add the response to the send queue
-                        self.tasks.swap_remove(i);
+                        self.tasks.remove(&task_id);
                         self.to_send.push_back(response);
                     }
-                    Poll::Pending => {
-                        // task.waker.set_not_woken();
-                        i += 1;
-                    }
+                    Poll::Pending => {}
                 }
             }
 
@@ -396,10 +351,8 @@ impl Executor {
     /// Sends all pending responses. Should only be used when shutting down the executor
     fn send_responses_blocking(&mut self) {
         while let Some(response) = self.to_send.pop_front() {
-            // let _ = self.sender.send(response);
-
             match self.sender.send(response) {
-                Ok(()) => {} // Err() => {}
+                Ok(()) => {}
                 Err(response) => {
                     self.to_send.push_front(response.0);
                     break;
@@ -414,6 +367,14 @@ impl Executor {
 
         let mut s_queue = context.ring.submission();
         s_queue.sync();
+        if s_queue.need_wakeup() {
+            drop(s_queue);
+            let _ = context.ring.submit();
+        } else {
+            drop(s_queue);
+        }
+
+        let s_queue = context.ring.submission();
 
         let submission_room = s_queue.capacity() - s_queue.len();
 

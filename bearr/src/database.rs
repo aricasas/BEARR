@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{buffer_pool::FileSystem, executor::sync::Mutex};
+use crate::{buffer_pool::FileSystem, executor::sync::RwLock};
 use futures::Stream;
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +15,7 @@ use crate::{
 
 /// An open connection to a database.
 pub struct Database {
-    inner: Mutex<InnerDb>, // TODO: change synchronization
+    inner: RwLock<InnerDb>,
 }
 
 struct InnerDb {
@@ -78,34 +78,34 @@ impl Database {
     ) -> Result<Self, DbError> {
         let inner = InnerDb::create(name, configuration).await?;
         Ok(Self {
-            inner: Mutex::new(inner),
+            inner: RwLock::new(inner),
         })
     }
 
     pub async fn open(name: impl AsRef<Path>) -> Result<Self, DbError> {
         let inner = InnerDb::open(name).await?;
         Ok(Self {
-            inner: Mutex::new(inner),
+            inner: RwLock::new(inner),
         })
     }
 
     pub async fn get(&self, key: u64) -> Result<Option<u64>, DbError> {
-        let inner = self.inner.lock().await;
+        let inner = self.inner.read().await;
         inner.get(key).await
     }
 
     pub async fn put(&self, key: u64, value: u64) -> Result<(), DbError> {
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.inner.write().await;
         inner.put(key, value).await
     }
 
     pub async fn delete(&self, key: u64) -> Result<(), DbError> {
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.inner.write().await;
         inner.delete(key).await
     }
 
     pub async fn flush(&self) -> Result<(), DbError> {
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.inner.write().await;
         inner.flush().await
     }
 }

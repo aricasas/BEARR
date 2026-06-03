@@ -291,21 +291,27 @@ impl FileSystem {
             .await?
         };
 
-        let offset = page_start * PAGE_SIZE;
+        let mut offset_in_file = page_start * PAGE_SIZE;
 
         let mut buffer: Vec<Aligned> = bytemuck::allocation::zeroed_vec(num_pages_to_read);
 
-        let bytes_read = unsafe {
-            read(
-                file,
-                offset as u64,
-                (PAGE_SIZE * num_pages_to_read) as u32,
-                buffer.as_mut_ptr() as *mut u8,
-            )
-            .await?
-        };
+        let mut bytes_to_read = (PAGE_SIZE * num_pages_to_read) as u32;
+        let mut offset_in_buffer = 0;
 
-        assert_eq!(bytes_read, PAGE_SIZE * num_pages_to_read); // TODO: read more if any remain
+        while bytes_to_read > 0 {
+            let bytes_read = unsafe {
+                read(
+                    file,
+                    offset_in_file as u64,
+                    bytes_to_read,
+                    (buffer.as_mut_ptr() as *mut u8).add(offset_in_buffer),
+                )
+                .await?
+            };
+            bytes_to_read -= bytes_read as u32;
+            offset_in_file += bytes_read as usize;
+            offset_in_buffer += bytes_read as usize;
+        }
 
         // Obtain lock again to put page in buffer pool
         {

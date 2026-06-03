@@ -11,7 +11,7 @@ use bearr::{
     tokio::{Connection, DbHandle},
 };
 use clap::Parser;
-use futures::{StreamExt, stream::FuturesUnordered};
+use futures::{FutureExt, StreamExt, TryFutureExt, stream::FuturesUnordered};
 use indicatif::ProgressStyle;
 use serde::{Deserialize, Serialize};
 
@@ -112,18 +112,19 @@ async fn main() {
     let buffer: &mut [u8] = bytemuck::cast_slice_mut(&mut keys);
     fastrand::fill(buffer);
 
-    //     if let Some(out_path) = cli.get {
-    //         bench_get(BenchGetConfig {
-    //             out_path,
-    //             total_entries,
-    //             key_list: &keys,
-    //             percentage_from_key_list: cli.get_success_percentage,
-    //             get_key_range: ..,
-    //             sample_spacing,
-    //             gets_per_sample: ops_per_sample,
-    //             db_config,
-    //         });
-    //     }
+    if let Some(out_path) = cli.get {
+        bench_get(BenchGetConfig {
+            out_path,
+            total_entries,
+            key_list: &keys,
+            percentage_from_key_list: cli.get_success_percentage,
+            get_key_range: ..,
+            sample_spacing,
+            gets_per_sample: ops_per_sample,
+            db_config,
+        })
+        .await;
+    }
 
     //     if let Some(out_path) = cli.concurrent_get {
     //         bench_concurrent_get(BenchConcurrentGetConfig {
@@ -305,121 +306,144 @@ async fn bench_put<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(
     );
 }
 
-// #[derive(Serialize, Deserialize, Debug)]
-// struct BenchGetSample {
-//     n_entries: usize,
-//     gets_time: f64,
-//     throughput_per_sec: f64,
-//     percentage_successful_gets: f64,
-// }
+#[derive(Serialize, Deserialize, Debug)]
+struct BenchGetSample {
+    n_entries: usize,
+    gets_time: f64,
+    throughput_per_sec: f64,
+    percentage_successful_gets: f64,
+}
 
-// struct BenchGetConfig<'a, P: AsRef<Path>, R: RangeBounds<u64> + Clone> {
-//     out_path: P,
-//     total_entries: usize,
-//     key_list: &'a Vec<u64>,
-//     percentage_from_key_list: f32,
-//     get_key_range: R,
-//     sample_spacing: usize,
-//     gets_per_sample: usize,
-//     db_config: DbConfiguration,
-// }
+struct BenchGetConfig<'a, P: AsRef<Path>, R: RangeBounds<u64> + Clone> {
+    out_path: P,
+    total_entries: usize,
+    key_list: &'a Vec<u64>,
+    percentage_from_key_list: f32,
+    get_key_range: R,
+    sample_spacing: usize,
+    gets_per_sample: usize,
+    db_config: DbConfiguration,
+}
 
-// fn bench_get<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(bench_config: BenchGetConfig<P, R>) {
-//     let BenchGetConfig {
-//         out_path,
-//         total_entries,
-//         key_list,
-//         percentage_from_key_list,
-//         get_key_range,
-//         sample_spacing,
-//         gets_per_sample,
-//         db_config,
-//     } = bench_config;
+async fn bench_get<'a, P: AsRef<Path>, R: RangeBounds<u64> + Clone>(
+    bench_config: BenchGetConfig<'a, P, R>,
+) {
+    let BenchGetConfig {
+        out_path,
+        total_entries,
+        key_list,
+        percentage_from_key_list,
+        get_key_range,
+        sample_spacing,
+        gets_per_sample,
+        db_config,
+    } = bench_config;
 
-//     let _ = std::fs::remove_dir_all("bench_get_db");
+    let _ = std::fs::remove_dir_all("bench_get_db");
 
-//     eprintln!(
-//         "Running get benchmark with {}% successful gets and size ratio {}: N={}",
-//         100.0 * percentage_from_key_list,
-//         db_config.lsm_configuration.size_ratio,
-//         total_entries
-//     );
-//     let bench_start = Instant::now();
+    eprintln!(
+        "Running get benchmark with {}% successful gets and size ratio {}: N={}",
+        100.0 * percentage_from_key_list,
+        db_config.lsm_configuration.size_ratio,
+        total_entries
+    );
+    let bench_start = Instant::now();
 
-//     let mut db = Database::create("bench_get_db", db_config).unwrap();
-//     let mut rng = fastrand::Rng::new();
+    let pool = WorkerPool::new(1, 2048).unwrap();
+    let mut conn = Connection::new(pool);
+    let mut db = conn
+        .create(PathBuf::from("bench_get_db"), db_config)
+        .await
+        .unwrap();
+    let mut rng = fastrand::Rng::new();
 
-//     let num_samples = total_entries / sample_spacing;
-//     let mut data = Vec::with_capacity(num_samples);
+    let num_samples = total_entries / sample_spacing;
+    let mut data = Vec::with_capacity(num_samples);
 
-//     let progress_bar = indicatif::ProgressBar::new(num_samples as u64)
-//         .with_style(ProgressStyle::with_template(PROGRESS_BAR_TEMPLATE).unwrap());
-//     progress_bar.inc(0);
-//     progress_bar.enable_steady_tick(Duration::from_millis(500));
+    let progress_bar = indicatif::ProgressBar::new(num_samples as u64)
+        .with_style(ProgressStyle::with_template(PROGRESS_BAR_TEMPLATE).unwrap());
+    progress_bar.inc(0);
+    progress_bar.enable_steady_tick(Duration::from_millis(500));
 
-//     for n_entries in 1..=total_entries {
-//         let key = key_list[n_entries - 1];
-//         let val = rng.u64(..);
+    for n_entries in 1..=total_entries {
+        let simultaneous_puts = 1024;
+        if n_entries % simultaneous_puts == 0 {
+            let mut put_futures: FuturesUnordered<_> = (0..simultaneous_puts
+                .min(total_entries - n_entries + 1))
+                .map(|i| {
+                    let key = key_list[n_entries - 1 - i];
+                    let val = rng.u64(..);
+                    db.put(key, val)
+                })
+                .collect();
 
-//         db.put(key, val).unwrap();
+            while let Some(res) = put_futures.next().await {
+                res.unwrap();
+            }
+        }
 
-//         if n_entries % sample_spacing == 0 {
-//             let mut num_successful_gets = 0;
+        if n_entries % sample_spacing == 0 {
+            let mut num_successful_gets = 0;
 
-//             let mut gets_time = Duration::ZERO;
+            let mut gets_time = Duration::ZERO;
 
-//             for i in 0..gets_per_sample {
-//                 let get_from_key_list =
-//                     (i as f32 / gets_per_sample as f32) < percentage_from_key_list;
+            let mut get_futures: FuturesUnordered<_> = (0..gets_per_sample)
+                .map(|i| {
+                    let get_from_key_list =
+                        (i as f32 / gets_per_sample as f32) < percentage_from_key_list;
 
-//                 let key = if get_from_key_list {
-//                     key_list[fastrand::usize(0..n_entries)]
-//                 } else {
-//                     rng.u64(get_key_range.clone())
-//                 };
+                    let key = if get_from_key_list {
+                        key_list[fastrand::usize(0..n_entries)]
+                    } else {
+                        rng.u64(get_key_range.clone())
+                    };
 
-//                 let now = Instant::now();
-//                 let val = db.get(key).unwrap();
-//                 gets_time += now.elapsed();
+                    db.get(key)
+                })
+                .collect();
+            let now = Instant::now();
+            while let Some(res) = get_futures.next().await {
+                let val = res.unwrap();
+                if val.is_some() {
+                    num_successful_gets += 1;
+                }
+            }
+            gets_time += now.elapsed();
 
-//                 if val.is_some() {
-//                     num_successful_gets += 1;
-//                 }
-//             }
+            let gets_time = gets_time.as_secs_f64();
+            let throughput_per_sec = gets_per_sample as f64 / gets_time;
+            let percentage_successful_gets = num_successful_gets as f64 / gets_per_sample as f64;
+            data.push(BenchGetSample {
+                n_entries,
+                gets_time,
+                throughput_per_sec,
+                percentage_successful_gets,
+            });
 
-//             let gets_time = gets_time.as_secs_f64();
-//             let throughput_per_sec = gets_per_sample as f64 / gets_time;
-//             let percentage_successful_gets = num_successful_gets as f64 / gets_per_sample as f64;
-//             data.push(BenchGetSample {
-//                 n_entries,
-//                 gets_time,
-//                 throughput_per_sec,
-//                 percentage_successful_gets,
-//             });
+            progress_bar.inc(1);
+        }
+    }
+    db.flush().await.unwrap();
 
-//             progress_bar.inc(1);
-//         }
-//     }
+    drop(db);
+    progress_bar.finish_and_clear();
 
-//     drop(db);
-//     progress_bar.finish_and_clear();
+    let mut csv_writer = csv::Writer::from_path(out_path).unwrap();
+    for record in data {
+        csv_writer.serialize(record).unwrap();
+    }
+    csv_writer.flush().unwrap();
 
-//     let mut csv_writer = csv::Writer::from_path(out_path).unwrap();
-//     for record in data {
-//         csv_writer.serialize(record).unwrap();
-//     }
-//     csv_writer.flush().unwrap();
+    if !cfg!(feature = "keep_test_files") {
+        std::fs::remove_dir_all("bench_get_db");
+    }
 
-//     if !cfg!(feature = "keep_test_files") {
-//         std::fs::remove_dir_all("bench_get_db").unwrap();
-//     }
-
-//     let bench_elapsed = bench_start.elapsed();
-//     eprintln!(
-//         "Finished get benchmark: time={:.3} secs",
-//         bench_elapsed.as_secs_f64()
-//     );
-// }
+    let bench_elapsed = bench_start.elapsed();
+    eprintln!(
+        "Finished get benchmark: time={:.3} secs",
+        bench_elapsed.as_secs_f64()
+    );
+}
 
 // struct BenchConcurrentGetConfig<'a, P: AsRef<Path>, R: RangeBounds<u64> + Clone + Send + Sync> {
 //     out_path: P,

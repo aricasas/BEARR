@@ -225,6 +225,7 @@ use tokio::sync::oneshot;
 
 use crate::{
     DbConfiguration, DbRequest, DbResponse,
+    database::Database,
     executor::{DbOperation, DbRet, pool::WorkerPool},
 };
 
@@ -240,13 +241,11 @@ impl Connection {
     pub fn new(pool: WorkerPool) -> Self {
         let registry: Registry = Arc::new(Mutex::new(HashMap::new()));
 
-        // SOLE consumer of the completion channel. Nothing else may call
-        // recv_response*/try_recv_response on the pool anymore — registration
-        // now also flows through this dispatcher (see `register`).
         let rx = pool.response_receiver();
         let reg = registry.clone();
+
+        // TODO: Check if single thread is bottleneck
         std::thread::Builder::new()
-            .name("bearr-dispatcher".into())
             .spawn(move || {
                 while let Ok(response) = rx.recv() {
                     let id = response.request_id;
@@ -284,14 +283,12 @@ impl Connection {
             Ok(response) => response.response,
             Err(_) => {
                 self.registry.lock().unwrap().remove(&request_id);
-                panic!("dispatcher gone"); // replace with a DbError variant
+                panic!("dispatcher gone"); // TODO: replace with a DbError variant
             }
         }
     }
 
-    // Registration: one UNIQUE id + one oneshot per worker, all routed through
-    // the same dispatcher. No competing consumer, no id collisions.
-    async fn register(&self, database: crate::database::Database) -> Result<(), DbError> {
+    async fn register(&self, database: Database) -> Result<(), DbError> {
         let n = self.pool.num_workers();
 
         let mut ids = Vec::with_capacity(n);

@@ -36,7 +36,7 @@ impl WorkerPool {
 
         let main_ring: IoUring<squeue::Entry, cqueue::Entry> = IoUring::builder()
             .setup_single_issuer()
-            .setup_sqpoll(10000)
+            .setup_sqpoll(100)
             .build(2048)?;
 
         let ring_fd = main_ring.as_raw_fd();
@@ -54,7 +54,7 @@ impl WorkerPool {
 
             let ring: IoUring = IoUring::builder()
                 .setup_single_issuer()
-                .setup_sqpoll(10000)
+                .setup_sqpoll(100)
                 .setup_attach_wq(ring_fd) // TODO: Check if this is better than not doing it
                 .build(2048)?;
 
