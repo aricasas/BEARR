@@ -225,7 +225,7 @@ async fn bench_put<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(
     );
     let bench_start = Instant::now();
 
-    let pool = WorkerPool::new(1, 400).unwrap();
+    let pool = WorkerPool::new(1, 2048).unwrap();
     let mut conn = Connection::new(pool);
     let mut db = conn
         .create(PathBuf::from("bench_put_db"), db_config)
@@ -246,37 +246,40 @@ async fn bench_put<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(
     let mut puts_duration = Duration::ZERO;
 
     for n_entries in 1..=total_entries {
-        let mut put_futures: FuturesUnordered<_> = (0..sample_spacing
-            .min(total_entries - n_entries + 1))
-            .map(|_| {
-                let key = rng.u64(key_range.clone());
-                let val = rng.u64(..);
-                db.put(key, val)
-            })
-            .collect();
+        let simultaneous_puts = 1024;
+        if n_entries % simultaneous_puts == 0 {
+            let mut put_futures: FuturesUnordered<_> = (0..simultaneous_puts
+                .min(total_entries - n_entries + 1))
+                .map(|_| {
+                    let key = rng.u64(key_range.clone());
+                    let val = rng.u64(..);
+                    db.put(key, val)
+                })
+                .collect();
 
-        let now = Instant::now();
-        while let Some(res) = put_futures.next().await {
-            res.unwrap();
+            let now = Instant::now();
+            while let Some(res) = put_futures.next().await {
+                res.unwrap();
+            }
+            puts_duration += now.elapsed();
         }
-        puts_duration += now.elapsed();
 
-        // if n_entries % sample_spacing == 0 {
-        let elapsed_time = start.elapsed().as_secs_f64();
-        let puts_time = puts_duration.as_secs_f64();
-        let throughput_per_sec = sample_spacing as f64 / puts_time;
+        if n_entries % sample_spacing == 0 {
+            let elapsed_time = start.elapsed().as_secs_f64();
+            let puts_time = puts_duration.as_secs_f64();
+            let throughput_per_sec = sample_spacing as f64 / puts_time;
 
-        data.push(BenchPutSample {
-            elapsed_time,
-            n_entries,
-            puts_time,
-            throughput_per_sec,
-        });
+            data.push(BenchPutSample {
+                elapsed_time,
+                n_entries,
+                puts_time,
+                throughput_per_sec,
+            });
 
-        puts_duration = Duration::ZERO;
+            puts_duration = Duration::ZERO;
 
-        progress_bar.inc(1);
-        // }
+            progress_bar.inc(1);
+        }
     }
 
     db.flush().await.unwrap();
@@ -291,7 +294,7 @@ async fn bench_put<P: AsRef<Path>, R: RangeBounds<u64> + Clone>(
     csv_writer.flush().unwrap();
 
     if !cfg!(feature = "keep_test_files") {
-        std::fs::remove_dir_all("bench_put_db").unwrap();
+        std::fs::remove_dir_all("bench_put_db");
     }
 
     let bench_elapsed = bench_start.elapsed();
