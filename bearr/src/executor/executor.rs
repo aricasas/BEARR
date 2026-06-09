@@ -171,7 +171,13 @@ impl Executor {
                     response: db.map(DbRet::DbHandle),
                 }
             }),
-            super::DbOperation::Open { name } => todo!(),
+            super::DbOperation::Open { name } => Box::pin(async move {
+                let db = Database::open(name).await;
+                DbResponse {
+                    request_id,
+                    response: db.map(DbRet::DbHandle),
+                }
+            }),
             super::DbOperation::Get { key } => {
                 let db_ref = Arc::clone(
                     self.database

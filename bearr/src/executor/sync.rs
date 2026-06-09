@@ -248,17 +248,29 @@ impl<'a, T> Future for RwRead<'a, T> {
         match this {
             RwRead::Init { lock } => {
                 // Fast path: CAS reader_count + 1 if no writer is active or waiting.
-                let s = lock.state.load(Ordering::Acquire);
-                if s & (WRITER_ACTIVE | WRITER_WAITING) == 0 {
-                    if lock
-                        .state
-                        .compare_exchange(s, s + 1, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok()
-                    {
-                        *this = RwRead::Done;
-                        return Poll::Ready(());
+                let mut s = lock.state.load(Ordering::Acquire);
+
+                loop {
+                    if s & (WRITER_ACTIVE | WRITER_WAITING) == 0 {
+                        let ss = lock.state.compare_exchange(
+                            s,
+                            s + 1,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        );
+
+                        match ss {
+                            Ok(_) => {
+                                *this = RwRead::Done;
+                                return Poll::Ready(());
+                            }
+                            Err(new_s) => s = new_s,
+                        }
+                    } else {
+                        break;
                     }
                 }
+
                 // Slow path: enqueue.
                 let task_id = CurrentTaskContext::get().borrow().task_id();
                 let mut queue = lock.wait_queue.lock().unwrap();
@@ -332,6 +344,7 @@ impl<'a, T> Future for RwWrite<'a, T> {
                 let task_id = CurrentTaskContext::get().borrow().task_id();
                 let mut queue = lock.wait_queue.lock().unwrap();
                 if let Some(pos) = queue.iter().position(|(_, id, _)| *id == task_id) {
+                    assert_eq!(pos, 0); // TODO: enforce this with logic instead of assertion
                     queue.remove(pos);
                 }
                 let more_writers = queue.iter().any(|(is_w, _, _)| *is_w);
