@@ -350,8 +350,8 @@ async fn bench_get<'a, P: AsRef<Path>, R: RangeBounds<u64> + Clone>(
     let bench_start = Instant::now();
 
     let pool = WorkerPool::new(1, 2048).unwrap();
-    let mut conn = Connection::new(pool);
-    let mut db = conn
+    let conn = Connection::new(pool);
+    let db = conn
         .create(PathBuf::from("bench_get_db"), db_config)
         .await
         .unwrap();
