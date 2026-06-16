@@ -3,6 +3,7 @@ use std::{
     cmp::min,
     collections::{HashMap, VecDeque},
     future::Future,
+    mem,
     pin::Pin,
     rc::Rc,
     sync::{Arc, Mutex},
@@ -253,16 +254,19 @@ impl Executor {
             panic!("Can only run one executor at a time per thread");
         }
 
+        let mut ready = VecDeque::new();
+        let mut counter: u64 = 0;
+
         loop {
             // Drain the ready queue and poll only the tasks that are actually ready.
             // Tasks push themselves back here via ReadyWaker::wake when they become
             // runnable again (e.g. a mutex is released or an I/O completes).
-            let ready: Vec<TaskId> = {
+            {
                 let mut q = self.ready_queue.lock().unwrap();
-                q.drain(..).collect()
+                mem::swap(&mut ready, &mut *q);
             };
 
-            for task_id in ready {
+            for &task_id in &ready {
                 // The task may have already completed and been removed (double-wake is safe).
                 let Some(task) = self.tasks.get_mut(&task_id) else {
                     continue;
@@ -286,6 +290,7 @@ impl Executor {
                     Poll::Pending => {}
                 }
             }
+            ready.clear();
 
             // TODO: handle waking up kernel threads
 
@@ -293,9 +298,9 @@ impl Executor {
 
             self.send_responses_non_blocking();
 
-            self.react_submission_queue();
+            self.react_submission_queue(counter);
 
-            self.react_completion_queue();
+            self.react_completion_queue(counter);
 
             // TODO: check if this is the right place to check this
             if self.database.is_none()
@@ -322,6 +327,8 @@ impl Executor {
                     break;
                 }
             }
+
+            counter = counter.wrapping_add(1);
         }
 
         CURRENT_TASK_CONTEXT.replace(None);
@@ -368,21 +375,21 @@ impl Executor {
     }
 
     /// Syncs submission queue and wakes tasks waiting to submit
-    fn react_submission_queue(&mut self) {
+    fn react_submission_queue(&mut self, counter: u64) {
         let context = &mut *self.context.borrow_mut();
+
+        if !counter.is_multiple_of(100) {
+            return;
+        }
 
         let mut s_queue = context.ring.submission();
         s_queue.sync();
-        if s_queue.need_wakeup() {
+        let submission_room = s_queue.capacity() - s_queue.len();
+
+        if !s_queue.is_empty() && s_queue.need_wakeup() {
             drop(s_queue);
             let _ = context.ring.submit();
-        } else {
-            drop(s_queue);
         }
-
-        let s_queue = context.ring.submission();
-
-        let submission_room = s_queue.capacity() - s_queue.len();
 
         let s_registry = &mut context.submission_registry;
 
@@ -393,8 +400,12 @@ impl Executor {
     }
 
     /// Syncs completion queue and wakes tasks waiting for completions
-    fn react_completion_queue(&mut self) {
+    fn react_completion_queue(&mut self, counter: u64) {
         let context = &mut *self.context.borrow_mut();
+
+        if !counter.is_multiple_of(100) {
+            return;
+        }
 
         context.ring.completion().sync();
 
